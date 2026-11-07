@@ -1,0 +1,21 @@
+[block]
+type = "sparkplug_metric"
+name = "Sparkplug метрика"
+symbol = "SpB·M"
+group = "Сеть"
+shared = "network"
+description = "Значение, которое Sparkplug-узел публикует под заданным именем: bool, int или float."
+hidden = true
+pullable = true
+
+[[input]]
+name = "value"
+type = "any"
+description = "Значение метрики: bool, int или float (тип берётся от подключённого выхода; строки не поддержаны)"
+
+[[param]]
+name = "name"
+label = "имя метрики"
+type = "string"
+default = "metric"
+description = "Имя метрики в Sparkplug, например Pump/Running; до 32 символов, уникальное на плате"

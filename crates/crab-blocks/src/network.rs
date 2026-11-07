@@ -272,6 +272,24 @@ pub(crate) fn mqtt_publish(e: &CppCtx) -> CppParts {
     }
 }
 
+/// Sparkplug B lives in the master firmware (`specs/pubsub-bus`); a plain sketch only keeps the output low.
+pub(crate) fn sparkplug_node(e: &CppCtx) -> CppParts {
+    CppParts {
+        looped: format!(
+            "// Sparkplug B works only in module mode (master firmware)\n{} = false;",
+            e.output("online")
+        ),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn sparkplug_metric(_e: &CppCtx) -> CppParts {
+    CppParts {
+        looped: "// Sparkplug B works only in module mode (master firmware)".to_owned(),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn mqtt_subscribe(e: &CppCtx) -> CppParts {
     let id = &e.id;
     let (topic, received) = (c_text(e, "topic"), e.output("received"));

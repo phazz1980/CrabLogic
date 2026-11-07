@@ -1,0 +1,35 @@
+[block]
+type = "sparkplug_node"
+name = "Sparkplug B узел"
+symbol = "SpB"
+group = "Сеть"
+shared = "network"
+description = "Публикует метрики проекта по стандарту MQTT Sparkplug B (NBIRTH, NDATA, NDEATH) через блок «MQTT клиент». Метрики задаёт блок «Sparkplug метрика»."
+single = true
+hidden = true
+pullable = true
+
+[[input]]
+name = "en"
+type = "bool"
+default = true
+description = "Разрешение работы; не подключён — работает всегда"
+
+[[output]]
+name = "online"
+type = "bool"
+description = "true, пока узел объявлен (NBIRTH отправлен, соединение с брокером есть)"
+
+[[param]]
+name = "group"
+label = "группа"
+type = "string"
+default = "CrabLogic"
+description = "Идентификатор группы Sparkplug (group_id): без символов + # /"
+
+[[param]]
+name = "node"
+label = "узел"
+type = "string"
+default = "Node1"
+description = "Идентификатор узла Sparkplug (edge_node_id): без символов + # /"

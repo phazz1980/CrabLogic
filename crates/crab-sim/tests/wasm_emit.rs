@@ -726,3 +726,32 @@ fn retained_variables_are_loaded_and_saved_through_the_master() {
 fn text_selectors_and_variables_match_the_simulation() {
     compare("crates/crab-sim/tests/fixtures/wasm_strsel", 10, 40, 100);
 }
+
+#[test]
+fn sparkplug_node_and_metrics_reach_the_master_ops() {
+    let lib = library();
+    let project =
+        Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_sparkplug")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert!(manifest.allow.iter().any(|a| a == "net"), "{manifest:?}");
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    module.step(10).unwrap();
+    module.step(10).unwrap();
+    let io = module.io();
+    assert_eq!(io.sp_text[&1], "Plant");
+    assert_eq!(io.sp_text[&2], "Esp1");
+    assert!(io.sp_complete, "setup is announced once");
+    assert_eq!(io.sp_enable, 1, "an unconnected en means enabled");
+    let mut metrics = io.sp_metrics.clone();
+    metrics.sort();
+    assert_eq!(
+        metrics,
+        [
+            ("Hot".to_string(), 0, 1),
+            ("Temperature".to_string(), 2, 21.5f32.to_bits()),
+            ("Whole".to_string(), 1, 22), // float_to_int rounds 21.5
+        ]
+    );
+}

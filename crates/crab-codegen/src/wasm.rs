@@ -20,6 +20,7 @@ use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 
 mod mqtt;
 mod net;
+mod sparkplug;
 mod text;
 mod web;
 use text::{Buf, MEM_START};
@@ -1946,6 +1947,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                         e.op(I::F32Div);
                     },
                     |e| e.c_f(0.0),
+            || self.sparkplug_block(inst)?
                 );
                 Ty::F
             }

@@ -437,6 +437,14 @@ static BLOCKS: &[Block] = &[
         emit: network::mqtt_subscribe,
     },
     Block {
+        kind: "sparkplug_node",
+        emit: network::sparkplug_node,
+    },
+    Block {
+        kind: "sparkplug_metric",
+        emit: network::sparkplug_metric,
+    },
+    Block {
         kind: "ntp",
         emit: network::ntp,
     },

@@ -1,0 +1,52 @@
+# Sparkplug B в модуле WASM: мастер ведёт MQTT и протокол (NBIRTH, NDATA, NDEATH), модуль даёт имена и значения.
+# Температура и «жарко» (выше 25 градусов) уходят брокеру как метрики Temperature и Hot.
+
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+password = "secret123"
+
+[[block]]
+id = "broker"
+type = "mqtt"
+broker = "broker.hivemq.com"
+port = 1883
+
+[[block]]
+id = "node"
+type = "sparkplug_node"
+group = "CrabLogic"
+node = "Esp1"
+
+[[block]]
+id = "temp"
+type = "constant"
+value = 21.5
+
+[[block]]
+id = "hot"
+type = "greater"
+b = 25.0
+
+[[block]]
+id = "m_temp"
+type = "sparkplug_metric"
+name = "Temperature"
+
+[[block]]
+id = "m_hot"
+type = "sparkplug_metric"
+name = "Hot"
+
+[[link]]
+from = "temp.out"
+to = "hot.a"
+
+[[link]]
+from = "temp.out"
+to = "m_temp.value"
+
+[[link]]
+from = "hot.out"
+to = "m_hot.value"

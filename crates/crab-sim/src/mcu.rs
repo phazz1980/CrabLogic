@@ -221,6 +221,12 @@ pub struct StubIo {
     pub mqtt_filters: Vec<String>,
     /// Last message and counter of each slot (ops 15, 16).
     pub mqtt_slots: Vec<(String, i32)>,
+    /// Sparkplug setup (op 30): texts by code (1 group, 2 node), enable flag, setup complete.
+    pub sp_text: HashMap<i32, String>,
+    pub sp_enable: i32,
+    pub sp_complete: bool,
+    /// Sparkplug metrics asked with op 31: name, type (0 bool, 1 int, 2 float), last value bits (op 32).
+    pub sp_metrics: Vec<(String, i32, u32)>,
     /// Layout JSON the module gave the web page (`net` op 17, code 1).
     pub web_layout: String,
     /// Widgets of the page (op 17, code 2); the module writes values (ops 19, 20) and reads what
@@ -825,6 +831,51 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
                                     io.web_net_item = d;
                                 }
                             }
+                match op {
+                    30 => {
+                        match a {
+                            1 | 2 => {
+                                let t = read_bytes(&mut c, b, len, 64);
+                                if let Some(t) = t {
+                                    c.data_mut()
+                                        .io
+                                        .sp_text
+                                        .insert(a, String::from_utf8_lossy(&t).into_owned());
+                                }
+                            }
+                            4 => c.data_mut().io.sp_enable = b,
+                            63 => c.data_mut().io.sp_complete = true,
+                            _ => {}
+                        }
+                        return 0;
+                    }
+                    31 => {
+                        let name = read_bytes(&mut c, a, b, 32);
+                        let io = &mut c.data_mut().io;
+                        return match name {
+                            Some(n) if !n.is_empty() => {
+                                let n = String::from_utf8_lossy(&n).into_owned();
+                                match io.sp_metrics.iter().position(|m| m.0 == n) {
+                                    Some(i) => i as i32,
+                                    None if io.sp_metrics.len() < 12 => {
+                                        io.sp_metrics.push((n, len, 0));
+                                        io.sp_metrics.len() as i32 - 1
+                                    }
+                                    None => -1,
+                                }
+                            }
+                            _ => -1,
+                        };
+                    }
+                    32 => {
+                        if let Some(m) = c.data_mut().io.sp_metrics.get_mut(a as usize) {
+                            m.2 = b as u32;
+                        }
+                        return 0;
+                    }
+                    33 => return 0, // no broker on the PC: the node is never online
+                    _ => {}
+                }
                             63 => c.data_mut().io.web_complete = true,
                             _ => {}
                         }

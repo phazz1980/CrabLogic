@@ -1,0 +1,50 @@
+[[block]]
+id = "temp"
+type = "constant"
+value = 21.5
+
+[[block]]
+id = "hot"
+type = "greater"
+b = 20.0
+
+[[block]]
+id = "whole"
+type = "float_to_int"
+
+[[block]]
+id = "node"
+type = "sparkplug_node"
+group = "Plant"
+node = "Esp1"
+
+[[block]]
+id = "m_temp"
+type = "sparkplug_metric"
+name = "Temperature"
+
+[[block]]
+id = "m_hot"
+type = "sparkplug_metric"
+name = "Hot"
+
+[[block]]
+id = "m_whole"
+type = "sparkplug_metric"
+name = "Whole"
+
+[[link]]
+from = "temp.out"
+to = "hot.a"
+[[link]]
+from = "temp.out"
+to = "whole.in"
+[[link]]
+from = "temp.out"
+to = "m_temp.value"
+[[link]]
+from = "hot.out"
+to = "m_hot.value"
+[[link]]
+from = "whole.out"
+to = "m_whole.value"

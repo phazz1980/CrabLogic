@@ -1,0 +1,6 @@
+[project]
+name = "wasm_sparkplug"
+description = "Sparkplug-узел и метрики трёх типов для проверки операций мастера"
+
+[board]
+fqbn = "esp32:esp32:esp32"

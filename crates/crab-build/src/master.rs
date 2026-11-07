@@ -70,7 +70,8 @@ impl MasterFeatures {
                     f.net = true;
                     f.text = true;
                 }
-                "mqtt" | "mqtt_publish" | "mqtt_subscribe" => {
+                "mqtt" | "mqtt_publish" | "mqtt_subscribe" | "sparkplug_node"
+                | "sparkplug_metric" => {
                     f.net = true;
                     f.mqtt = true;
                     f.text = true;
