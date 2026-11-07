@@ -536,6 +536,38 @@ impl Behavior for Plain {
     }
 }
 
+/// `switch` and `mux`: pick one of the inputs, numbers and texts alike.
+struct Select {
+    mux: bool,
+}
+
+impl Select {
+    /// Index of the chosen input.
+    fn chosen(&self, c: &Ctx) -> usize {
+        if self.mux {
+            // Inputs after `sel` that exist for the current port count.
+            let count = c.active.iter().skip(1).filter(|a| **a).count().max(1);
+            1 + (c.input(0).max(0.0) as usize).min(count - 1)
+        } else if c.flag(0) {
+            2
+        } else {
+            1
+        }
+    }
+}
+
+impl Behavior for Select {
+    fn step(&mut self, ctx: &Ctx, out: &mut [f64]) {
+        out[0] = ctx.input(self.chosen(ctx));
+    }
+
+    fn step_text(&mut self, ctx: &Ctx, _: &mut [f64], text: &mut [String]) {
+        if let Some(t) = text.first_mut() {
+            *t = ctx.text(self.chosen(ctx)).to_owned();
+        }
+    }
+}
+
 /// A stateless block that computes in the numeric model and so needs the real types.
 struct Typed {
     f: fn(&Ctx, &Types, &mut [f64]),
@@ -666,13 +698,8 @@ pub fn behavior(kind: &str) -> Option<Box<dyn Behavior>> {
             ));
         }),
         "constant" => plain(|c, o| o[0] = c.param(0)),
-        "switch" => plain(|c, o| o[0] = if c.flag(0) { c.input(2) } else { c.input(1) }),
-        "mux" => plain(|c, o| {
-            // Inputs after `sel` that exist for the current port count.
-            let count = c.active.iter().skip(1).filter(|a| **a).count().max(1);
-            let idx = (c.input(0).max(0.0) as usize).min(count - 1);
-            o[0] = c.input(1 + idx);
-        }),
+        "switch" => Some(Box::new(Select { mux: false })),
+        "mux" => Some(Box::new(Select { mux: true })),
         _ => more::behavior(kind)
             .or_else(|| text::behavior(kind))
             .or_else(|| hardware::behavior(kind)),

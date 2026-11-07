@@ -1,0 +1,165 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[var]]
+name = "y"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 0.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "sel"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "dm_f"
+type = "dms"
+count = 5
+
+[[block]]
+id = "dm_i"
+type = "dms"
+count = 4
+
+[[block]]
+id = "dec"
+type = "decoder"
+count = 6
+
+[[block]]
+id = "bits"
+type = "byte_to_bits"
+
+[[block]]
+id = "enc"
+type = "encoder"
+count = 4
+
+[[block]]
+id = "y"
+type = "var_get"
+var = "y"
+
+[[block]]
+id = "sp"
+type = "constant"
+value = 50.0
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "3s"
+time_off = "500ms"
+
+[[block]]
+id = "pid"
+type = "pid"
+kp = 2.0
+ki = 0.5
+kd = 0.1
+out_min = -20.0
+out_max = 60.0
+
+[[block]]
+id = "gain"
+type = "constant"
+value = 0.05
+
+[[block]]
+id = "push"
+type = "mul"
+
+[[block]]
+id = "ny"
+type = "add"
+
+[[block]]
+id = "yw"
+type = "var_set"
+var = "y"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "sel.in"
+[[link]]
+from = "sel.out"
+to = "dm_f.sel"
+[[link]]
+from = "xr.out"
+to = "dm_f.in"
+[[link]]
+from = "sel.out"
+to = "dm_i.sel"
+[[link]]
+from = "sel.out"
+to = "dm_i.in"
+[[link]]
+from = "sel.out"
+to = "dec.in"
+[[link]]
+from = "sel.out"
+to = "bits.in"
+[[link]]
+from = "bits.b0"
+to = "enc.i0"
+[[link]]
+from = "bits.b1"
+to = "enc.i1"
+[[link]]
+from = "bits.b2"
+to = "enc.i2"
+[[link]]
+from = "bits.b3"
+to = "enc.i3"
+[[link]]
+from = "sp.out"
+to = "pid.sp"
+[[link]]
+from = "y.out"
+to = "pid.pv"
+[[link]]
+from = "gen.out"
+to = "pid.en"
+[[link]]
+from = "pid.out"
+to = "push.a"
+[[link]]
+from = "gain.out"
+to = "push.b"
+[[link]]
+from = "y.out"
+to = "ny.a"
+[[link]]
+from = "push.out"
+to = "ny.b"
+[[link]]
+from = "ny.out"
+to = "yw.in"

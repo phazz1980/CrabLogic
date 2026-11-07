@@ -1,0 +1,207 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 37.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "shift"
+type = "constant"
+value = 700.0
+
+[[block]]
+id = "d"
+type = "sub"
+
+[[block]]
+id = "di"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "kc"
+type = "constant"
+value = 85.0
+
+[[block]]
+id = "k"
+type = "float_to_int"
+mode = 0
+
+[[block]]
+id = "and_"
+type = "bit_and"
+
+[[block]]
+id = "or_"
+type = "bit_or"
+
+[[block]]
+id = "xor_"
+type = "bit_xor"
+
+[[block]]
+id = "not_"
+type = "bit_not"
+
+[[block]]
+id = "rd"
+type = "bit_read"
+bit = 3
+
+[[block]]
+id = "wr"
+type = "bit_write"
+bit = 5
+
+[[block]]
+id = "chg"
+type = "bit_change"
+bit = 4
+
+[[block]]
+id = "split"
+type = "byte_to_bits"
+
+[[block]]
+id = "join"
+type = "bits_to_byte"
+
+[[block]]
+id = "lo_hi"
+type = "word_to_bytes"
+
+[[block]]
+id = "word"
+type = "bytes_to_word"
+
+[[block]]
+id = "quad"
+type = "dword_to_bytes"
+
+[[block]]
+id = "dword"
+type = "bytes_to_dword"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "d.a"
+[[link]]
+from = "shift.out"
+to = "d.b"
+[[link]]
+from = "d.out"
+to = "di.in"
+[[link]]
+from = "kc.out"
+to = "k.in"
+[[link]]
+from = "di.out"
+to = "and_.a"
+[[link]]
+from = "k.out"
+to = "and_.b"
+[[link]]
+from = "di.out"
+to = "or_.a"
+[[link]]
+from = "k.out"
+to = "or_.b"
+[[link]]
+from = "di.out"
+to = "xor_.a"
+[[link]]
+from = "k.out"
+to = "xor_.b"
+[[link]]
+from = "di.out"
+to = "not_.in"
+[[link]]
+from = "di.out"
+to = "rd.in"
+[[link]]
+from = "di.out"
+to = "wr.in"
+[[link]]
+from = "rd.out"
+to = "wr.value"
+[[link]]
+from = "di.out"
+to = "chg.in"
+[[link]]
+from = "di.out"
+to = "split.in"
+[[link]]
+from = "split.b0"
+to = "join.b0"
+[[link]]
+from = "split.b1"
+to = "join.b1"
+[[link]]
+from = "split.b2"
+to = "join.b2"
+[[link]]
+from = "split.b3"
+to = "join.b3"
+[[link]]
+from = "split.b4"
+to = "join.b4"
+[[link]]
+from = "split.b5"
+to = "join.b5"
+[[link]]
+from = "split.b6"
+to = "join.b6"
+[[link]]
+from = "split.b7"
+to = "join.b7"
+[[link]]
+from = "di.out"
+to = "lo_hi.in"
+[[link]]
+from = "lo_hi.lo"
+to = "word.lo"
+[[link]]
+from = "lo_hi.hi"
+to = "word.hi"
+[[link]]
+from = "di.out"
+to = "quad.in"
+[[link]]
+from = "quad.b0"
+to = "dword.b0"
+[[link]]
+from = "quad.b1"
+to = "dword.b1"
+[[link]]
+from = "quad.b2"
+to = "dword.b2"
+[[link]]
+from = "quad.b3"
+to = "dword.b3"

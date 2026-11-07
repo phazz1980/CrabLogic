@@ -635,3 +635,94 @@ fn generator_keeps_the_phase_of_the_time_when_scans_skip_phases() {
         }
     }
 }
+
+#[test]
+fn abs_sq_sqrt_match_the_simulation() {
+    // Outputs: xr, nx, d, di and the six blocks under test.
+    compare("crates/crab-sim/tests/fixtures/wasm_math", 12, 40, 100);
+}
+
+#[test]
+fn bit_and_word_blocks_match_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_bits", 32, 60, 100);
+}
+
+#[test]
+fn number_change_scale_table_and_random_match_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_misc", 7, 80, 100);
+}
+
+#[test]
+fn string_change_matches_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_strchg", 4, 40, 100);
+}
+
+#[test]
+fn pid_and_selectors_match_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_ctrl", 36, 100, 100);
+}
+
+#[test]
+fn trigonometry_and_pow_go_through_the_master() {
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_trig")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    assert!(built.manifest.contains("\"math\""), "{}", built.manifest);
+    compare("crates/crab-sim/tests/fixtures/wasm_trig", 11, 50, 100);
+}
+
+#[test]
+fn flash_store_matches_the_simulation() {
+    // Outputs: xr, step, nx, gen, keep, cr, nc.
+    compare("crates/crab-sim/tests/fixtures/wasm_retain", 7, 60, 100);
+}
+
+#[test]
+fn retained_variables_are_loaded_and_saved_through_the_master() {
+    use crab_sim::mcu::StubIo;
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_retain")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    assert!(built.manifest.contains("\"retain\""), "{}", built.manifest);
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let count_at = |module: &McuModule| {
+        let i = built.watched.iter().position(|l| l == "nc.out").unwrap();
+        module.outputs()[i]
+    };
+    let mut first = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    for _ in 0..30 {
+        first.step(100).unwrap();
+    }
+    assert_eq!(count_at(&first), Word::int(30));
+    // Written to flash after the first second and again when the value moved; the flash_store
+    // key holds its float and the counter holds an int.
+    let kept = first.io().retain.clone();
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    let saved = kept
+        .values()
+        .copied()
+        .filter(|v| (1..=30).contains(v))
+        .count();
+    assert_eq!(saved, 1, "{kept:?}");
+    // After a restart the counter goes on from what flash holds.
+    let io = StubIo {
+        retain: kept.clone(),
+        ..Default::default()
+    };
+    let mut second = McuModule::load_with(&built.wasm, &manifest, built.watched.len(), io).unwrap();
+    second.step(100).unwrap();
+    let last = kept
+        .values()
+        .copied()
+        .filter(|v| (1..=30).contains(v))
+        .max()
+        .unwrap();
+    assert_eq!(count_at(&second), Word::int(last + 1));
+}
+
+#[test]
+fn text_selectors_and_variables_match_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_strsel", 10, 40, 100);
+}

@@ -1,0 +1,6 @@
+[project]
+name = "wasm_misc"
+description = "Модуль и симуляция: number_change, scale_table, random"
+
+[board]
+fqbn = "esp32:esp32:esp32"

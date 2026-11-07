@@ -1,0 +1,6 @@
+[project]
+name = "wasm_strchg"
+description = "Модуль и симуляция: string_change"
+
+[board]
+fqbn = "esp32:esp32:esp32"

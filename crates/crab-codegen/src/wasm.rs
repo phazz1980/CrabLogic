@@ -49,7 +49,9 @@ const HW_UART: u32 = HW_BASE + 8;
 const HW_TEXT: u32 = HW_BASE + 9;
 const HW_NET: u32 = HW_BASE + 10;
 const HW_NATIVE: u32 = HW_BASE + 11;
-const HW_NAMES: [&str; 12] = [
+const HW_MATH: u32 = HW_BASE + 12;
+const HW_RETAIN: u32 = HW_BASE + 13;
+const HW_NAMES: [&str; 14] = [
     "gpio_read",
     "gpio_write",
     "adc_read",
@@ -62,6 +64,8 @@ const HW_NAMES: [&str; 12] = [
     "text",
     "net",
     "native",
+    "math",
+    "retain",
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
@@ -179,6 +183,158 @@ fn num(value: &ParamValue, kind: ParamKind) -> f64 {
 }
 
 /// A global: its type and the bits of the initial value.
+impl From<crab_blocks::WTy> for Ty {
+    fn from(t: crab_blocks::WTy) -> Ty {
+        match t {
+            crab_blocks::WTy::I => Ty::I,
+            crab_blocks::WTy::F => Ty::F,
+        }
+    }
+}
+
+impl From<Ty> for crab_blocks::WTy {
+    fn from(t: Ty) -> Self {
+        match t {
+            Ty::I => crab_blocks::WTy::I,
+            Ty::F => crab_blocks::WTy::F,
+        }
+    }
+}
+
+/// What a built-in block sees of the module builder while it writes its code.
+struct BlockEmit<'e, 'a, 'p> {
+    e: &'e mut Emitter<'a, 'p>,
+    inst: &'e Instance<'e>,
+}
+
+impl crab_blocks::WasmEmit for BlockEmit<'_, '_, '_> {
+    fn input_ty(&self, i: usize) -> crab_blocks::WTy {
+        self.e.input_ty(self.inst, i).into()
+    }
+    fn input_as(&mut self, i: usize, want: crab_blocks::WTy) {
+        self.e.input_as(self.inst, i, want.into());
+    }
+    fn op(&mut self, i: I<'static>) {
+        self.e.op(i);
+    }
+    fn c_i(&mut self, x: i32) {
+        self.e.c_i(x);
+    }
+    fn c_f(&mut self, x: f32) {
+        self.e.c_f(x);
+    }
+    fn flag(&mut self, i: usize) {
+        self.e.flag(self.inst, i);
+    }
+    fn const_param(&self, i: usize) -> Result<f64, String> {
+        self.e.const_param(self.inst, i).map_err(|e| e.to_string())
+    }
+    fn state(&mut self, ty: crab_blocks::WTy) -> u32 {
+        self.e.global(ty.into(), &ParamValue::Int(0))
+    }
+    fn set_out(&mut self, i: usize, from: crab_blocks::WTy) {
+        let connected = self
+            .inst
+            .lib
+            .def
+            .outputs
+            .get(i)
+            .is_some_and(|p| self.inst.outputs.contains_key(p.name.as_str()));
+        if connected {
+            self.e.set_out(self.inst, i, from.into());
+        } else {
+            self.e.op(I::Drop);
+        }
+    }
+    fn state_init(&mut self, ty: crab_blocks::WTy, bits: i32) -> u32 {
+        self.e.global(ty.into(), &ParamValue::Int(i64::from(bits)))
+    }
+    fn text_param(&self, i: usize) -> Result<String, String> {
+        let name = self.inst.lib.def.params[i].name.as_str();
+        if self.inst.param_vars.contains_key(name) {
+            return Err(format!("параметр «{name}» из переменной пока не поддержан"));
+        }
+        Ok(self.e.text_param(self.inst, name))
+    }
+    fn when(&mut self, then: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit)) {
+        self.e.op(I::If(BlockType::Empty));
+        then(self);
+        self.e.op(I::End);
+    }
+    fn branch(
+        &mut self,
+        then: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit),
+        other: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit),
+    ) {
+        self.e.op(I::If(BlockType::Empty));
+        then(self);
+        self.e.op(I::Else);
+        other(self);
+        self.e.op(I::End);
+    }
+    fn now(&mut self) {
+        self.e.op(I::GlobalGet(GLOBAL_NOW));
+    }
+    fn block_key(&self) -> i32 {
+        crate::retain::fnv(&format!("block:{}", self.inst.block.id)) as i32
+    }
+    fn output_connected(&self, i: usize) -> bool {
+        self.inst
+            .lib
+            .def
+            .outputs
+            .get(i)
+            .is_some_and(|p| self.inst.outputs.contains_key(p.name.as_str()))
+    }
+    fn out_get(&mut self, i: usize) {
+        self.e.out_get(self.inst, i);
+    }
+    fn retain(&mut self, op: i32, key: i32, value: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit)) {
+        self.e.c_i(op);
+        self.e.c_i(key);
+        value(self);
+        self.e.hw_call(HW_RETAIN);
+    }
+    fn math(&mut self, op: i32, a: u32, b: u32) {
+        self.e.c_i(op);
+        self.e.op(I::LocalGet(a));
+        self.e.op(I::LocalGet(b));
+        self.e.hw_call(HW_MATH);
+    }
+    fn tmp(&mut self, ty: crab_blocks::WTy) -> u32 {
+        self.e.tmp(ty.into())
+    }
+    fn choose(
+        &mut self,
+        ty: crab_blocks::WTy,
+        then: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit),
+        other: &mut dyn FnMut(&mut dyn crab_blocks::WasmEmit),
+    ) {
+        let ty: Ty = ty.into();
+        self.e.op(I::If(BlockType::Result(ty.val())));
+        then(self);
+        self.e.op(I::Else);
+        other(self);
+        self.e.op(I::End);
+    }
+}
+
+/// A variable kept in flash by the master (`retain`).
+#[derive(Clone)]
+struct Retained {
+    name: String,
+    /// Tag number when other sheets share the variable.
+    tag: Option<u32>,
+    ty: Ty,
+    key: i32,
+    /// The initial value as the bits of an `i32`.
+    default: i32,
+    /// The last value known to be in flash, as bits.
+    saved: u32,
+    /// Time of the last check.
+    last: u32,
+}
+
 struct Global {
     ty: Ty,
     bits: u32,
@@ -193,6 +349,8 @@ struct Emitter<'a, 'p> {
     globals: Vec<Global>,
     signals: HashMap<usize, u32>,
     vars: HashMap<String, u32>,
+    /// Text variables of the sheet: a buffer each (`text.rs`).
+    str_vars: HashMap<String, Buf>,
     /// `i32` and `f32` scratch locals in use by the current block (`i32` ones start at 1: local 0 is `dt`).
     scratch_i: u32,
     scratch_f: u32,
@@ -214,6 +372,8 @@ struct Emitter<'a, 'p> {
     consts: HashMap<Vec<u8>, u32>,
     /// Buffers of string signals by signal index.
     bufs: HashMap<usize, Buf>,
+    /// Retained variables this module owns: loaded in `init`, saved from `step`.
+    retained: Vec<Retained>,
 }
 
 /// Blocks per generated function. wasm3 without tail-call optimization (ESP32 build) recurses once
@@ -241,6 +401,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             globals: vec![Global { ty: Ty::I, bits: 0 }],
             signals: HashMap::new(),
             vars: HashMap::new(),
+            str_vars: HashMap::new(),
             scratch_i: 0,
             scratch_f: 0,
             peak_i: 0,
@@ -254,6 +415,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             data: Vec::new(),
             consts: HashMap::new(),
             bufs: HashMap::new(),
+            retained: Vec::new(),
         };
         for &bi in &module.blocks {
             for &signal in program.blocks[bi].outputs.values() {
@@ -266,10 +428,84 @@ impl<'a, 'p> Emitter<'a, 'p> {
             }
         }
         for local in &module.locals {
+            if local.ty == SignalType::String {
+                em.string_var(&local.name, &local.init);
+                continue;
+            }
             let g = em.global(Ty::of(local.ty), &local.init);
             em.vars.insert(local.name.clone(), g);
         }
+        em.collect_retained();
         em
+    }
+
+    /// The retained variables the module owns: its own locals and the tags it writes first.
+    fn collect_retained(&mut self) {
+        let logic = &self.program.project.logic;
+        let mut names: Vec<(String, Option<u32>)> = Vec::new();
+        for l in &self.module.locals {
+            names.push((l.name.clone(), None));
+        }
+        for t in &self.module.tags {
+            if let (TagKind::Var(name), Some(_)) = (&t.tag.kind, &t.init) {
+                names.push((name.clone(), Some(t.tag.number)));
+            }
+        }
+        for (name, tag) in names {
+            let Some(var) = logic.var(&name).filter(|v| v.retain) else {
+                continue;
+            };
+            let ty = Ty::of(var.ty.signal());
+            let init = var.init.clone().unwrap_or(ParamValue::Int(0));
+            let default = match ty {
+                Ty::I => pv(&init) as i32,
+                Ty::F => (pv(&init) as f32).to_bits() as i32,
+            };
+            let (saved, last) = (self.state_i(), self.state_i());
+            self.retained.push(Retained {
+                name,
+                tag,
+                ty,
+                key: crate::retain::key_bits(var) as i32,
+                default,
+                saved,
+                last,
+            });
+        }
+    }
+
+    /// Writes a retained value that changed, at most once a second.
+    fn retain_save(&mut self) {
+        self.scratch_i = 0;
+        self.scratch_f = 0;
+        for r in self.retained.clone() {
+            self.op(I::GlobalGet(GLOBAL_NOW));
+            self.op(I::GlobalGet(r.last));
+            self.op(I::I32Sub);
+            self.c_i(1000);
+            self.op(I::I32GeU);
+            self.op(I::If(BlockType::Empty));
+            self.op(I::GlobalGet(GLOBAL_NOW));
+            self.op(I::GlobalSet(r.last));
+            let bits = self.tmp_i();
+            let ty = self.var_read(&r.name);
+            if ty == Ty::F {
+                self.op(I::I32ReinterpretF32);
+            }
+            self.op(I::LocalTee(bits));
+            self.op(I::GlobalGet(r.saved));
+            self.op(I::I32Ne);
+            self.op(I::If(BlockType::Empty));
+            self.c_i(1);
+            self.c_i(r.key);
+            self.op(I::LocalGet(bits));
+            self.hw_call(HW_RETAIN);
+            self.op(I::Drop);
+            self.op(I::LocalGet(bits));
+            self.op(I::GlobalSet(r.saved));
+            self.op(I::End);
+            self.op(I::End);
+        }
     }
 
     /// A new global of type `ty` with the initial value `init` converted as the model does.
@@ -734,6 +970,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             let program = self.program;
             self.block(&program.blocks[bi])?;
         }
+        self.retain_save();
         Ok(())
     }
 
@@ -1565,6 +1802,18 @@ impl<'a, 'p> Emitter<'a, 'p> {
             return Err(self.unsupported(inst, "строки в этом блоке пока не поддержаны в модулях"));
         }
         let kind = inst.block.kind.as_str();
+        if let Some(code) = crab_blocks::wasm_block(kind) {
+            let ty = code(&mut BlockEmit { e: self, inst })
+                .map_err(|why| self.unsupported(inst, &why))?;
+            if let Some(ty) = ty {
+                if inst.lib.def.outputs.is_empty() {
+                    self.op(I::Drop);
+                } else {
+                    self.set_out(inst, 0, ty.into());
+                }
+            }
+            return Ok(());
+        }
         let ty = match kind {
             "and" => {
                 self.fold_flags(inst, I::I32And, 1);
@@ -2279,6 +2528,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         types.ty().function([ValType::I32; 5], [ValType::I32]); // 11: modbus
         types.ty().function([ValType::I32; 4], [ValType::I32]); // 12: uart
         types.ty().function([ValType::I32; 7], [ValType::I32]); // 13: text
+        types
+            .ty()
+            .function([ValType::I32, ValType::F32, ValType::F32], [ValType::F32]); // 14: math
 
         let mut imports = ImportSection::new();
         imports.import("crab", "tag_get_i", EntityType::Function(0));
@@ -2300,6 +2552,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 HW_MODBUS | HW_NET => 11,
                 HW_UART | HW_NATIVE => 12,
                 HW_TEXT => 13,
+                HW_MATH => 14,
+                HW_RETAIN => 10,
                 _ => 2,
             };
             imports.import("crab", name, EntityType::Function(ty));
@@ -2380,6 +2634,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     I::Call(n) if *n >= HW_BASE => f.instruction(&I::Call(remap(*n))),
                     I::LocalGet(n) => f.instruction(&I::LocalGet(local(*n))),
                     I::LocalSet(n) => f.instruction(&I::LocalSet(local(*n))),
+                    I::LocalTee(n) => f.instruction(&I::LocalTee(local(*n))),
                     other => f.instruction(other),
                 };
             }
@@ -2415,8 +2670,37 @@ impl<'a, 'p> Emitter<'a, 'p> {
         }
 
         // The owner of a tag writes its initial value once.
-        let mut init = Function::new([]);
+        let mut init = Function::new([(1, ValType::I32)]);
+        for r in &self.retained {
+            // The value kept in flash (or the initial one) goes where the variable lives.
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::I32Const(r.key));
+            init.instruction(&I::I32Const(r.default));
+            init.instruction(&I::Call(remap(HW_RETAIN)));
+            init.instruction(&I::LocalTee(0));
+            init.instruction(&I::GlobalSet(r.saved));
+            match r.tag {
+                Some(n) => {
+                    init.instruction(&I::I32Const(n as i32));
+                    init.instruction(&I::LocalGet(0));
+                    if r.ty == Ty::F {
+                        init.instruction(&I::F32ReinterpretI32);
+                    }
+                    init.instruction(&I::Call(if r.ty == Ty::F { TAG_SET_F } else { TAG_SET_I }));
+                }
+                None => {
+                    init.instruction(&I::LocalGet(0));
+                    if r.ty == Ty::F {
+                        init.instruction(&I::F32ReinterpretI32);
+                    }
+                    init.instruction(&I::GlobalSet(self.vars[&r.name]));
+                }
+            }
+        }
         for t in &self.module.tags {
+            if self.retained.iter().any(|r| r.tag == Some(t.tag.number)) {
+                continue;
+            }
             if let Some(value) = &t.init {
                 init.instruction(&I::I32Const(t.tag.number as i32));
                 let ty = Ty::of(t.tag.ty);

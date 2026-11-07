@@ -55,6 +55,8 @@ const HARDWARE: &[&str] = &[
     "text",
     "net",
     "native",
+    "math",
+    "retain",
 ];
 
 const FUEL_PER_CALL: u64 = 5_000_000;
@@ -75,6 +77,32 @@ pub struct Manifest {
     /// Linear memory the module needs, in 64 KiB pages (0 when it has none or declares it itself).
     #[serde(default)]
     pub memory_pages: u32,
+    /// Topics the module declares: kind and size limit (`specs/pubsub-bus`).
+    #[serde(default)]
+    pub topics: Vec<TopicDecl>,
+    /// How many event messages may wait for the module; 0 means the default.
+    #[serde(default)]
+    pub queue: usize,
+}
+
+/// What a topic keeps: the last value (`state`) or a queue of messages (`event`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TopicKind {
+    State,
+    #[default]
+    Event,
+}
+
+/// One topic of the module manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TopicDecl {
+    pub name: String,
+    #[serde(default)]
+    pub kind: TopicKind,
+    /// Longest message in bytes; 0 means the default.
+    #[serde(default)]
+    pub max_len: usize,
 }
 
 /// One 4-byte value slot: the bits of an `i32` (`bool`, `int`) or an `f32` (`float`).
@@ -139,6 +167,8 @@ pub struct StubIo {
     pub pcf_in: HashMap<(i32, i32), i32>,
     /// The last byte the module handed over for a chip, by key.
     pub pcf_out: HashMap<i32, i32>,
+    /// Words kept "in flash" by `retain`, by key.
+    pub retain: HashMap<i32, i32>,
     /// Modbus settings the module handed over, as `(code, value)` in order (the apply call is code 63).
     pub modbus_cfg: Vec<(i32, i32)>,
     /// What a Modbus read returns, by `(slave, table | kind << 4 | master << 8, register)`; the bits of an int or float.
@@ -238,6 +268,17 @@ pub struct McuModule {
 impl McuModule {
     /// Checks imports against the manifest, loads the module, checks `abi_version` and runs `init`.
     pub fn load(wasm: &[u8], manifest: &Manifest, n_outputs: usize) -> Result<Self, String> {
+        Self::load_with(wasm, manifest, n_outputs, StubIo::default())
+    }
+
+    /// Like [`McuModule::load`], with the stub hardware already set up (what the master reports,
+    /// values kept in flash) before the module's `init` runs.
+    pub fn load_with(
+        wasm: &[u8],
+        manifest: &Manifest,
+        n_outputs: usize,
+        io: StubIo,
+    ) -> Result<Self, String> {
         let mut config = wasmi::Config::default();
         config.consume_fuel(true);
         let engine = Engine::new(&config);
@@ -252,7 +293,7 @@ impl McuModule {
                 params: Vec::new(),
                 outputs: vec![Word::default(); n_outputs],
                 tags: HashMap::new(),
-                io: StubIo::default(),
+                io,
                 subscriptions: Vec::new(),
                 published: Vec::new(),
                 log: Vec::new(),
@@ -543,6 +584,34 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
         .func_wrap("crab", "adc_read", |c: Caller<'_, Host>, pin: i32| -> i32 {
             c.data().io.adc_in.get(&pin).copied().unwrap_or(0)
         })
+        .map_err(bad)?
+        // `retain(op, key, value)`: 0 reads (the value is the default), 1 writes.
+        .func_wrap(
+            "crab",
+            "retain",
+            |mut c: Caller<'_, Host>, op: i32, key: i32, value: i32| -> i32 {
+                if op == 0 {
+                    c.data().io.retain.get(&key).copied().unwrap_or(value)
+                } else {
+                    c.data_mut().io.retain.insert(key, value);
+                    1
+                }
+            },
+        )
+        .map_err(bad)?
+        // `math(op, a, b)`: 0 sin, 1 cos, 2 tan, 3 pow (32 bit, like `sinf` and friends).
+        .func_wrap(
+            "crab",
+            "math",
+            |_: Caller<'_, Host>, op: i32, a: f32, b: f32| -> f32 {
+                match op {
+                    0 => a.sin(),
+                    1 => a.cos(),
+                    2 => a.tan(),
+                    _ => a.powf(b),
+                }
+            },
+        )
         .map_err(bad)?
         .func_wrap(
             "crab",

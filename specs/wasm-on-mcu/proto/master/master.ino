@@ -13,6 +13,9 @@
 //   swap <name>      reload the module from LittleFS      list      stats      log      del <name>
 //   ev <name>        changes of 0/1 outputs since the last `ev`: `ev <name> <now_ms> <lost> <idx>:<val>:<ms> ...`
 //   rmax             forget the longest step / period of all modules
+//   topic <name> <state|event> <maxlen>   bus topic: last value or queue, longest message (<= 64)
+//   queue <module> <n>                    event queue of a module (1..16, default 8)
+//   bus                                   queue size and lost events per module; per topic kind, refused, last value
 // `list` gives per module `us=<last>/<max>/<period max>/<sum>` (step time, us) and the line `caps=ev,us`.
 #include <LittleFS.h>
 #include <esp_crc.h>
@@ -62,7 +65,7 @@ static const int kJournal = 24;
 
 enum { P_GPIO_READ = 1, P_GPIO_WRITE = 2, P_ADC = 4, P_PWM = 8, P_MILLIS = 16, P_SENSOR = 32,
        P_PCF_READ = 64, P_PCF_WRITE = 128, P_MODBUS = 256, P_UART = 512, P_TEXT = 1024, P_NET = 2048,
-       P_NATIVE = 4096 };
+       P_NATIVE = 4096, P_MATH = 8192, P_RETAIN = 16384 };
 
 #if defined(CRAB_SENSORS) || defined(CRAB_PCF) || defined(CRAB_MODBUS) || defined(CRAB_NET)
 #define CRAB_HWTASK 1
@@ -112,7 +115,10 @@ static Pcf g_pcf[kMaxPcf];
 static bool g_wireStarted = false;
 #endif
 
+struct Topic;
 struct Msg { char topic[24]; uint8_t data[64]; uint8_t len; };
+// Bus limits (specs/pubsub-bus): a queue of up to kQueueMax messages per module (kQueueDefault unless `queue` says more).
+static const int kQueueMax = 16, kQueueDefault = 8, kMaxTopics = 16;
 
 struct Slot {
   bool used = false;
@@ -139,8 +145,10 @@ struct Slot {
   volatile uint32_t evLost = 0;
   char subs[4][24];
   int nSubs = 0;
-  Msg queue[4];
-  volatile int qHead = 0, qTail = 0;
+  Msg queue[kQueueMax];
+  volatile int qHead = 0, qCount = 0;
+  volatile int qCap = kQueueDefault;
+  volatile uint32_t qLost = 0;  // event messages dropped because the queue was full
   uint32_t outputs[kMaxOutputs], inputs[8], params[8];  // bits of i32 / f32
   uint32_t forceVal[kMaxOutputs];                         // value shown instead of the module's own
   bool forced[kMaxOutputs];
@@ -176,6 +184,59 @@ static void jlog(const char *name, const char *fmt, ...) {
   e.ms = millis();
   snprintf(e.text, sizeof e.text, "[%s] %s", name, buf);
   portEXIT_CRITICAL(&g_mux);
+}
+
+// ---- internal bus: topics and bounded queues (same rules as crab-sim `bus.rs`) ----
+struct Topic {
+  char name[24];
+  bool state;       // true: keeps the last value; false: event (queue)
+  uint8_t maxLen;   // longest message, <= 64
+  bool hasLast;
+  uint8_t lastLen;
+  uint8_t last[64];
+  volatile uint32_t refused;
+};
+static Topic g_topics[kMaxTopics];
+static int g_nTopics = 0;
+static Topic *findTopic(const char *name) {
+  for (int i = 0; i < g_nTopics; i++)
+    if (!strcmp(g_topics[i].name, name)) return &g_topics[i];
+  return nullptr;
+}
+// Unknown topics are events with the default limit; created on first use while there is room.
+static Topic *topicFor(const char *name, bool create) {
+  Topic *t = findTopic(name);
+  if (t || !create || g_nTopics >= kMaxTopics) return t;
+  t = &g_topics[g_nTopics++];
+  memset(t, 0, sizeof *t);
+  strncpy(t->name, name, sizeof t->name - 1);
+  t->maxLen = 64;
+  return t;
+}
+// Caller holds g_mux. A state value replaces a pending older one of its topic; a full queue drops the oldest.
+static void enqueue(Slot &d, const char *topic, const uint8_t *data, uint8_t len, bool state) {
+  if (state) {
+    int w = 0;
+    for (int r = 0; r < d.qCount; r++) {
+      int from = (d.qHead + r) % kQueueMax;
+      if (!strcmp(d.queue[from].topic, topic)) continue;
+      if (w != r) d.queue[(d.qHead + w) % kQueueMax] = d.queue[from];
+      w++;
+    }
+    d.qCount = w;
+  }
+  int cap = d.qCap < 1 ? 1 : (d.qCap > kQueueMax ? kQueueMax : d.qCap);
+  while (d.qCount >= cap) {
+    d.qHead = (d.qHead + 1) % kQueueMax;
+    d.qCount--;
+    d.qLost++;
+  }
+  Msg &m = d.queue[(d.qHead + d.qCount) % kQueueMax];
+  strncpy(m.topic, topic, sizeof m.topic - 1);
+  m.topic[sizeof m.topic - 1] = 0;
+  memcpy(m.data, data, len);
+  m.len = len;
+  d.qCount++;
 }
 
 // ---- host functions (userdata = Slot*) ----
@@ -265,6 +326,11 @@ m3ApiRawFunction(h_subscribe) {
     memcpy(s->subs[s->nSubs], (uint8_t *)_mem + p, l);
     s->subs[s->nSubs][l] = 0;
     s->nSubs++;
+    // A new subscriber of a state topic gets its last value at once.
+    portENTER_CRITICAL(&g_mux);
+    Topic *t = findTopic(s->subs[s->nSubs - 1]);
+    if (t && t->state && t->hasLast) enqueue(*s, t->name, t->last, t->lastLen, true);
+    portEXIT_CRITICAL(&g_mux);
   }
   m3ApiSuccess();
 }
@@ -277,22 +343,27 @@ m3ApiRawFunction(h_publish) {
     char topic[24];
     memcpy(topic, (uint8_t *)_mem + tp, tl);
     topic[tl] = 0;
-    for (auto &d : g_slots) {
-      if (!d.used || !d.task) continue;
-      for (int i = 0; i < d.nSubs; i++) {
-        if (strcmp(d.subs[i], topic)) continue;
-        portENTER_CRITICAL(&g_mux);
-        int next = (d.qTail + 1) % 4;
-        if (next != d.qHead) {
-          Msg &m = d.queue[d.qTail];
-          strcpy(m.topic, topic);
-          memcpy(m.data, (uint8_t *)_mem + p, l);
-          m.len = l;
-          d.qTail = next;
+    portENTER_CRITICAL(&g_mux);
+    Topic *t = topicFor(topic, true);
+    if (t && l > t->maxLen) {
+      t->refused++;  // longer than the topic allows
+    } else {
+      bool state = t && t->state;
+      if (state) {
+        memcpy(t->last, (uint8_t *)_mem + p, l);
+        t->lastLen = l;
+        t->hasLast = true;
+      }
+      for (auto &d : g_slots) {
+        if (!d.used || !d.task) continue;
+        for (int i = 0; i < d.nSubs; i++) {
+          if (strcmp(d.subs[i], topic)) continue;
+          enqueue(d, topic, (uint8_t *)_mem + p, l, state);
+          break;
         }
-        portEXIT_CRITICAL(&g_mux);
       }
     }
+    portEXIT_CRITICAL(&g_mux);
   }
   m3ApiSuccess();
 }
@@ -329,6 +400,31 @@ m3ApiRawFunction(h_pwm_write) {
   m3ApiGetArg(int32_t, v);  // 8 bits, 0..255
   analogWrite(pin, v);
   m3ApiSuccess();
+}
+// math(op, a, b): 0 sin, 1 cos, 2 tan, 3 pow, on 32 bit floats (a module has no libm).
+m3ApiRawFunction(h_math) {
+  m3ApiReturnType(float);
+  m3ApiGetArg(int32_t, op);
+  m3ApiGetArg(float, a);
+  m3ApiGetArg(float, b);
+  float r = op == 0 ? sinf(a) : op == 1 ? cosf(a) : op == 2 ? tanf(a) : powf(a, b);
+  m3ApiReturn(r);
+}
+// retain(op, key, value): values that survive a restart, as 32-bit words under `k<key>` in the NVS
+// namespace "crab_mod". op 0 reads (`value` is the default), op 1 writes only a changed value.
+static Preferences g_retPrefs;
+static bool g_retOpen = false;
+m3ApiRawFunction(h_retain) {
+  m3ApiReturnType(int32_t);
+  m3ApiGetArg(int32_t, op);
+  m3ApiGetArg(int32_t, key);
+  m3ApiGetArg(int32_t, val);
+  char k[12];
+  snprintf(k, sizeof k, "k%08x", (unsigned)key);
+  if (!g_retOpen) m3ApiReturn(op == 0 ? val : 0);
+  if (op == 0) m3ApiReturn((int32_t)g_retPrefs.getUInt(k, (uint32_t)val));
+  if ((int32_t)g_retPrefs.getUInt(k, ~(uint32_t)val) != val) g_retPrefs.putUInt(k, (uint32_t)val);
+  m3ApiReturn(1);
 }
 m3ApiRawFunction(h_millis) {
   m3ApiReturnType(int32_t);
@@ -1902,6 +1998,8 @@ static void linkAll(Slot &s, IM3Module m) {
   if (s.perms & P_GPIO_WRITE) L("gpio_write", "v(ii)", h_gpio_write);
   if (s.perms & P_ADC) L("adc_read", "i(i)", h_adc_read);
   if (s.perms & P_PWM) L("pwm_write", "v(ii)", h_pwm_write);
+  if (s.perms & P_MATH) L("math", "f(iff)", h_math);
+  if (s.perms & P_RETAIN) L("retain", "i(iii)", h_retain);
   if (s.perms & P_MILLIS) L("millis", "i()", h_millis);
 #ifdef CRAB_SENSORS
   if (s.perms & P_SENSOR) L("sensor_read", "f(iii)", h_sensor_read);
@@ -1943,6 +2041,8 @@ static uint16_t parsePerms(const String &a) {
   if (a.indexOf("text") >= 0) p |= P_TEXT;
   if (a.indexOf("net") >= 0) p |= P_NET;
   if (a.indexOf("native") >= 0) p |= P_NATIVE;
+  if (a.indexOf("math") >= 0) p |= P_MATH;
+  if (a.indexOf("retain") >= 0) p |= P_RETAIN;
   return p;
 }
 
@@ -1963,7 +2063,7 @@ static void stopSlot(Slot &s) {
   s.inStep = false;
   s.needRestart = false;
   s.nSubs = 0;
-  s.qHead = s.qTail = 0;
+  s.qHead = s.qCount = 0;
 }
 
 static bool startSlot(Slot &s, bool paused = false) {
@@ -2032,10 +2132,11 @@ static void deliver(Slot &s) {
   for (;;) {
     Msg m;
     portENTER_CRITICAL(&g_mux);
-    bool have = s.qHead != s.qTail;
+    bool have = s.qCount > 0;
     if (have) {
       m = s.queue[s.qHead];
-      s.qHead = (s.qHead + 1) % 4;
+      s.qHead = (s.qHead + 1) % kQueueMax;
+      s.qCount--;
     }
     portEXIT_CRITICAL(&g_mux);
     if (!have) return;
@@ -2269,9 +2370,52 @@ static void cmdTest(const String &line) {
   }
 }
 
+// topic <name> <state|event> <maxlen>   declare a bus topic (maxlen <= 64)
+// queue <module> <n>                    event queue of a module (1..kQueueMax)
+// bus                                   per module `queue/lost`, per topic `kind/max/refused/last`
+static void cmdBus(const String &line) {
+  char a[32], b[32];
+  unsigned n = 0;
+  if (line == "bus") {
+    for (auto &s : g_slots)
+      if (s.used) Serial.printf("bus %s queue=%d lost=%u\n", s.name, (int)s.qCap, (unsigned)s.qLost);
+    for (int i = 0; i < g_nTopics; i++) {
+      Topic &t = g_topics[i];
+      Serial.printf("topic %s %s max=%u refused=%u last=", t.name, t.state ? "state" : "event", (unsigned)t.maxLen, (unsigned)t.refused);
+      if (t.state && t.hasLast)
+        for (int k = 0; k < t.lastLen; k++) Serial.printf("%02x", t.last[k]);
+      else
+        Serial.print("-");
+      Serial.println();
+    }
+    Serial.println("ok");
+  } else if (sscanf(line.c_str(), "topic %31s %31s %u", a, b, &n) == 3 && strlen(a) < 24 && (!strcmp(b, "state") || !strcmp(b, "event")) && n >= 1 && n <= 64) {
+    portENTER_CRITICAL(&g_mux);
+    Topic *t = topicFor(a, true);
+    if (t) {
+      t->state = !strcmp(b, "state");
+      t->maxLen = n;
+    }
+    portEXIT_CRITICAL(&g_mux);
+    Serial.println(t ? "ok" : "err too many topics");
+  } else if (sscanf(line.c_str(), "queue %31s %u", a, &n) == 2 && n >= 1 && n <= (unsigned)kQueueMax) {
+    Slot *s = findSlot(a, false);
+    if (!s) {
+      Serial.println("err no such module");
+      return;
+    }
+    s->qCap = n;
+    Serial.println("ok");
+  } else {
+    Serial.println("err bad bus command");
+  }
+}
+
 static void cmdLine(String line) {
   line.trim();
-  if (line.startsWith("in ") || line.startsWith("param ") || line.startsWith("tick ") || line.startsWith("out ") || line.startsWith("ev ") || line.startsWith("reset ") || line.startsWith("force ") || line.startsWith("unforce ")) {
+  if (line.startsWith("topic ") || line.startsWith("queue ") || line == "bus") {
+    cmdBus(line);
+  } else if (line.startsWith("in ") || line.startsWith("param ") || line.startsWith("tick ") || line.startsWith("out ") || line.startsWith("ev ") || line.startsWith("reset ") || line.startsWith("force ") || line.startsWith("unforce ")) {
     cmdTest(line);
   } else if (line.startsWith("put ")) {
     cmdPut(line);
@@ -2289,8 +2433,8 @@ static void cmdLine(String line) {
   } else if (line == "list" || line == "stats") {
     for (auto &s : g_slots)
       if (s.used)
-        Serial.printf("%s %s steps=%u restarts=%u out0=%08x us=%u/%u/%u/%u crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)s.lastUs, (unsigned)s.maxUs, (unsigned)s.periodMaxUs, (unsigned)s.sumUs, (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
-    Serial.println("caps=ev,us");
+        Serial.printf("%s %s steps=%u restarts=%u out0=%08x us=%u/%u/%u/%u qlost=%u crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)s.lastUs, (unsigned)s.maxUs, (unsigned)s.periodMaxUs, (unsigned)s.sumUs, (unsigned)s.qLost, (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
+    Serial.println("caps=ev,us,bus");
     uint32_t ip = 0;
 #ifdef CRAB_WIFI
     if (g_net.complete) ip = g_net.ip;
@@ -2343,6 +2487,7 @@ void setup() {
   g_sensorLock = xSemaphoreCreateMutex();
   xTaskCreate(hwTask, "hardware", 4096, nullptr, 1, nullptr);
 #endif
+  g_retOpen = g_retPrefs.begin("crab_mod", false);
   if (!LittleFS.begin(true)) Serial.println("LittleFS failed");
   LittleFS.mkdir("/modules");
   File dir = LittleFS.open("/modules");

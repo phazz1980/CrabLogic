@@ -12,6 +12,7 @@
 //! Indexes follow the order of ports and parameters in `block.toml`.
 
 pub mod builtin;
+pub mod bus;
 pub mod mcu;
 pub mod schema;
 

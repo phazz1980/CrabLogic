@@ -1,0 +1,6 @@
+[project]
+name = "wasm_bits"
+description = "Модуль и симуляция: биты и слова"
+
+[board]
+fqbn = "esp32:esp32:esp32"

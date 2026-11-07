@@ -17,11 +17,21 @@ const SAVE_PERIOD_MS: u32 = 1000;
 /// NVS key of a variable: at most 15 characters, and changes with the type so
 /// a value saved under another type is not read back.
 fn key(var: &Var) -> String {
+    format!("v{:08x}", key_bits(var))
+}
+
+/// FNV-1a of a text: the numeric key a module passes to the master's `retain`.
+pub fn fnv(text: &str) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
-    for b in format!("{}:{}", var.name, var.ty.cpp()).bytes() {
+    for b in text.bytes() {
         hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
     }
-    format!("v{hash:08x}")
+    hash
+}
+
+/// The hash inside [`key`].
+pub fn key_bits(var: &Var) -> u32 {
+    fnv(&format!("{}:{}", var.name, var.ty.cpp()))
 }
 
 fn saved_name(var: &Var) -> String {

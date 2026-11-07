@@ -1,0 +1,48 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 0.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "txt"
+type = "num_to_text"
+decimals = 0
+prefix = "n="
+
+[[block]]
+id = "chg"
+type = "string_change"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "txt.in"
+[[link]]
+from = "txt.out"
+to = "chg.in"

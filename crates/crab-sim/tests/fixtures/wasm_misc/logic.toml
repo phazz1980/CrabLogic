@@ -1,0 +1,63 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 3.75
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "chg"
+type = "number_change"
+deadband = 10.0
+
+[[block]]
+id = "tab"
+type = "scale_table"
+points = "0:0;50:20;100:100;180:-40"
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "200ms"
+time_off = "300ms"
+
+[[block]]
+id = "rnd"
+type = "random"
+min = -5.0
+max = 7.5
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "chg.in"
+[[link]]
+from = "xr.out"
+to = "tab.in"
+[[link]]
+from = "gen.out"
+to = "rnd.en"

@@ -1,0 +1,6 @@
+[project]
+name = "wasm_math"
+description = "Модуль и симуляция: abs, sq, sqrt на float и int"
+
+[board]
+fqbn = "esp32:esp32:esp32"

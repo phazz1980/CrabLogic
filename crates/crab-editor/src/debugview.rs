@@ -692,6 +692,14 @@ pub fn diagnostics_window(
                     ui.label(crate::i18n::tr("Циклов за 0,5 с"));
                     ui.monospace(s.cycles.to_string());
                     ui.end_row();
+                    if s.bus_lost > 0 {
+                        ui.label(crate::i18n::tr("Потеряно сообщений шины"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Очередь модуля переполнилась, самое старое сообщение выброшено",
+                            ));
+                        ui.monospace(s.bus_lost.to_string());
+                        ui.end_row();
+                    }
                     if s.free_heap > 0 {
                         ui.label(crate::i18n::tr("Свободная память"));
                         ui.monospace(crate::i18n::fmt("{0} КБ", &[&(s.free_heap / 1024)]));

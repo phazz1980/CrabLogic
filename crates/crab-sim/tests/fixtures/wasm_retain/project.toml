@@ -1,0 +1,6 @@
+[project]
+name = "wasm_retain"
+description = "Модуль и симуляция: flash_store, сохраняемые переменные"
+
+[board]
+fqbn = "esp32:esp32:esp32"

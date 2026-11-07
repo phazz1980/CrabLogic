@@ -6,3 +6,4 @@ description = "Built-in hardware-free blocks written in Rust: simulation step an
 
 [dependencies]
 crab-core = { path = "../crab-core" }
+wasm-encoder = "0.263.0"

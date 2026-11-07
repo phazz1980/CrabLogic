@@ -1,0 +1,141 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[var]]
+name = "s"
+type = "string"
+init = "start"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 0.25
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "sel"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "500ms"
+time_off = "700ms"
+
+[[block]]
+id = "m"
+type = "mux"
+count = 3
+const = { a = "aa", b = "bbbb", c = "c" }
+
+[[block]]
+id = "ml"
+type = "text_length"
+
+[[block]]
+id = "xyz"
+type = "text_const"
+value = "xyz"
+
+[[block]]
+id = "sw"
+type = "switch"
+
+[[block]]
+id = "swl"
+type = "text_length"
+
+[[block]]
+id = "vs"
+type = "var_set"
+var = "s"
+write_enable = true
+
+[[block]]
+id = "vg"
+type = "var_get"
+var = "s"
+
+[[block]]
+id = "vgl"
+type = "text_length"
+
+[[block]]
+id = "dm"
+type = "dms"
+count = 2
+
+[[block]]
+id = "l1"
+type = "text_length"
+
+[[block]]
+id = "l2"
+type = "text_length"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "sel.in"
+[[link]]
+from = "sel.out"
+to = "m.sel"
+[[link]]
+from = "m.out"
+to = "ml.in"
+[[link]]
+from = "gen.out"
+to = "sw.sel"
+[[link]]
+from = "xyz.out"
+to = "sw.a"
+[[link]]
+from = "m.out"
+to = "sw.b"
+[[link]]
+from = "sw.out"
+to = "swl.in"
+[[link]]
+from = "m.out"
+to = "vs.in"
+[[link]]
+from = "gen.out"
+to = "vs.en"
+[[link]]
+from = "vg.out"
+to = "vgl.in"
+[[link]]
+from = "sel.out"
+to = "dm.sel"
+[[link]]
+from = "m.out"
+to = "dm.in"
+[[link]]
+from = "dm.o1"
+to = "l1.in"
+[[link]]
+from = "dm.o2"
+to = "l2.in"

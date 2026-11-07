@@ -1,0 +1,97 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 1.25
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "shift"
+type = "constant"
+value = 20.0
+
+[[block]]
+id = "d"
+type = "sub"
+
+[[block]]
+id = "di"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "abs_f"
+type = "abs"
+
+[[block]]
+id = "abs_i"
+type = "abs"
+
+[[block]]
+id = "sq_f"
+type = "sq"
+
+[[block]]
+id = "sq_i"
+type = "sq"
+
+[[block]]
+id = "root_f"
+type = "sqrt"
+
+[[block]]
+id = "root_i"
+type = "sqrt"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "d.a"
+[[link]]
+from = "shift.out"
+to = "d.b"
+[[link]]
+from = "d.out"
+to = "di.in"
+[[link]]
+from = "d.out"
+to = "abs_f.in"
+[[link]]
+from = "di.out"
+to = "abs_i.in"
+[[link]]
+from = "d.out"
+to = "sq_f.in"
+[[link]]
+from = "di.out"
+to = "sq_i.in"
+[[link]]
+from = "d.out"
+to = "root_f.in"
+[[link]]
+from = "di.out"
+to = "root_i.in"

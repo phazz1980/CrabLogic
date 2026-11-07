@@ -72,7 +72,7 @@ pub enum SheetError {
     #[error("на листе {0} нет блоков или он выключен")]
     Empty(u32),
     #[error(
-        "лист {sheet}: переменная «{var}» хранится во флеш; в модулях сохранение пока не поддержано"
+        "лист {sheet}: строковая переменная «{var}» хранится во флеш; в модулях сохраняются только числа и логические"
     )]
     Retain { sheet: u32, var: String },
 }
@@ -179,7 +179,7 @@ impl Program<'_> {
             let Some(var) = logic.var(name) else {
                 return Ok(());
             };
-            if var.retain {
+            if var.retain && var.ty.signal() == SignalType::String {
                 return Err(SheetError::Retain {
                     sheet,
                     var: name.to_owned(),
@@ -200,7 +200,10 @@ impl Program<'_> {
                     .find(|t| t.kind == TagKind::Var(name.to_owned()))
                 {
                     Some(tag) => {
-                        if logic.var(&name).is_some_and(|v| v.retain) {
+                        if logic
+                            .var(&name)
+                            .is_some_and(|v| v.retain && v.ty.signal() == SignalType::String)
+                        {
                             return Err(SheetError::Retain {
                                 sheet,
                                 var: name.to_owned(),

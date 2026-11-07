@@ -1118,6 +1118,7 @@ name = "crab-blocks"
 version = "1.5.0"
 dependencies = [
  "crab-core",
+ "wasm-encoder",
 ]
 
 [[package]]

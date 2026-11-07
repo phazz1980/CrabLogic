@@ -1,0 +1,6 @@
+[project]
+name = "wasm_ctrl"
+description = "Модуль и симуляция: pid, dms, decoder, encoder"
+
+[board]
+fqbn = "esp32:esp32:esp32"

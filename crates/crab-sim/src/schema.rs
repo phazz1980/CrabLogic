@@ -361,7 +361,9 @@ impl Simulation {
                             .get(&port.name)
                             .or(port.default.as_ref())
                             .map(|v| match v {
-                                ParamValue::Text(s) if port.ty == SignalType::String => {
+                                ParamValue::Text(s)
+                                    if matches!(port.ty, SignalType::String | SignalType::Same) =>
+                                {
                                     Source::Text(s.clone())
                                 }
                                 v => Source::Value(plain_number(v)),

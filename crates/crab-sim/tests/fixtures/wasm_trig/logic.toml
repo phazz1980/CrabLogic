@@ -1,0 +1,94 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 7.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "sn"
+type = "sin"
+
+[[block]]
+id = "cs"
+type = "cos"
+
+[[block]]
+id = "tn"
+type = "tan"
+
+[[block]]
+id = "sn_r"
+type = "sin"
+unit = 1
+
+[[block]]
+id = "cs_r"
+type = "cos"
+unit = 1
+
+[[block]]
+id = "two"
+type = "constant"
+value = 2.0
+
+[[block]]
+id = "pw"
+type = "pow"
+
+[[block]]
+id = "pw3"
+type = "pow"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "sn.in"
+[[link]]
+from = "xr.out"
+to = "cs.in"
+[[link]]
+from = "xr.out"
+to = "tn.in"
+[[link]]
+from = "xr.out"
+to = "sn_r.in"
+[[link]]
+from = "xr.out"
+to = "cs_r.in"
+[[link]]
+from = "xr.out"
+to = "pw.a"
+[[link]]
+from = "two.out"
+to = "pw.b"
+[[link]]
+from = "two.out"
+to = "pw3.a"
+[[link]]
+from = "xr.out"
+to = "pw3.b"

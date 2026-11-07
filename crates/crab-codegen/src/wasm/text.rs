@@ -10,7 +10,8 @@ const MEM_PAGE: u32 = 65536;
 pub(super) const MEM_START: u32 = 16;
 /// Buffer size of a string signal; longer text is cut (the built-in simulator keeps all of it).
 const STR_CAP: u32 = 128;
-const TEXT_KINDS: [&str; 12] = [
+const TEXT_KINDS: [&str; 13] = [
+    "string_change",
     "ip_to_text",
     "text_to_ip",
     "text_const",
@@ -175,9 +176,16 @@ impl Emitter<'_, '_> {
         match &input.source {
             Source::Default(ParamValue::Text(t)) => Ok(self.const_str(t.as_bytes())),
             Source::Default(_) => Ok(empty),
-            Source::Var(_) => {
-                Err(self.unsupported(inst, "строковые переменные пока не поддержаны в модулях"))
-            }
+            Source::Var(name) => match self.str_vars.get(name) {
+                Some(b) => Ok(Str {
+                    ptr: b.ptr,
+                    len: Len::Global(b.len),
+                }),
+                None => Err(self.unsupported(
+                    inst,
+                    "строковая переменная общая с другим листом: в модулях это пока не поддержано",
+                )),
+            },
             Source::Signal { index, .. } => match self.bufs.get(index) {
                 Some(b) => Ok(Str {
                     ptr: b.ptr,
@@ -262,14 +270,201 @@ impl Emitter<'_, '_> {
     }
 
     /// The blocks of the "Строки" group.
+    /// The buffer of a text variable that lives in this module (its initial text is in memory).
+    pub(super) fn string_var(&mut self, name: &str, init: &ParamValue) {
+        let text = match init {
+            ParamValue::Text(t) => t.as_bytes()[..t.len().min(STR_CAP as usize)].to_vec(),
+            _ => Vec::new(),
+        };
+        let ptr = self.alloc(STR_CAP);
+        if !text.is_empty() {
+            self.data.push((ptr, text.clone()));
+        }
+        let len = self.global(Ty::I, &ParamValue::Int(text.len() as i64));
+        self.str_vars.insert(
+            name.to_owned(),
+            Buf {
+                ptr,
+                cap: STR_CAP,
+                len,
+            },
+        );
+    }
+
+    /// `out = s` (cut to the room of `out`).
+    fn copy_str(&mut self, out: Buf, s: Str) {
+        self.append(out, s, None);
+        self.op(I::GlobalSet(out.len));
+    }
+
+    /// `switch`, `mux`, `dms`, `var_get` and `var_set` on texts; other types stay with `block`.
+    fn string_select(&mut self, inst: &Instance) -> Result<bool, WasmError> {
+        let has_string = inst.inputs.values().any(|i| i.ty == SignalType::String)
+            || inst
+                .outputs
+                .values()
+                .any(|&s| self.program.signals[s].ty == SignalType::String);
+        if !has_string {
+            return Ok(false);
+        }
+        self.string_outputs_ok(inst)?;
+        let port = |i: usize| inst.lib.def.inputs[i].name.clone();
+        match inst.block.kind.as_str() {
+            "switch" => {
+                if let Some(out) = self.out_buf(inst, "out") {
+                    let (a, b) = (self.str_in(inst, "a")?, self.str_in(inst, "b")?);
+                    self.flag(inst, 0);
+                    self.op(I::If(BlockType::Empty));
+                    self.copy_str(out, b);
+                    self.op(I::Else);
+                    self.copy_str(out, a);
+                    self.op(I::End);
+                }
+            }
+            "mux" => {
+                let Some(out) = self.out_buf(inst, "out") else {
+                    return Ok(true);
+                };
+                let count = inst
+                    .lib
+                    .def
+                    .inputs
+                    .iter()
+                    .skip(1)
+                    .filter(|p| inst.inputs.contains_key(p.name.as_str()))
+                    .count()
+                    .max(1);
+                let s = self.tmp_i();
+                self.input_as(inst, 0, Ty::I);
+                self.c_i(0);
+                self.pick(Ty::I, true);
+                self.op(I::LocalSet(s));
+                for j in 0..count - 1 {
+                    let from = self.str_in(inst, &port(1 + j))?;
+                    self.op(I::LocalGet(s));
+                    self.c_i(j as i32);
+                    self.op(I::I32Eq);
+                    self.op(I::If(BlockType::Empty));
+                    self.copy_str(out, from);
+                    self.op(I::Else);
+                }
+                let last = self.str_in(inst, &port(count))?;
+                self.copy_str(out, last);
+                for _ in 0..count - 1 {
+                    self.op(I::End);
+                }
+            }
+            "dms" => {
+                let count = self.named_param(inst, "count")?.clamp(0, 16);
+                let from = self.str_in(inst, "in")?;
+                let s = self.tmp_i();
+                self.input_as(inst, 0, Ty::I);
+                self.op(I::LocalSet(s));
+                for i in 0..count {
+                    let Some(out) = self.out_buf(inst, &format!("o{}", i + 1)) else {
+                        continue;
+                    };
+                    self.op(I::LocalGet(s));
+                    self.c_i(i);
+                    self.op(I::I32Eq);
+                    self.op(I::If(BlockType::Empty));
+                    self.copy_str(out, from);
+                    self.op(I::Else);
+                    self.c_i(0);
+                    self.op(I::GlobalSet(out.len));
+                    self.op(I::End);
+                }
+            }
+            "var_get" => {
+                let name = inst.block.var_name().unwrap_or_default().to_owned();
+                let Some(&var) = self.str_vars.get(&name) else {
+                    return Err(self.unsupported(
+                        inst,
+                        "строковая переменная общая с другим листом: в модулях это пока не поддержано",
+                    ));
+                };
+                if let Some(out) = self.out_buf(inst, "out") {
+                    let s = Str {
+                        ptr: var.ptr,
+                        len: Len::Global(var.len),
+                    };
+                    self.copy_str(out, s);
+                }
+            }
+            "var_set" => {
+                let name = inst.block.var_name().unwrap_or_default().to_owned();
+                let Some(&var) = self.str_vars.get(&name) else {
+                    return Err(self.unsupported(
+                        inst,
+                        "строковая переменная общая с другим листом: в модулях это пока не поддержано",
+                    ));
+                };
+                let from = self.str_in(inst, &port(0))?;
+                let enable = inst
+                    .lib
+                    .def
+                    .inputs
+                    .get(1)
+                    .is_some_and(|p| inst.inputs.contains_key(p.name.as_str()));
+                if enable {
+                    self.flag(inst, 1);
+                    self.op(I::If(BlockType::Empty));
+                }
+                self.copy_str(var, from);
+                if enable {
+                    self.op(I::End);
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
     pub(super) fn text_block(&mut self, inst: &Instance) -> Result<bool, WasmError> {
         let kind = inst.block.kind.as_str();
+        if matches!(kind, "switch" | "mux" | "dms" | "var_get" | "var_set") {
+            return self.string_select(inst);
+        }
         if !TEXT_KINDS.contains(&kind) {
             return Ok(false);
         }
         self.string_outputs_ok(inst)?;
         match kind {
             "text_const" => {}
+            "string_change" => {
+                // `1` for one scan when the text differs from the previous scan (not on the first).
+                let s = self.str_in(inst, "in")?;
+                let prev = Buf {
+                    ptr: self.alloc(STR_CAP),
+                    cap: STR_CAP,
+                    len: self.global(Ty::I, &ParamValue::Int(0)),
+                };
+                let (init, same) = (self.state_i(), self.tmp_i());
+                self.text_call(
+                    5,
+                    [
+                        A::C(0),
+                        A::C(0),
+                        s.ptr(),
+                        s.len(),
+                        prev.ptr(),
+                        A::G(prev.len),
+                    ],
+                );
+                self.op(I::LocalSet(same));
+                self.op(I::GlobalGet(init));
+                self.op(I::LocalGet(same));
+                self.op(I::I32Eqz);
+                self.op(I::I32And);
+                self.set_named(inst, "out", Ty::I);
+                self.text_call(
+                    1,
+                    [prev.ptr(), prev.cap(), s.ptr(), s.len(), A::C(0), A::C(0)],
+                );
+                self.op(I::GlobalSet(prev.len));
+                self.c_i(1);
+                self.op(I::GlobalSet(init));
+            }
             "text_concat" => {
                 let Some(out) = self.out_buf(inst, "out") else {
                     return Ok(true);

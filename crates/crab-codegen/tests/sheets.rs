@@ -78,13 +78,21 @@ fn variable_on_one_sheet_stays_local() {
 }
 
 #[test]
-fn retained_variable_is_refused() {
+fn retained_number_is_kept_in_the_module() {
+    // Numbers and flags are kept in flash by the master; only texts are refused.
     let lib = library();
     let project = background();
     let program = Program::build(&project, &lib).unwrap();
-    let err = program.sheet_module(2).unwrap_err();
-    assert!(matches!(err, SheetError::Retain { sheet: 2, .. }), "{err}");
-    assert!(err.to_string().contains("флеш"));
+    let module = program.sheet_module(2).unwrap();
+    // The variable crosses the sheets, so the owner (this sheet) restores and saves it.
+    assert!(module.tags.iter().any(|t| {
+        t.init.is_some() && t.tag.kind == TagKind::Var("Нажатий всего".into())
+    }));
+    assert!(program
+        .wasm_module(2)
+        .unwrap()
+        .manifest
+        .contains("\"retain\""));
 }
 
 #[test]

@@ -1,0 +1,75 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[var]]
+name = "count"
+type = "int"
+retain = true
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 2.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "300ms"
+time_off = "500ms"
+
+[[block]]
+id = "keep"
+type = "flash_store"
+initial = 5.0
+
+[[block]]
+id = "cr"
+type = "var_get"
+var = "count"
+
+[[block]]
+id = "nc"
+type = "add"
+const = { b = 1 }
+
+[[block]]
+id = "cw"
+type = "var_set"
+var = "count"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "keep.in"
+[[link]]
+from = "gen.out"
+to = "keep.save"
+[[link]]
+from = "cr.out"
+to = "nc.a"
+[[link]]
+from = "nc.out"
+to = "cw.in"

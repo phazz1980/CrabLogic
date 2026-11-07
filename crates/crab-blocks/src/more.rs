@@ -408,8 +408,8 @@ impl Behavior for StringChange {
     }
 }
 
-/// Like Arduino `constrain`: no panic when the limits are swapped.
-fn constrain(x: f64, lo: f64, hi: f64) -> f64 {
+/// Arduino `constrain` on 32 bit floats.
+fn constrain32(x: f32, lo: f32, hi: f32) -> f32 {
     if x < lo {
         lo
     } else if x > hi {
@@ -419,39 +419,45 @@ fn constrain(x: f64, lo: f64, hi: f64) -> f64 {
     }
 }
 
+/// The sketch's PID in 32 bit floats, in the same order of operations (the module does the same).
 #[derive(Default)]
 struct Pid {
-    integral: f64,
-    prev_err: f64,
-    last_ms: u64,
+    integral: f32,
+    prev_err: f32,
+    last_ms: u32,
     running: bool,
 }
 
 impl Behavior for Pid {
     fn step(&mut self, ctx: &Ctx, out: &mut [f64]) {
-        let (kp, ki, kd) = (ctx.param(0), ctx.param(1), ctx.param(2));
-        let (lo, hi) = (ctx.param(3), ctx.param(4));
+        let (kp, ki, kd) = (
+            ctx.param(0) as f32,
+            ctx.param(1) as f32,
+            ctx.param(2) as f32,
+        );
+        let (lo, hi) = (ctx.param(3) as f32, ctx.param(4) as f32);
         if !ctx.flag(2) {
             self.running = false;
             self.integral = 0.0;
-            out[0] = lo;
+            out[0] = f64::from(lo);
             return;
         }
-        let err = ctx.input(0) - ctx.input(1);
+        let err = ctx.input(0) as f32 - ctx.input(1) as f32;
+        let now = ctx.now_ms as u32;
         if self.running {
-            let dt = (ctx.now_ms - self.last_ms) as f64 / 1000.0;
+            let dt = now.wrapping_sub(self.last_ms) as f32 / 1000.0;
             if dt > 0.0 {
-                self.integral = constrain(self.integral + err * dt * ki, lo, hi);
+                self.integral = constrain32(self.integral + err * dt * ki, lo, hi);
                 let d = (err - self.prev_err) / dt;
-                out[0] = constrain(kp * err + self.integral + kd * d, lo, hi);
+                out[0] = f64::from(constrain32(kp * err + self.integral + kd * d, lo, hi));
                 self.prev_err = err;
-                self.last_ms = ctx.now_ms;
+                self.last_ms = now;
             }
         } else {
             self.running = true;
-            self.last_ms = ctx.now_ms;
+            self.last_ms = now;
             self.prev_err = err;
-            out[0] = constrain(kp * err, lo, hi);
+            out[0] = f64::from(constrain32(kp * err, lo, hi));
         }
     }
 }
@@ -501,7 +507,7 @@ fn parse_float(s: &str) -> (f32, usize) {
 }
 
 /// Points of `"x:y;x:y"`, parsed the way the firmware does it (up to 32 of them).
-fn parse_points(text: &str) -> Vec<(f32, f32)> {
+pub(crate) fn parse_points(text: &str) -> Vec<(f32, f32)> {
     let mut points = Vec::new();
     let mut rest = text;
     while !rest.is_empty() && points.len() < 32 {
@@ -685,4 +691,61 @@ pub(crate) fn scale_table(e: &CppCtx) -> CppParts {
             .replace("@IN@", e.input("in"))
             .replace("@OUT@", e.output("out")),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan(b: &mut dyn Behavior, inputs: &[f64], texts: &[&str], ptexts: &[&str]) -> f64 {
+        let texts: Vec<String> = texts.iter().map(|s| (*s).to_owned()).collect();
+        let ptexts: Vec<String> = ptexts.iter().map(|s| (*s).to_owned()).collect();
+        let active = vec![true; inputs.len().max(texts.len())];
+        let ctx = Ctx {
+            now_ms: 0,
+            inputs,
+            active: &active,
+            params: &[],
+            texts: &texts,
+            param_texts: &ptexts,
+            bench: &crate::NO_BENCH,
+        };
+        let mut out = [0.0];
+        b.step(&ctx, &mut out);
+        b.step_text(&ctx, &mut out, &mut []);
+        out[0]
+    }
+
+    #[test]
+    fn string_change_ignores_the_first_scan() {
+        let mut b = behavior("string_change").unwrap();
+        let mut s = |t: &str| scan(&mut *b, &[], &[t], &[]);
+        assert_eq!(s("a"), 0.0, "first scan only remembers");
+        assert_eq!(s("a"), 0.0);
+        assert_eq!(s("b"), 1.0);
+        assert_eq!(s("b"), 0.0);
+        assert_eq!(s(""), 1.0);
+    }
+
+    #[test]
+    fn scale_table_interpolates_and_clamps() {
+        let mut b = behavior("scale_table").unwrap();
+        let mut y = |x: f64| scan(&mut *b, &[x], &[], &["0:0;50:20;100:100"]);
+        assert_eq!(y(-10.0), 0.0);
+        assert_eq!(y(0.0), 0.0);
+        assert_eq!(y(25.0), 10.0);
+        assert_eq!(y(50.0), 20.0);
+        assert_eq!(y(75.0), 60.0);
+        assert_eq!(y(100.0), 100.0);
+        assert_eq!(y(250.0), 100.0);
+    }
+
+    #[test]
+    fn scale_table_reparses_when_the_points_change() {
+        let mut b = behavior("scale_table").unwrap();
+        assert_eq!(scan(&mut *b, &[5.0], &[], &["0:0;10:100"]), 50.0);
+        assert_eq!(scan(&mut *b, &[5.0], &[], &["0:0;10:10"]), 5.0);
+        // Broken text falls back to a single point at zero.
+        assert_eq!(scan(&mut *b, &[5.0], &[], &["junk"]), 0.0);
+    }
 }

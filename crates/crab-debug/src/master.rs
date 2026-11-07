@@ -46,6 +46,8 @@ struct ModStat {
     steps: u32,
     /// `us=<last>/<max>/<longest gap between steps>/<sum>`; `None` for an older master.
     us: Option<[u32; 4]>,
+    /// `qlost=<n>`: event messages dropped from the module queue; 0 for an older master.
+    qlost: u32,
 }
 
 /// What the polling thread remembers between lines of the board.
@@ -392,6 +394,8 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
     for word in head.split_whitespace().skip(1) {
         if let Some(v) = word.strip_prefix("steps=") {
             m.steps = v.parse().unwrap_or(0);
+        } else if let Some(v) = word.strip_prefix("qlost=") {
+            m.qlost = v.parse().unwrap_or(0);
         } else if let Some(v) = word.strip_prefix("us=") {
             let n: Vec<u32> = v.split('/').filter_map(|x| x.parse().ok()).collect();
             if let Ok(us) = <[u32; 4]>::try_from(n) {
@@ -422,6 +426,7 @@ fn make_stats(aux: &mut Aux, modules: &[ModuleMap]) -> Option<Stats> {
         ..Stats::default()
     };
     for m in &mods {
+        stats.bus_lost = stats.bus_lost.saturating_add(m.qlost);
         let sum = m.us.map_or(0, |u| u[3]);
         if let Some(&(steps, total)) = aux.prev.get(&m.name) {
             // Fewer steps than before: the module was restarted.
@@ -913,6 +918,29 @@ mod tests {
         let stats = live.lock().unwrap().stats.clone().unwrap();
         assert_eq!(stats.max_us, 0);
         assert!(!aux.events, "no events without caps");
+    }
+
+    #[test]
+    fn lost_bus_messages_of_all_modules_are_summed() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        for text in [
+            "sheet1 run steps=10 restarts=0 out0=0 us=1/2/3/4 qlost=3 crc=00000005",
+            "bot run steps=10 restarts=0 out0=0 qlost=4 crc=00000006",
+            "end",
+        ] {
+            handle_line(
+                text,
+                &table,
+                &modules,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        assert_eq!(live.lock().unwrap().stats.clone().unwrap().bus_lost, 7);
     }
 
     #[test]

@@ -1,0 +1,6 @@
+[project]
+name = "wasm_trig"
+description = "Модуль и симуляция: sin, cos, tan, pow через мастер"
+
+[board]
+fqbn = "esp32:esp32:esp32"

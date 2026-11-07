@@ -101,6 +101,8 @@ pub struct Stats {
     /// Longest time between two `loop()` starts (logic + debugging + system), µs.
     pub period_max_us: u32,
     pub free_heap: u32,
+    /// Event messages the modules of the master lost on the internal bus (full queues); 0 for USB debugging.
+    pub bus_lost: u32,
     pub sheets: Vec<SheetStats>,
     /// Last and longest pass of the background task (core 0), µs; none without one.
     pub background: Option<BackgroundStats>,
@@ -148,6 +150,7 @@ impl Stats {
             avg_us: u32_at(12)?,
             period_max_us: u32_at(16)?,
             free_heap: u32_at(20)?,
+            bus_lost: 0,
             sheets,
             background,
         })

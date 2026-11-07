@@ -1,0 +1,6 @@
+[project]
+name = "wasm_strsel"
+description = "Модуль и симуляция: mux, switch, dms, переменная-строка"
+
+[board]
+fqbn = "esp32:esp32:esp32"
