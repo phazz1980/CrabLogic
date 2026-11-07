@@ -45,9 +45,53 @@ pub fn parse_duration_ms(s: &str) -> Option<u64> {
     valid.then_some(ms as u64)
 }
 
+/// Writes whole milliseconds the short way: the largest unit that divides the value
+/// exactly (`90000` -> `90s`, `120000` -> `2m`, `1500` -> `1500ms`). The text parses
+/// back with [`parse_duration_ms`].
+pub fn format_duration_ms(ms: u64) -> String {
+    match ms {
+        0 => "0ms".to_owned(),
+        _ if ms.is_multiple_of(3_600_000) => format!("{}h", ms / 3_600_000),
+        _ if ms.is_multiple_of(60_000) => format!("{}m", ms / 60_000),
+        _ if ms.is_multiple_of(1_000) => format!("{}s", ms / 1_000),
+        _ => format!("{ms}ms"),
+    }
+}
+
+/// Splits milliseconds into (minutes, seconds, milliseconds) for entry in three fields.
+pub fn split_min_sec_ms(ms: u64) -> (u64, u64, u64) {
+    (ms / 60_000, ms / 1_000 % 60, ms % 1_000)
+}
+
+/// Joins minutes, seconds and milliseconds typed in separate fields into one duration;
+/// `None` when it does not fit into 32 bits.
+pub fn join_min_sec_ms(min: u64, sec: u64, ms: u64) -> Option<u64> {
+    let total = min
+        .checked_mul(60_000)?
+        .checked_add(sec.checked_mul(1_000)?)?
+        .checked_add(ms)?;
+    (total <= u64::from(u32::MAX)).then_some(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_fields() {
+        assert_eq!(format_duration_ms(90_000), "90s");
+        assert_eq!(format_duration_ms(120_000), "2m");
+        assert_eq!(format_duration_ms(7_200_000), "2h");
+        assert_eq!(format_duration_ms(1_500), "1500ms");
+        assert_eq!(format_duration_ms(0), "0ms");
+        for ms in [0, 1, 999, 1_000, 61_500, 3_600_000, 4_000_000_000] {
+            assert_eq!(parse_duration_ms(&format_duration_ms(ms)), Some(ms));
+        }
+        assert_eq!(split_min_sec_ms(61_500), (1, 1, 500));
+        assert_eq!(join_min_sec_ms(1, 1, 500), Some(61_500));
+        assert_eq!(join_min_sec_ms(0, 90, 0), Some(90_000));
+        assert_eq!(join_min_sec_ms(100_000, 0, 0), None);
+    }
 
     #[test]
     fn durations() {

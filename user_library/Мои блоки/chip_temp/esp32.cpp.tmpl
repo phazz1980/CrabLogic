@@ -1,0 +1,15 @@
+// @global
+uint32_t {{ id }}_last = 0;
+bool {{ id }}_first = true;
+
+// @loop
+if ({{ id }}_first || millis() - {{ id }}_last >= {{ param.period }}UL) {
+  {{ id }}_first = false;
+  {{ id }}_last = millis();
+#if defined(SOC_TEMP_SENSOR_SUPPORTED) && SOC_TEMP_SENSOR_SUPPORTED
+  {{ output.temp }} = temperatureRead();
+  {{ output.ok }} = true;
+#else
+  {{ output.ok }} = false;  // chip has no internal temperature sensor
+#endif
+}

@@ -7,7 +7,7 @@ use std::fs;
 
 use crab_core::expander::{free_expander_id, pin_param, taken_pins};
 use crab_core::pins::{pin_uses, BoardLayout, PinUse};
-use crab_core::value::parse_duration_ms;
+use crab_core::value::{format_duration_ms, join_min_sec_ms, parse_duration_ms, split_min_sec_ms};
 use crab_core::{
     param_input_type, BlockDef, Expander, ExpanderChip, LocalValues, Logic, ParamDef, ParamKind,
     ParamShow, ParamValue, PortDef, SheetInfo, SignalType, Var, VarType,
@@ -790,7 +790,15 @@ fn param_editor(
                 set(ParamValue::Float(v));
             }
         }
-        ParamKind::Text | ParamKind::Duration => {
+        ParamKind::Duration => {
+            let text = d.texts.entry(p.name.clone()).or_default();
+            if duration_editor(ui, &p.name, text) {
+                let text = text.clone();
+                d.values
+                    .insert(p.name.clone(), Some(ParamValue::Text(text)));
+            }
+        }
+        ParamKind::Text => {
             // Parameters kept by the program under this one's value (SSID -> password).
             let dependents: Vec<&ParamDef> = def
                 .params
@@ -860,6 +868,104 @@ fn param_editor(
                 }
             }
         }
+    }
+}
+
+/// How a duration is typed.
+#[derive(Clone, Copy, PartialEq)]
+enum DurationUnit {
+    Millis,
+    Seconds,
+    Minutes,
+    /// Minutes, seconds and milliseconds in three fields.
+    Parts,
+}
+
+/// Duration entry: the unit is chosen with a radio button, the value is typed in one
+/// field or in three (min : s : ms). `text` keeps the short form (`2m`, `1500ms`);
+/// returns true when it changed.
+fn duration_editor(ui: &mut Ui, salt: &str, text: &mut String) -> bool {
+    let id = ui.make_persistent_id(("duration_unit", salt));
+    let ms = parse_duration_ms(text).unwrap_or(0);
+    let mut unit = ui
+        .data(|d| d.get_temp::<DurationUnit>(id))
+        .unwrap_or(match ms {
+            m if m > 0 && m.is_multiple_of(60_000) => DurationUnit::Minutes,
+            m if m.is_multiple_of(1_000) => DurationUnit::Seconds,
+            _ => DurationUnit::Millis,
+        });
+    let mut new_ms = None;
+    let max = u64::from(u32::MAX);
+    ui.vertical(|ui| {
+        let rows = [
+            (DurationUnit::Millis, "Миллисекунды"),
+            (DurationUnit::Seconds, "Секунды"),
+            (DurationUnit::Minutes, "Минуты"),
+            (DurationUnit::Parts, "Минуты : секунды : миллисекунды"),
+        ];
+        for (row, label) in rows {
+            ui.horizontal(|ui| {
+                if ui.radio(unit == row, crate::i18n::tr(label)).clicked() {
+                    unit = row;
+                }
+                if unit != row {
+                    return;
+                }
+                match row {
+                    DurationUnit::Millis => {
+                        let mut v = ms;
+                        if ui
+                            .add(egui::DragValue::new(&mut v).range(0..=max))
+                            .changed()
+                        {
+                            new_ms = Some(v);
+                        }
+                    }
+                    DurationUnit::Seconds | DurationUnit::Minutes => {
+                        let factor = if row == DurationUnit::Seconds {
+                            1_000.0
+                        } else {
+                            60_000.0
+                        };
+                        let mut v = ms as f64 / factor;
+                        let drag = egui::DragValue::new(&mut v)
+                            .range(0.0..=max as f64 / factor)
+                            .speed(if row == DurationUnit::Seconds {
+                                0.1
+                            } else {
+                                0.01
+                            })
+                            .max_decimals(if row == DurationUnit::Seconds { 3 } else { 4 });
+                        if ui.add(drag).changed() {
+                            new_ms = Some((v * factor).round() as u64);
+                        }
+                    }
+                    DurationUnit::Parts => {
+                        let (mut m, mut s, mut f) = split_min_sec_ms(ms);
+                        let mut changed = ui
+                            .add(egui::DragValue::new(&mut m).range(0..=71_582))
+                            .changed();
+                        ui.label(":");
+                        changed |= ui.add(egui::DragValue::new(&mut s).range(0..=59)).changed();
+                        ui.label(":");
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut f).range(0..=999))
+                            .changed();
+                        if changed {
+                            new_ms = join_min_sec_ms(m, s, f).or(Some(max));
+                        }
+                    }
+                }
+            });
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(id, unit));
+    match new_ms {
+        Some(v) if v != ms || parse_duration_ms(text).is_none() => {
+            *text = format_duration_ms(v);
+            true
+        }
+        _ => false,
     }
 }
 
