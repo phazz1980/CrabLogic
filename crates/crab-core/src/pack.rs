@@ -3,6 +3,7 @@
 //! any block of the pack raises it. A pack travels as one `<name>.crabblocks` file, a ZIP
 //! of that folder.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,6 +42,79 @@ pub struct PackInfo {
     pub contacts: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub license: String,
+    /// Content fingerprints of the past revisions of each block (type -> oldest first, the
+    /// last one is the revision recorded most recently): tells whether one copy of a block
+    /// descends from another or the two were changed independently.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub history: BTreeMap<String, Vec<String>>,
+}
+
+/// Revisions kept per block.
+const HISTORY_LIMIT: usize = 100;
+
+/// Fingerprint of block files (FNV-1a, 64 bit, line endings ignored): equal for equal contents.
+pub fn hash_files(files: &[(String, Vec<u8>)]) -> String {
+    let mut sorted: Vec<&(String, Vec<u8>)> = files.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |byte: u8| {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    };
+    for (name, data) in sorted {
+        name.bytes().for_each(&mut feed);
+        feed(0);
+        data.iter()
+            .copied()
+            .filter(|b| *b != b'\r')
+            .for_each(&mut feed);
+        feed(0xff);
+    }
+    format!("{hash:016x}")
+}
+
+/// Fingerprint of the block folder `dir`.
+pub fn content_hash(dir: &Path) -> Option<String> {
+    read_files(dir).ok().map(|files| hash_files(&files))
+}
+
+/// Appends `hash` as the newest revision; false when it already is.
+pub fn push_revision(list: &mut Vec<String>, hash: &str) -> bool {
+    if list.last().is_some_and(|h| h == hash) {
+        return false;
+    }
+    list.retain(|h| h != hash);
+    list.push(hash.to_owned());
+    if list.len() > HISTORY_LIMIT {
+        list.drain(..list.len() - HISTORY_LIMIT);
+    }
+    true
+}
+
+/// Records the current contents of the block folder `block_dir` in the history of its pack.
+pub fn record(block_dir: &Path) {
+    let Some(kind) = block_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let Some((dir, mut info)) = find(block_dir) else {
+        return;
+    };
+    let Some(hash) = content_hash(block_dir) else {
+        return;
+    };
+    if push_revision(info.history.entry(kind).or_default(), &hash) {
+        let _ = info.write(&dir);
+    }
+}
+
+/// The recorded revisions of the block folder `block_dir`; `None` when it is in no pack.
+pub fn history(block_dir: &Path) -> Option<Vec<String>> {
+    let kind = block_dir.file_name()?.to_string_lossy().into_owned();
+    let (_, info) = find(block_dir)?;
+    Some(info.history.get(&kind).cloned().unwrap_or_default())
 }
 
 fn first_version() -> u32 {
@@ -56,6 +130,7 @@ impl PackInfo {
             authors: Vec::new(),
             contacts: Vec::new(),
             license: String::new(),
+            history: BTreeMap::new(),
         }
     }
 

@@ -112,6 +112,17 @@ enum Pending {
     Close,
 }
 
+/// The choice for a block whose copies in the project and in the program differ.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BlockPick {
+    /// Keep the project's copy.
+    Keep,
+    /// Replace it with the program's copy.
+    Replace,
+    /// Not chosen yet.
+    Undecided,
+}
+
 pub struct EditorApp {
     pub lib: Library,
     pub lib_dir: Option<PathBuf>,
@@ -224,6 +235,10 @@ pub struct EditorApp {
     pub board_import: crate::boardio::Import,
     /// User blocks whose revision differs between the project and the program.
     block_diffs: Vec<crab_core::packed::VersionDiff>,
+    /// What to do with each block of `block_diffs`.
+    block_pick: std::collections::BTreeMap<String, BlockPick>,
+    /// Replacing a block also saves the project's copy next to it as `<type>_project`.
+    block_keep_copy: bool,
     /// arduino-cli is missing: the window offers to install it.
     cli_prompt: CliPrompt,
     /// Which core packs the startup offer will download (`cores::PACKS` order).
@@ -338,6 +353,8 @@ impl EditorApp {
             import: Default::default(),
             board_import: Default::default(),
             block_diffs: Vec::new(),
+            block_pick: std::collections::BTreeMap::new(),
+            block_keep_copy: false,
             self_update: SelfUpdate::Idle(None),
             cli_choice: (0..crab_build::cores::PACKS.len())
                 .map(|i| i == 0)
@@ -988,13 +1005,17 @@ impl EditorApp {
     }
 
     /// Offers to sync user blocks whose contents differ between the project and the
-    /// program: take the project's copy, or save the project with the program's.
+    /// program. Each block gets one of two choices: keep the project's copy (it replaces
+    /// the program's) or replace it with the program's library copy (saved into the
+    /// project). Blocks changed independently on both sides have no preselected choice.
     fn block_diffs_window(&mut self, ctx: &egui::Context) {
+        use crab_core::packed::Newer;
         if self.block_diffs.is_empty() {
             return;
         }
-        let mut take: Vec<String> = Vec::new();
-        let mut repack = false;
+        let undecided = self.block_pick.values().any(|p| *p == BlockPick::Undecided);
+        let any_replace = self.block_pick.values().any(|p| *p == BlockPick::Replace);
+        let mut apply = false;
         let mut close = false;
         egui::Window::new(crate::i18n::tr("Блоки проекта и программы"))
             .collapsible(false)
@@ -1004,78 +1025,189 @@ impl EditorApp {
                 ui.label(crate::i18n::tr(
                     "Пользовательские блоки в проекте и в программе отличаются содержимым.",
                 ));
+                ui.weak(crate::i18n::tr(
+                    "Выберите для каждого блока одно: оставить его таким, как в проекте, или заменить в проекте копией из библиотеки программы.",
+                ));
                 ui.add_space(6.0);
-                for d in &self.block_diffs {
-                    ui.label(&d.kind);
-                }
-                ui.add_space(6.0);
-                // A solid button with white text and a line below it saying what it does.
-                let choice = |ui: &mut egui::Ui, fill: egui::Color32, title: &str, hint: &str| {
-                    let button = egui::Button::new(
-                        egui::RichText::new(crate::i18n::tr(title))
-                            .strong()
-                            .color(egui::Color32::WHITE),
+                egui::Grid::new("block_diffs")
+                    .num_columns(3)
+                    .spacing([24.0, 8.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong(crate::i18n::tr("Название"));
+                        ui.strong(crate::i18n::tr("Оставить"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Блок остаётся таким, как в проекте: копия в программе заменится им",
+                            ));
+                        ui.strong(crate::i18n::tr("Заменить из библиотеки"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Копия в проекте заменится блоком из библиотеки программы (проект будет сохранён)",
+                            ));
+                        ui.end_row();
+                        for d in &self.block_diffs {
+                            ui.horizontal(|ui| {
+                                ui.label(&d.kind);
+                                let (text, color) = match d.newer {
+                                    Newer::Project => (
+                                        "новее в проекте",
+                                        egui::Color32::from_rgb(90, 160, 235),
+                                    ),
+                                    Newer::Program => (
+                                        "новее в библиотеке",
+                                        egui::Color32::from_rgb(90, 190, 120),
+                                    ),
+                                    Newer::Parallel => (
+                                        "параллельные версии: изменены независимо",
+                                        egui::Color32::from_rgb(235, 160, 60),
+                                    ),
+                                    Newer::Unknown => (
+                                        "какой новее — неизвестно",
+                                        ui.visuals().weak_text_color(),
+                                    ),
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!("({})", crate::i18n::tr(text)))
+                                        .color(color),
+                                );
+                            });
+                            // Two checkboxes of a row exclude each other.
+                            let pick = self
+                                .block_pick
+                                .get(&d.kind)
+                                .copied()
+                                .unwrap_or(BlockPick::Undecided);
+                            let mut keep = pick == BlockPick::Keep;
+                            if ui.checkbox(&mut keep, "").clicked() {
+                                self.block_pick.insert(d.kind.clone(), BlockPick::Keep);
+                            }
+                            let mut from_library = pick == BlockPick::Replace;
+                            if ui.checkbox(&mut from_library, "").clicked() {
+                                self.block_pick.insert(d.kind.clone(), BlockPick::Replace);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                if any_replace {
+                    ui.add_space(6.0);
+                    ui.checkbox(
+                        &mut self.block_keep_copy,
+                        crate::i18n::tr(
+                            "При замене сохранить копию из проекта рядом как новый блок «<тип>_project»",
+                        ),
                     )
-                    .fill(fill)
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
-                    .min_size(egui::vec2(380.0, 30.0));
-                    let clicked = ui.add(button).clicked();
-                    ui.weak(crate::i18n::tr(hint));
-                    ui.add_space(8.0);
-                    clicked
-                };
-                if choice(
-                    ui,
-                    egui::Color32::from_rgb(38, 105, 185),
-                    "Взять из проекта",
-                    "Блоки в программе заменятся копиями из файла проекта",
-                ) {
-                    take = self.block_diffs.iter().map(|d| d.kind.clone()).collect();
+                    .on_hover_text(crate::i18n::tr(
+                        "Чтобы сравнить две версии и перенести нужное вручную; копия появится в библиотеке",
+                    ));
                 }
-                if choice(
-                    ui,
-                    egui::Color32::from_rgb(40, 120, 70),
-                    "Оставить блоки программы и сохранить проект",
-                    "Проект сохранится с блоками из программы: копии в файле обновятся",
-                ) {
-                    repack = true;
+                if undecided {
+                    ui.add_space(6.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(235, 160, 60),
+                        crate::i18n::tr(
+                            "Для блоков с независимыми правками выберите вариант: без этого применить нельзя.",
+                        ),
+                    );
                 }
-                if choice(
-                    ui,
-                    egui::Color32::from_rgb(88, 92, 100),
-                    "Оставить как есть",
-                    "Ничего не менять; вопрос появится при следующем открытии проекта",
-                ) {
-                    close = true;
-                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let button = |text: &str, fill: egui::Color32| {
+                        egui::Button::new(
+                            egui::RichText::new(crate::i18n::tr(text))
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(fill)
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
+                        .min_size(egui::vec2(140.0, 30.0))
+                    };
+                    apply = ui
+                        .add_enabled(
+                            !undecided,
+                            button("Применить", egui::Color32::from_rgb(38, 105, 185)),
+                        )
+                        .clicked();
+                    close = ui
+                        .add(button("Решить позже", egui::Color32::from_rgb(88, 92, 100)))
+                        .on_hover_text(crate::i18n::tr(
+                            "Ничего не менять; вопрос появится при следующем открытии проекта",
+                        ))
+                        .clicked();
+                });
             });
-        if !take.is_empty() {
-            if let (Some(dir), Some(doc)) = (self.user_lib_dir(), &self.doc) {
-                let written =
-                    crab_core::packed::adopt_project_blocks(&doc.project.path, &dir, &take);
-                self.info(
-                    LogLevel::Ok,
-                    crate::i18n::msg(
-                        "Блоки программы обновлены из проекта: {0}",
-                        &[&written.join(", ")],
-                    ),
-                );
-                self.reload_library();
+        if apply {
+            let of = |wanted: BlockPick| -> Vec<String> {
+                self.block_diffs
+                    .iter()
+                    .filter(|d| self.block_pick.get(&d.kind) == Some(&wanted))
+                    .map(|d| d.kind.clone())
+                    .collect()
+            };
+            let take = of(BlockPick::Keep);
+            let replace = of(BlockPick::Replace);
+            if self.block_keep_copy {
+                self.save_copies_aside(&replace);
             }
-            self.block_diffs.retain(|d| !take.contains(&d.kind));
-        }
-        if repack {
-            // Saving packs the program's copies of the blocks the schema uses.
-            if self.save() {
-                self.info(
-                    LogLevel::Ok,
-                    crate::i18n::tr("Блоки проекта обновлены из программы"),
-                );
+            if !take.is_empty() {
+                if let (Some(dir), Some(doc)) = (self.user_lib_dir(), &self.doc) {
+                    let written =
+                        crab_core::packed::adopt_project_blocks(&doc.project.path, &dir, &take);
+                    self.info(
+                        LogLevel::Ok,
+                        crate::i18n::msg(
+                            "Блоки программы обновлены из проекта: {0}",
+                            &[&written.join(", ")],
+                        ),
+                    );
+                    self.reload_library();
+                }
+            }
+            if !replace.is_empty() {
+                // Saving packs the program's copies of the blocks the schema uses.
+                if self.save() {
+                    self.info(
+                        LogLevel::Ok,
+                        crate::i18n::tr("Блоки проекта обновлены из программы"),
+                    );
+                }
             }
             self.block_diffs.clear();
         }
         if close {
             self.block_diffs.clear();
+        }
+    }
+
+    /// Saves the project's copies of the blocks `kinds` into the library as `<type>_project`
+    /// (a free name is picked), before the project's copies are replaced.
+    fn save_copies_aside(&mut self, kinds: &[String]) {
+        let (Some(dir), Some(path)) = (
+            self.user_lib_dir(),
+            self.doc.as_ref().map(|d| d.project.path.clone()),
+        ) else {
+            return;
+        };
+        let mut saved = Vec::new();
+        for kind in kinds {
+            let name = (0..)
+                .map(|n| match n {
+                    0 => format!("{kind}_project"),
+                    n => format!("{kind}_project{n}"),
+                })
+                .find(|name| self.lib.get(name).is_none() && !saved.contains(name))
+                .expect("an endless range has a free name");
+            if crab_core::packed::save_project_copy_aside(&path, &dir, kind, &name) {
+                saved.push(name);
+            }
+        }
+        if !saved.is_empty() {
+            self.info(
+                LogLevel::Ok,
+                crate::i18n::msg(
+                    "Копии из проекта сохранены как новые блоки: {0}",
+                    &[&saved.join(", ")],
+                ),
+            );
+            self.reload_library();
         }
     }
 
@@ -1101,6 +1233,24 @@ impl EditorApp {
         } else {
             Vec::new()
         };
+        // The newer copy is preselected; for independent changes nothing is, and when
+        // it cannot be told, the program's copy is.
+        self.block_pick = self
+            .block_diffs
+            .iter()
+            .map(|d| {
+                let pick = match d.newer {
+                    crab_core::packed::Newer::Project => BlockPick::Keep,
+                    crab_core::packed::Newer::Parallel => BlockPick::Undecided,
+                    _ => BlockPick::Replace,
+                };
+                (d.kind.clone(), pick)
+            })
+            .collect();
+        self.block_keep_copy = self
+            .block_diffs
+            .iter()
+            .any(|d| d.newer == crab_core::packed::Newer::Parallel);
         match Doc::open(path, &self.lib) {
             Ok(doc) => {
                 self.info(

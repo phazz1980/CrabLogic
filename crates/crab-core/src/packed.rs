@@ -39,8 +39,68 @@ pub fn pack_user_blocks(logic: &Logic, lib: &Library) -> Vec<(String, Vec<u8>)> 
         for (name, data) in files {
             out.push((format!("{prefix}/{name}"), data));
         }
+        // The pack version and the revisions of the block, to tell later which copy is
+        // newer or whether the two were changed independently.
+        crate::pack::record(&block.dir);
+        if let Some((dir, info)) = crate::pack::find(&block.dir) {
+            let stamp = PackStamp {
+                pack: dir
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                version: info.version,
+                history: info.history.get(kind).cloned().unwrap_or_default(),
+            };
+            if let Ok(text) = toml::to_string(&stamp) {
+                out.push((format!("{PACKED_PACKS}/{kind}.toml"), text.into_bytes()));
+            }
+        }
     }
     out
+}
+
+/// Archive folder with the pack versions of the packed user blocks (`<type>.toml`).
+pub const PACKED_PACKS: &str = "user_block_packs";
+
+/// Pack folder and version a block had when the project was saved.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PackStamp {
+    pack: String,
+    version: u32,
+    /// Revisions of the block up to the saved one (oldest first); empty in projects
+    /// saved before the history existed.
+    #[serde(default)]
+    history: Vec<String>,
+}
+
+/// Pack stamps of the blocks packed into the project file `project`: type → stamp.
+fn read_pack_stamps(project: &Path) -> BTreeMap<String, PackStamp> {
+    let mut stamps = BTreeMap::new();
+    let Ok(file) = fs::File::open(project) else {
+        return stamps;
+    };
+    let Ok(mut zip) = ZipArchive::new(std::io::BufReader::new(file)) else {
+        return stamps;
+    };
+    for i in 0..zip.len() {
+        let Ok(mut entry) = zip.by_index(i) else {
+            continue;
+        };
+        let name = entry.name().replace('\\', "/");
+        let Some(kind) = name
+            .strip_prefix(&format!("{PACKED_PACKS}/"))
+            .and_then(|r| r.strip_suffix(".toml"))
+            .filter(|k| safe_part(k))
+        else {
+            continue;
+        };
+        let mut text = String::new();
+        if entry.read_to_string(&mut text).is_ok() {
+            if let Ok(stamp) = toml::from_str::<PackStamp>(&text) {
+                stamps.insert(kind.to_owned(), stamp);
+            }
+        }
+    }
+    stamps
 }
 
 /// Archive folder with the user board of the project.
@@ -219,6 +279,84 @@ pub fn unpack_missing_blocks(project: &Path, user_dir: &Path, lib: &Library) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionDiff {
     pub kind: String,
+    /// Which copy is newer.
+    pub newer: Newer,
+}
+
+/// The relation of the two copies of a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Newer {
+    /// The copy in the project file descends from the other one.
+    Project,
+    /// The copy in the program's user library descends from the other one.
+    Program,
+    /// Both were changed independently of each other (neither is in the other's history).
+    Parallel,
+    /// Cannot be told: no history, equal versions and times.
+    Unknown,
+}
+
+/// Latest modification time of the files under `dir`.
+fn latest_modified(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut latest = None;
+    for entry in fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let time = if path.is_dir() {
+            latest_modified(&path)
+        } else {
+            entry.metadata().and_then(|m| m.modified()).ok()
+        };
+        latest = latest.max(time);
+    }
+    latest
+}
+
+/// How the two copies relate. First by the revision histories: a copy found in the
+/// other one's history is the older; when neither is, the copies are parallel. Without
+/// a history (a project saved by an older program, a block outside any pack): by the
+/// pack version recorded in the project and the pack's version in the library, and
+/// with equal versions by file times (the project file is written when it is saved,
+/// the program's block when it is edited).
+fn newer_copy(
+    project: &Path,
+    block_dir: &Path,
+    stamp: Option<&PackStamp>,
+    files: &[PackedFile],
+) -> Newer {
+    if let (Some(stamp), Some(mut library)) = (stamp, crate::pack::history(block_dir)) {
+        if !stamp.history.is_empty() {
+            let theirs = crate::pack::hash_files(files);
+            let ours = crate::pack::content_hash(block_dir).unwrap_or_default();
+            // A copy edited by hand after the last record counts as the newest revision.
+            crate::pack::push_revision(&mut library, &ours);
+            let mut packed = stamp.history.clone();
+            crate::pack::push_revision(&mut packed, &theirs);
+            if library.contains(&theirs) {
+                return Newer::Program;
+            }
+            if packed.contains(&ours) {
+                return Newer::Project;
+            }
+            return Newer::Parallel;
+        }
+    }
+    if let (Some(stamp), Some((dir, info))) = (stamp, crate::pack::find(block_dir)) {
+        let same_pack = dir
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy() == stamp.pack);
+        match info.version.cmp(&stamp.version) {
+            _ if !same_pack => {}
+            std::cmp::Ordering::Greater => return Newer::Program,
+            std::cmp::Ordering::Less => return Newer::Project,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    let saved = fs::metadata(project).and_then(|m| m.modified()).ok();
+    match (latest_modified(block_dir), saved) {
+        (Some(block), Some(saved)) if block > saved => Newer::Program,
+        (Some(block), Some(saved)) if block < saved => Newer::Project,
+        _ => Newer::Unknown,
+    }
 }
 
 /// Whether the packed files equal the files in `dir` (line endings are ignored).
@@ -239,14 +377,17 @@ fn same_files(files: &[PackedFile], dir: &Path) -> bool {
 }
 
 /// User blocks that exist both in the project file and in `lib` with different
-/// contents. Blocks have no versions of their own, so which copy is newer is for the
-/// user to say.
+/// contents, with how the copies relate (see [`Newer`]).
 pub fn version_diffs(project: &Path, lib: &Library) -> Vec<VersionDiff> {
+    let stamps = read_pack_stamps(project);
     read_packed(project)
         .into_iter()
         .filter_map(|((_, kind), files)| {
             let local = lib.get(&kind).filter(|_| lib.is_user(&kind))?;
-            (!same_files(&files, &local.dir)).then_some(VersionDiff { kind })
+            (!same_files(&files, &local.dir)).then(|| VersionDiff {
+                newer: newer_copy(project, &local.dir, stamps.get(&kind), &files),
+                kind,
+            })
         })
         .collect()
 }
@@ -270,6 +411,47 @@ pub fn adopt_project_blocks(project: &Path, user_dir: &Path, kinds: &[String]) -
         .collect()
 }
 
+/// Puts the project's copy of the block `kind` into `user_dir` as a new block of type
+/// `new_kind` (the name gets a mark), so that the two versions can be compared and merged
+/// by hand. The caller picks a free `new_kind`. Returns whether it was written.
+pub fn save_project_copy_aside(
+    project: &Path,
+    user_dir: &Path,
+    kind: &str,
+    new_kind: &str,
+) -> bool {
+    if !safe_part(new_kind) {
+        return false;
+    }
+    let Some(((group, _), mut files)) = read_packed(project)
+        .into_iter()
+        .find(|((_, k), _)| k == kind)
+    else {
+        return false;
+    };
+    let Some(entry) = files.iter_mut().find(|(n, _)| n == "block.toml") else {
+        return false;
+    };
+    let Ok(mut doc) = String::from_utf8_lossy(&entry.1).parse::<toml::Table>() else {
+        return false;
+    };
+    let Some(block) = doc.get_mut("block").and_then(toml::Value::as_table_mut) else {
+        return false;
+    };
+    let name = block
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .unwrap_or(kind)
+        .to_owned();
+    block.insert("type".into(), new_kind.into());
+    block.insert("name".into(), format!("{name} (из проекта)").into());
+    let Ok(text) = toml::to_string_pretty(&doc) else {
+        return false;
+    };
+    entry.1 = text.into_bytes();
+    write_block(user_dir, &group, new_kind, &files)
+}
+
 fn safe_part(part: &str) -> bool {
     !part.is_empty() && part != "." && part != ".." && !part.contains([':', '\\'])
 }
@@ -280,6 +462,7 @@ mod tests {
     use crate::library::{save_block, user_library_dir, BlockDef};
     use crate::logic::Block;
     use crate::project::Project;
+    use std::path::PathBuf;
 
     #[test]
     fn safe_parts() {
@@ -357,12 +540,28 @@ fqbn = \"x:y:z\"
         let dir = lib.get("mine").unwrap().dir.parent().unwrap().to_owned();
         save_block(&dir, &def, "// code 2", "docs").unwrap();
         let (lib, _) = Library::load_with_user(&builtin).unwrap();
-        assert_eq!(
-            version_diffs(&project.path, &lib),
-            [VersionDiff {
-                kind: "mine".into()
-            }]
-        );
+        let diffs = version_diffs(&project.path, &lib);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].kind, "mine");
+        // The block file is dated after the project was saved, then before.
+        let block_dir = lib.get("mine").unwrap().dir.clone();
+        fn date_files(dir: &Path, t: std::time::SystemTime) {
+            for entry in fs::read_dir(dir).unwrap().flatten() {
+                if entry.path().is_dir() {
+                    date_files(&entry.path(), t);
+                } else {
+                    let file = fs::File::options().write(true).open(entry.path()).unwrap();
+                    file.set_modified(t).unwrap();
+                }
+            }
+        }
+        let set_time = |t| date_files(&block_dir, t);
+        let hour = std::time::Duration::from_secs(3600);
+        let now = std::time::SystemTime::now();
+        set_time(now + hour);
+        assert_eq!(version_diffs(&project.path, &lib)[0].newer, Newer::Program);
+        set_time(now - hour);
+        assert_eq!(version_diffs(&project.path, &lib)[0].newer, Newer::Project);
         // Taking the project's copy brings the old contents back.
         assert_eq!(
             adopt_project_blocks(&project.path, &user, &["mine".to_owned()]),
@@ -378,6 +577,157 @@ fqbn = \"x:y:z\"
         .unwrap();
         let diffs = version_diffs(&project.path, &lib);
         assert_eq!(diffs.len(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_pack_version_tells_which_copy_is_newer() {
+        let root = std::env::temp_dir().join(format!("crab_packed_ver_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pack = root.join("Мои");
+        let block = pack.join("mine");
+        fs::create_dir_all(&block).unwrap();
+        let mut info = crate::pack::PackInfo::new("Мои");
+        info.version = 3;
+        info.write(&pack).unwrap();
+        let project = root.join("p.crab");
+        fs::write(&project, "x").unwrap();
+        let stamp = |pack: &str, version| PackStamp {
+            pack: pack.to_owned(),
+            version,
+            history: Vec::new(),
+        };
+        assert_eq!(
+            newer_copy(&project, &block, Some(&stamp("Мои", 2)), &[]),
+            Newer::Program
+        );
+        assert_eq!(
+            newer_copy(&project, &block, Some(&stamp("Мои", 4)), &[]),
+            Newer::Project
+        );
+        // Another pack or no stamp: the file times decide (the block is older than the
+        // project file only if it was written first, so just check no panic and a verdict).
+        let by_time = newer_copy(&project, &block, None, &[]);
+        assert_eq!(
+            newer_copy(&project, &block, Some(&stamp("Чужие", 9)), &[]),
+            by_time
+        );
+        assert_eq!(
+            newer_copy(&project, &block, Some(&stamp("Мои", 3)), &[]),
+            by_time
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for e in fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(e.file_name());
+            if e.path().is_dir() {
+                copy_dir(&e.path(), &target);
+            } else {
+                fs::copy(e.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// A computer: library folder, user library with a pack, one block `mine`.
+    fn computer(root: &Path) -> (PathBuf, PathBuf) {
+        let builtin = root.join("library");
+        fs::create_dir_all(&builtin).unwrap();
+        (builtin.clone(), user_library_dir(&builtin))
+    }
+
+    fn edit_block(user: &Path, note: &str) {
+        let group = user.join("Мои");
+        let (lib, _) =
+            Library::load_with_user(user.parent().unwrap().join("library").as_path()).unwrap();
+        let mut def = lib.get("mine").unwrap().def.clone();
+        def.info.description = note.into();
+        save_block(&group, &def, note, "docs").unwrap();
+    }
+
+    fn project_of(root: &Path, lib: &Library) -> Project {
+        let mut logic = Logic::default();
+        logic.blocks.push(Block {
+            id: "a".into(),
+            kind: "mine".into(),
+            ..Default::default()
+        });
+        let project = Project {
+            path: root.join("p.crab"),
+            config: toml::from_str(
+                "[project]
+name = \"t\"
+[board]
+fqbn = \"x:y:z\"
+",
+            )
+            .unwrap(),
+            logic,
+            layout: Default::default(),
+        };
+        let packed = pack_user_blocks(&project.logic, lib);
+        let extra: Vec<(&str, &[u8])> = packed
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        project.save_with(&extra).unwrap();
+        project
+    }
+
+    #[test]
+    fn parallel_versions_are_told_from_descendants() {
+        let root = std::env::temp_dir().join(format!("crab_packed_hist_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (one_lib, one_user) = computer(&root.join("one"));
+        crate::pack::PackInfo::new("Мои")
+            .write(&one_user.join("Мои"))
+            .unwrap();
+        let def: BlockDef = toml::from_str(
+            "[block]
+type = \"mine\"
+name = \"N\"
+group = \"Мои\"
+",
+        )
+        .unwrap();
+        save_block(&one_user.join("Мои"), &def, "// a", "docs").unwrap();
+
+        // The second computer starts from the same block.
+        let (two_lib, two_user) = computer(&root.join("two"));
+        copy_dir(&one_user, &two_user);
+
+        // The second one changes the block and saves a project.
+        edit_block(&two_user, "// p");
+        let (lib2, _) = Library::load_with_user(&two_lib).unwrap();
+        let project = project_of(&root, &lib2);
+
+        // The first computer is still on the old block: the project descends from it.
+        let (lib1, _) = Library::load_with_user(&one_lib).unwrap();
+        let diffs = version_diffs(&project.path, &lib1);
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].newer, Newer::Project);
+
+        // It changes the block on its own: now neither descends from the other.
+        edit_block(&one_user, "// q");
+        let (lib1, _) = Library::load_with_user(&one_lib).unwrap();
+        assert_eq!(
+            version_diffs(&project.path, &lib1)[0].newer,
+            Newer::Parallel
+        );
+
+        // The project's copy can be kept next to the program's one.
+        assert!(save_project_copy_aside(
+            &project.path,
+            &one_user,
+            "mine",
+            "mine_project"
+        ));
+        let (lib1, _) = Library::load_with_user(&one_lib).unwrap();
+        let aside = lib1.get("mine_project").unwrap();
+        assert!(aside.def.info.name.contains("из проекта"));
+        assert_eq!(lib1.get("mine").unwrap().def.info.description, "// q");
         fs::remove_dir_all(&root).unwrap();
     }
 

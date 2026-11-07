@@ -84,7 +84,7 @@ pub fn light() -> Theme {
         palette: Palette {
             ui_panel: rgb(226, 223, 216),
             ui_window: rgb(232, 229, 223),
-            ui_field: rgb(240, 238, 233),
+            ui_field: rgb(255, 255, 252),
             ui_faint: rgb(219, 215, 207),
             canvas: rgb(214, 210, 202),
             sheet: rgb(234, 231, 224),
@@ -117,7 +117,7 @@ pub fn dark() -> Theme {
         palette: Palette {
             ui_panel: rgb(38, 41, 46),
             ui_window: rgb(42, 45, 51),
-            ui_field: rgb(30, 32, 36),
+            ui_field: rgb(20, 22, 26),
             ui_faint: rgb(46, 50, 56),
             canvas: rgb(28, 30, 34),
             sheet: rgb(36, 39, 44),
@@ -563,8 +563,18 @@ fn visuals(theme: &Theme) -> egui::Visuals {
     v.error_fg_color = p.error;
     v.warn_fg_color = p.warning;
     v.widgets.noninteractive.bg_fill = p.ui_panel;
-    v.widgets.inactive.weak_bg_fill = p.ui_faint;
-    v.widgets.inactive.bg_fill = p.ui_faint;
+    // Buttons and fields stand out from the panels: the fill moves towards the text
+    // colour, the outline is clearly visible, the pressed one gets the accent colour.
+    let lift = |amount: f32| p.ui_faint.lerp_to_gamma(p.text, amount);
+    v.widgets.inactive.weak_bg_fill = lift(0.14);
+    v.widgets.inactive.bg_fill = lift(0.14);
+    v.widgets.hovered.weak_bg_fill = lift(0.26);
+    v.widgets.hovered.bg_fill = lift(0.26);
+    v.widgets.active.weak_bg_fill = lift(0.36);
+    v.widgets.active.bg_fill = lift(0.36);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, p.text.gamma_multiply(0.6));
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.text.gamma_multiply(0.9));
+    v.widgets.active.bg_stroke = Stroke::new(1.5, p.accent);
     v
 }
 

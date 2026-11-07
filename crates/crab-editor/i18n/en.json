@@ -1254,5 +1254,19 @@
  "Ядро и его инструменты разных версий или распакованы не полностью: удалите папку esp32core рядом с программой (и пакеты esp32 в Arduino15, если они есть) и скачайте ядро заново через «Файл → Ядра ESP32...»": "The core and its tools are of different versions or not fully unpacked: delete the esp32core folder next to the program (and the esp32 packages in Arduino15, if any) and download the core again via File → ESP32 cores...",
  "Блоки в программе заменятся копиями из файла проекта": "The blocks in the program will be replaced with the copies from the project file",
  "Проект сохранится с блоками из программы: копии в файле обновятся": "The project will be saved with the program's blocks: the copies in the file will be updated",
- "Ничего не менять; вопрос появится при следующем открытии проекта": "Change nothing; the question will come back the next time the project is opened"
+ "Ничего не менять; вопрос появится при следующем открытии проекта": "Change nothing; the question will come back the next time the project is opened",
+ "Выберите для каждого блока одно: оставить его таким, как в проекте, или заменить в проекте копией из библиотеки программы.": "Choose one for each block: keep it as it is in the project, or replace the project's copy with the one from the program's library.",
+ "Оставить": "Keep",
+ "Заменить из библиотеки": "Replace from library",
+ "Блок остаётся таким, как в проекте: копия в программе заменится им": "The block stays as in the project: the program's copy is replaced by it",
+ "Копия в проекте заменится блоком из библиотеки программы (проект будет сохранён)": "The project's copy is replaced by the block from the program's library (the project is saved)",
+ "новее в проекте": "newer in the project",
+ "новее в библиотеке": "newer in the library",
+ "какой новее — неизвестно": "which is newer is unknown",
+ "Решить позже": "Decide later",
+ "параллельные версии: изменены независимо": "parallel versions: changed independently",
+ "При замене сохранить копию из проекта рядом как новый блок «<тип>_project»": "When replacing, keep the project's copy next to it as a new block \"<type>_project\"",
+ "Чтобы сравнить две версии и перенести нужное вручную; копия появится в библиотеке": "To compare the two versions and move what you need by hand; the copy appears in the library",
+ "Для блоков с независимыми правками выберите вариант: без этого применить нельзя.": "Choose an option for the blocks changed independently: without it, nothing can be applied.",
+ "Копии из проекта сохранены как новые блоки: {0}": "The project's copies were saved as new blocks: {0}"
 }

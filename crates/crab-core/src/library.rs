@@ -916,6 +916,7 @@ pub fn save_block(lib_dir: &Path, def: &BlockDef, template: &str, docs: &str) ->
     if changed {
         // A block of a pack: the version belongs to the pack as a whole.
         crate::pack::bump(lib_dir);
+        crate::pack::record(&dir);
     }
     Ok(dir)
 }
@@ -946,6 +947,7 @@ pub fn save_native(lib_dir: &Path, kind: &str, source: &str) -> Result<bool> {
     };
     if changed {
         crate::pack::bump(lib_dir);
+        crate::pack::record(&lib_dir.join(kind));
     }
     Ok(changed)
 }
