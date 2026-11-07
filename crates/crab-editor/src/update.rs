@@ -13,6 +13,17 @@ use serde::Deserialize;
 
 /// Version of this build.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
+/// Local time this build was made (`build.rs`); empty in a published release.
+const BUILD_TIME: &str = env!("CRAB_BUILD_TIME");
+
+/// Version with the build time, if the build has one: `1.4.1 · 2026-11-07 18:03`.
+pub fn version_label() -> String {
+    if BUILD_TIME.is_empty() {
+        CURRENT.to_owned()
+    } else {
+        format!("{CURRENT} · {BUILD_TIME}")
+    }
+}
 
 /// Repository checked when `update_repo` is not set in the editor settings.
 pub const DEFAULT_REPO: &str = "phazz1980/CrabLogic";

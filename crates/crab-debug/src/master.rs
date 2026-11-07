@@ -2,20 +2,25 @@
 //! of every watched signal of each module with `out <module> <n>` and shows them like
 //! the binary session does. The board keeps running its modules; nothing is flashed.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crab_core::SignalType;
+
+use crate::protocol::{SheetStats, Stats};
 use crate::session::{Command, Live};
 use crate::table::{DebugTable, Value};
 use crate::transport::{Connector, Transport};
 
-const HISTORY: usize = 600;
+/// Points of one chart; a fast blink makes two points per change.
+const HISTORY: usize = 6000;
 const CONSOLE: usize = 500;
 /// How often the board is asked which modules it runs.
-const LIST_EVERY: Duration = Duration::from_secs(2);
+const LIST_EVERY: Duration = Duration::from_secs(1);
 /// Pause between two polls of the board.
 const POLL: Duration = Duration::from_millis(150);
 /// The board is considered silent after this long without an answer.
@@ -30,6 +35,30 @@ pub struct ModuleMap {
     pub slots: Vec<Option<usize>>,
     /// CRC-32 of the module bytes; the board reports the same for what it runs.
     pub crc: u32,
+    /// Number of the sheet the module runs, for the diagnostics table.
+    pub sheet: u32,
+}
+
+/// One module of the `list` answer.
+#[derive(Debug, Clone, Default)]
+struct ModStat {
+    name: String,
+    steps: u32,
+    /// `us=<last>/<max>/<longest gap between steps>/<sum>`; `None` for an older master.
+    us: Option<[u32; 4]>,
+}
+
+/// What the polling thread remembers between lines of the board.
+#[derive(Default)]
+struct Aux {
+    /// The master sends changes of 0/1 outputs with their time (`caps=ev`).
+    events: bool,
+    /// Modules of the running `list` answer.
+    mods: Vec<ModStat>,
+    free_heap: u32,
+    /// Per module: steps and summed step time at the previous report.
+    prev: BTreeMap<String, (u32, u32)>,
+    prev_at: Option<Instant>,
 }
 
 /// Debugging session with the master firmware: same shape as [`crate::Session`].
@@ -148,6 +177,7 @@ fn serve(
     let mut last_poll = Instant::now() - POLL;
     let mut last_list = Instant::now() - LIST_EVERY;
     let mut running: Vec<(String, u32)> = Vec::new();
+    let mut aux = Aux::default();
     loop {
         loop {
             match rx.try_recv() {
@@ -165,6 +195,10 @@ fn serve(
         }
         if asked.is_empty() && last_poll.elapsed() >= POLL {
             for (i, m) in modules.iter().enumerate() {
+                // Events first: the answer to `out` then never comes before older changes.
+                if aux.events {
+                    port.write_all(format!("ev {}\n", m.name).as_bytes())?;
+                }
                 port.write_all(format!("out {} {}\n", m.name, m.slots.len()).as_bytes())?;
                 asked.push(i);
             }
@@ -196,6 +230,7 @@ fn serve(
                 modules,
                 &mut asked,
                 &mut running,
+                &mut aux,
                 started,
                 live,
             );
@@ -207,12 +242,14 @@ fn serve(
 }
 
 /// Handles one line of the board; `true` if the shown data changed.
+#[allow(clippy::too_many_arguments)]
 fn handle_line(
     text: &str,
     table: &DebugTable,
     modules: &[ModuleMap],
     asked: &mut Vec<usize>,
     running: &mut Vec<(String, u32)>,
+    aux: &mut Aux,
     started: Instant,
     live: &Arc<Mutex<Live>>,
 ) -> bool {
@@ -222,9 +259,24 @@ fn handle_line(
         let name = head.split_whitespace().next().unwrap_or_default();
         let crc = u32::from_str_radix(crc.trim(), 16).unwrap_or(0);
         running.push((name.to_owned(), crc));
+        aux.mods.push(parse_module_stat(name, head));
+        return false;
+    }
+    if let Some(caps) = text.strip_prefix("caps=") {
+        aux.events = caps.split(',').any(|c| c.trim() == "ev");
+        return false;
+    }
+    // `list` answer: `free=<bytes> largest=<bytes>`.
+    if let Some(rest) = text.strip_prefix("free=") {
+        aux.free_heap = rest
+            .split_whitespace()
+            .next()
+            .and_then(|w| w.parse().ok())
+            .unwrap_or(0);
         return false;
     }
     if text == "end" {
+        l.stats = make_stats(aux, modules);
         let missing = modules
             .iter()
             .find(|m| !running.iter().any(|(n, c)| *n == m.name && *c == m.crc));
@@ -238,6 +290,12 @@ fn handle_line(
             )
         });
         return true;
+    }
+    // Changes of 0/1 outputs since the previous `ev`:
+    // `ev <name> <board ms now> <lost> <slot>:<value>:<board ms> ...`.
+    if let Some(rest) = text.strip_prefix("ev ") {
+        let t_rx = started.elapsed().as_secs_f64();
+        return apply_events(rest, t_rx, table, modules, &mut l);
     }
     if let Some(words) = text.strip_prefix("out") {
         let Some(&m) = asked.first() else {
@@ -260,9 +318,12 @@ fn handle_line(
                 Value::Float(x) => f64::from(x),
             };
             let h = &mut l.history[*i];
-            h.push((t, y));
-            let excess = h.len().saturating_sub(HISTORY);
-            h.drain(..excess);
+            // With events the chart of a 0/1 signal is drawn from them; the sample only
+            // corrects a state the events did not tell (a lost event, a forced value).
+            if aux.events && matches!(v, Value::Bool(_)) && h.last().is_some_and(|p| p.1 == y) {
+                continue;
+            }
+            push_point(h, t, y);
         }
         l.frames += 1;
         return true;
@@ -311,6 +372,147 @@ fn handle_line(
     l.console.drain(..excess);
     l.console_total += 1;
     true
+}
+
+/// A point of a chart; the oldest ones go when there are too many.
+fn push_point(h: &mut Vec<(f64, f64)>, t: f64, y: f64) {
+    h.push((t, y));
+    let excess = h.len().saturating_sub(HISTORY);
+    h.drain(..excess);
+}
+
+/// `<name> run|stop steps=.. restarts=.. out0=.. us=a/b/c/d` (the part before ` crc=`).
+fn parse_module_stat(name: &str, head: &str) -> ModStat {
+    let mut m = ModStat {
+        name: name.to_owned(),
+        ..ModStat::default()
+    };
+    for word in head.split_whitespace().skip(1) {
+        if let Some(v) = word.strip_prefix("steps=") {
+            m.steps = v.parse().unwrap_or(0);
+        } else if let Some(v) = word.strip_prefix("us=") {
+            let n: Vec<u32> = v.split('/').filter_map(|x| x.parse().ok()).collect();
+            if let Ok(us) = <[u32; 4]>::try_from(n) {
+                m.us = Some(us);
+            }
+        }
+    }
+    m
+}
+
+/// Cycle figures from the `list` answer that has just ended; cycles are counted per 0.5 s
+/// as in the USB debugging, and the master's modules run side by side, so the longest
+/// figure of a module is the figure of the board.
+fn make_stats(aux: &mut Aux, modules: &[ModuleMap]) -> Option<Stats> {
+    let mods = std::mem::take(&mut aux.mods);
+    if mods.is_empty() {
+        return None;
+    }
+    let now = Instant::now();
+    let dt = aux
+        .prev_at
+        .map_or(1.0, |t| now.duration_since(t).as_secs_f64())
+        .max(0.1);
+    aux.prev_at = Some(now);
+    let (mut d_max, mut d_all, mut d_sum) = (0u32, 0u64, 0u64);
+    let mut stats = Stats {
+        free_heap: aux.free_heap,
+        ..Stats::default()
+    };
+    for m in &mods {
+        let sum = m.us.map_or(0, |u| u[3]);
+        if let Some(&(steps, total)) = aux.prev.get(&m.name) {
+            // Fewer steps than before: the module was restarted.
+            let (ds, dsum) = if m.steps < steps {
+                (m.steps, sum)
+            } else {
+                (m.steps - steps, sum.wrapping_sub(total))
+            };
+            d_max = d_max.max(ds);
+            d_all += u64::from(ds);
+            d_sum += u64::from(dsum);
+        }
+        aux.prev.insert(m.name.clone(), (m.steps, sum));
+        if let Some([last, max, period, _]) = m.us {
+            stats.last_us = stats.last_us.max(last);
+            stats.max_us = stats.max_us.max(max);
+            stats.period_max_us = stats.period_max_us.max(period);
+            if let Some(map) = modules.iter().find(|k| k.name == m.name) {
+                stats.sheets.push(SheetStats {
+                    sheet: map.sheet,
+                    last_us: last,
+                    max_us: max,
+                });
+            }
+        }
+    }
+    stats.cycles = (f64::from(d_max) * 0.5 / dt).round() as u32;
+    stats.avg_us = d_sum.checked_div(d_all).map_or(stats.last_us, |v| v as u32);
+    stats.sheets.sort_by_key(|s| s.sheet);
+    Some(stats)
+}
+
+/// Applies the answer to `ev` (without the word `ev`): every change of a 0/1 output gets its
+/// own place on the chart, at the time the board says it happened. Returns `true` if
+/// anything was shown.
+fn apply_events(
+    rest: &str,
+    t_rx: f64,
+    table: &DebugTable,
+    modules: &[ModuleMap],
+    l: &mut Live,
+) -> bool {
+    let mut words = rest.split_whitespace();
+    let Some(map) = words
+        .next()
+        .and_then(|name| modules.iter().find(|m| m.name == name))
+    else {
+        return false;
+    };
+    let now: u32 = words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
+    let _lost = words.next();
+    let mut changed = false;
+    for word in words {
+        let mut f = word.split(':');
+        let (Some(slot), Some(val), Some(ms)) = (
+            f.next().and_then(|w| w.parse::<usize>().ok()),
+            f.next().and_then(|w| w.parse::<u32>().ok()),
+            f.next().and_then(|w| w.parse::<u32>().ok()),
+        ) else {
+            continue;
+        };
+        let Some(Some(i)) = map.slots.get(slot) else {
+            continue;
+        };
+        if table.entries[*i].ty != SignalType::Bool {
+            continue;
+        }
+        let age = f64::from(now.wrapping_sub(ms)) / 1000.0;
+        let h = &mut l.history[*i];
+        let last = h.last().copied();
+        // Never before the previous point, whatever the delay of the line was.
+        let t = (t_rx - age).max(last.map_or(0.0, |p| p.0));
+        let y = f64::from(u8::from(val != 0));
+        if let Some((_, prev)) = last.filter(|p| p.1 != y) {
+            push_point(h, t, prev);
+        }
+        push_point(h, t, y);
+        l.values[*i] = Some(Value::Bool(val != 0));
+        changed = true;
+    }
+    // The line goes on to now, so the chart does not stand still while nothing changes.
+    for i in map.slots.iter().flatten() {
+        if table.entries[*i].ty != SignalType::Bool {
+            continue;
+        }
+        let h = &mut l.history[*i];
+        if let Some((t, y)) = h.last().copied().filter(|p| p.0 < t_rx) {
+            let _ = t;
+            push_point(h, t_rx, y);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Forcing and releasing: the master keeps the forced value of a module output.
@@ -370,7 +572,11 @@ fn send_command(
             }
             Ok(())
         }
-        // The master has no setpoints, cycle statistics or console input yet.
+        Command::ResetStats => port.write_all(
+            b"rmax
+",
+        ),
+        // The master has no setpoints or console input yet.
         _ => Ok(()),
     }
 }
@@ -400,13 +606,16 @@ mod tests {
 
     use crate::table::{Entry, Source};
 
-    fn table() -> DebugTable {
-        let entry = |name: &str, ty| Entry {
+    fn entry(name: &str, ty: SignalType) -> Entry {
+        Entry {
             source: Source::Output(PortRef::new(name, "out")),
             ty,
             storage: name.into(),
             cpp_type: "",
-        };
+        }
+    }
+
+    fn table() -> DebugTable {
         DebugTable {
             entries: vec![entry("a", SignalType::Int), entry("b", SignalType::Float)],
             texts: Vec::new(),
@@ -420,6 +629,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(1), None, Some(0)],
             crc: 5,
+            sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live {
             values: vec![None; 2],
@@ -435,6 +645,7 @@ mod tests {
             &modules,
             &mut asked,
             &mut Vec::new(),
+            &mut Aux::default(),
             Instant::now(),
             &live
         ));
@@ -455,6 +666,7 @@ mod tests {
                 &[],
                 &mut Vec::new(),
                 &mut Vec::new(),
+                &mut Aux::default(),
                 Instant::now(),
                 &live,
             )
@@ -478,6 +690,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(0)],
             crc: 5,
+            sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live::default()));
         let mut asked = vec![0];
@@ -487,6 +700,7 @@ mod tests {
             &modules,
             &mut asked,
             &mut Vec::new(),
+            &mut Aux::default(),
             Instant::now(),
             &live,
         );
@@ -501,6 +715,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(0)],
             crc: 0xabc,
+            sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live::default()));
         let run = |crc: &str| {
@@ -516,6 +731,7 @@ mod tests {
                     &modules,
                     &mut asked,
                     &mut running,
+                    &mut Aux::default(),
                     Instant::now(),
                     &live,
                 );
@@ -524,5 +740,172 @@ mod tests {
         };
         assert_eq!(run("00000abc"), Some(true));
         assert_eq!(run("00000001"), Some(false));
+    }
+
+    fn bool_table() -> DebugTable {
+        DebugTable {
+            entries: vec![entry("led", SignalType::Bool), entry("n", SignalType::Int)],
+            texts: Vec::new(),
+        }
+    }
+
+    fn bool_module() -> Vec<ModuleMap> {
+        vec![ModuleMap {
+            name: "sheet1".into(),
+            slots: vec![Some(0), Some(1)],
+            crc: 5,
+            sheet: 1,
+        }]
+    }
+
+    fn bool_live() -> Arc<Mutex<Live>> {
+        Arc::new(Mutex::new(Live {
+            values: vec![None; 2],
+            forced: vec![None; 2],
+            history: vec![Vec::new(); 2],
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn events_draw_a_square_wave_at_board_time() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        let mut line = |text: &str| {
+            handle_line(
+                text,
+                &table,
+                &modules,
+                &mut vec![0],
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now() - Duration::from_secs(10),
+                &live,
+            )
+        };
+        assert!(!line("caps=ev,us"));
+        // Board clock 1000 ms now; changes 900 (on), 800 (off earlier), 700 ... in order.
+        assert!(line("ev sheet1 1000 0 0:1:700 0:0:800 0:1:900 1:1:950"));
+        let l = live.lock().unwrap();
+        let h = &l.history[0];
+        // Every change is an upright edge: two points at the same time.
+        let edges: Vec<(f64, f64)> = h
+            .iter()
+            .copied()
+            .filter(|p| p.0 < h.last().unwrap().0)
+            .collect();
+        let levels: Vec<f64> = edges.iter().map(|p| p.1).collect();
+        assert_eq!(levels, [1.0, 1.0, 0.0, 0.0, 1.0]);
+        let times: Vec<f64> = edges.iter().map(|p| p.0).collect();
+        assert!(
+            (times[2] - times[1]).abs() < 1e-9,
+            "edge is vertical: {times:?}"
+        );
+        assert!(
+            ((times[3] - times[0]) - 0.2).abs() < 1e-6,
+            "700 -> 900 ms: {times:?}"
+        );
+        // The chart goes on to the time of the line.
+        assert_eq!(h.last().unwrap().1, 1.0);
+        assert_eq!(l.values[0], Some(Value::Bool(true)));
+        // Int slots are not events.
+        assert!(l.history[1].is_empty());
+    }
+
+    #[test]
+    fn sample_does_not_repeat_what_events_told() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux {
+            events: true,
+            ..Aux::default()
+        };
+        let mut asked = Vec::new();
+        for text in [
+            "out 00000001 00000005",
+            "out 00000001 00000005",
+            "out 00000000 00000005",
+        ] {
+            asked.push(0);
+            handle_line(
+                text,
+                &table,
+                &modules,
+                &mut asked,
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        let l = live.lock().unwrap();
+        // First sample starts the line, the repeat is skipped, the mismatch (lost event) is kept.
+        assert_eq!(
+            l.history[0].iter().map(|p| p.1).collect::<Vec<_>>(),
+            [1.0, 0.0]
+        );
+        // Numbers are always sampled.
+        assert_eq!(l.history[1].len(), 3);
+    }
+
+    #[test]
+    fn list_gives_cycle_statistics() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        let mut feed = |lines: &[&str]| {
+            for text in lines {
+                handle_line(
+                    text,
+                    &table,
+                    &modules,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    &mut aux,
+                    Instant::now(),
+                    &live,
+                );
+            }
+        };
+        let crc = format!("{:08x}", 5);
+        feed(&[
+            &format!("sheet1 run steps=100 restarts=0 out0=0 us=300/900/12000/30000 crc={crc}"),
+            "free=123456 largest=100000",
+            "end",
+        ]);
+        let first = live.lock().unwrap().stats.clone().unwrap();
+        assert_eq!(first.last_us, 300);
+        assert_eq!(first.max_us, 900);
+        assert_eq!(first.period_max_us, 12000);
+        assert_eq!(first.free_heap, 123_456);
+        assert_eq!(first.sheets.len(), 1);
+        assert_eq!(first.sheets[0].sheet, 1);
+        feed(&[
+            &format!("sheet1 run steps=150 restarts=0 out0=0 us=200/900/12000/40000 crc={crc}"),
+            "end",
+        ]);
+        let second = live.lock().unwrap().stats.clone().unwrap();
+        // 50 steps took 10000 us: 200 us each.
+        assert_eq!(second.avg_us, 200);
+        assert!(second.cycles > 0);
+    }
+
+    #[test]
+    fn older_master_without_times_still_reports_cycles() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        for text in ["sheet1 run steps=10 restarts=0 out0=0 crc=00000005", "end"] {
+            handle_line(
+                text,
+                &table,
+                &modules,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        let stats = live.lock().unwrap().stats.clone().unwrap();
+        assert_eq!(stats.max_us, 0);
+        assert!(!aux.events, "no events without caps");
     }
 }

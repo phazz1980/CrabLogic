@@ -2928,7 +2928,7 @@ impl EditorApp {
                 ui.close();
             }
             ui.separator();
-            ui.weak(format!("CrabLogic {}", update::CURRENT));
+            ui.weak(format!("CrabLogic {}", update::version_label()));
             ui.separator();
             if ui
                 .add_enabled(
@@ -3093,7 +3093,7 @@ impl EditorApp {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(format!("v{}", update::CURRENT));
+                ui.weak(format!("v{}", update::version_label()));
             });
         });
         if let Some(staged) = install {

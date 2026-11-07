@@ -70,6 +70,7 @@ impl DebugState {
                 .collect();
             modules.push(ModuleMap {
                 crc: crab_build::mcu_module::crc32(&built.wasm),
+                sheet,
                 name: built.name,
                 slots,
             });

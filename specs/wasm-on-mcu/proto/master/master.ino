@@ -11,6 +11,9 @@
 //   out <name> <n>                   first n (<=128) outputs as 32-bit words in hex (8 digits each)
 // Values are 4-byte words (ABI 3): the bits of an i32 (bool, int) or of an f32 (float).
 //   swap <name>      reload the module from LittleFS      list      stats      log      del <name>
+//   ev <name>        changes of 0/1 outputs since the last `ev`: `ev <name> <now_ms> <lost> <idx>:<val>:<ms> ...`
+//   rmax             forget the longest step / period of all modules
+// `list` gives per module `us=<last>/<max>/<period max>/<sum>` (step time, us) and the line `caps=ev,us`.
 #include <LittleFS.h>
 #include <esp_crc.h>
 // Drivers are compiled in only when the project needs them (CRAB_SENSORS, CRAB_PCF defined by the editor).
@@ -123,6 +126,17 @@ struct Slot {
   TaskHandle_t task = nullptr;
   volatile bool inStep = false, needRestart = false, paused = false;
   volatile uint32_t stepStart = 0, steps = 0, restarts = 0;
+  // Step time in us: last, longest, longest gap between two step starts, running sum (wraps).
+  volatile uint32_t lastUs = 0, maxUs = 0, periodMaxUs = 0, sumUs = 0, startUs = 0;
+  // Changes of 0/1 outputs with the time they happened, for the editor's chart (one writer, one reader).
+  struct Ev {
+    uint32_t ms;
+    uint8_t idx, val;
+  };
+  static const int kEvents = 128;
+  Ev events[kEvents];
+  volatile int evHead = 0, evTail = 0;
+  volatile uint32_t evLost = 0;
   char subs[4][24];
   int nSubs = 0;
   Msg queue[4];
@@ -184,6 +198,16 @@ m3ApiRawFunction(h_output_i) {
   if (i >= 0 && i < kMaxOutputs) {
     Slot *s = slotOf(_ctx);
     if (s->forced[i]) v = intOf(s->forceVal[i]);
+    uint32_t old = s->outputs[i];
+    if (old != (uint32_t)v && old <= 1 && (uint32_t)v <= 1 && i < 256) {
+      int next = (s->evHead + 1) % Slot::kEvents;
+      if (next == s->evTail) {
+        s->evLost++;
+      } else {
+        s->events[s->evHead] = {millis(), (uint8_t)i, (uint8_t)v};
+        s->evHead = next;
+      }
+    }
     s->outputs[i] = (uint32_t)v;
   }
   m3ApiReturn(v);
@@ -1987,6 +2011,9 @@ static bool startSlot(Slot &s, bool paused = false) {
   m3_FindFunction(&s.alloc, s.rt, "alloc");
   m3_FindFunction(&s.onMessage, s.rt, "on_message");
   s.steps = 0;
+  s.lastUs = s.maxUs = s.periodMaxUs = s.sumUs = s.startUs = 0;
+  s.evHead = s.evTail = 0;
+  s.evLost = 0;
   s.paused = paused;
   memset((void *)s.inputs, 0, sizeof s.inputs);
   memset((void *)s.params, 0, sizeof s.params);
@@ -2033,9 +2060,16 @@ static void slotTask(void *arg) {
   for (;;) {
     while (s.paused) vTaskDelay(pdMS_TO_TICKS(5));
     s.stepStart = millis();
+    uint32_t t0 = micros();
+    if (s.startUs && t0 - s.startUs > s.periodMaxUs) s.periodMaxUs = t0 - s.startUs;
+    s.startUs = t0;
     s.inStep = true;
     M3Result r = m3_CallV(s.step, (int32_t)kStepPeriodMs);
     s.inStep = false;
+    uint32_t dt = micros() - t0;
+    s.lastUs = dt;
+    if (dt > s.maxUs) s.maxUs = dt;
+    s.sumUs += dt;
     if (r) {
       jlog(s.name, "ошибка шага: %s", r);
       s.needRestart = true;
@@ -2209,6 +2243,18 @@ static void cmdTest(const String &line) {
     }
     xSemaphoreGive(g_mgmt);
     Serial.println(ok ? "ok" : "err step failed");
+  } else if (!strcmp(cmd, "ev")) {
+    Serial.printf("ev %s %u %u", s->name, (unsigned)millis(), (unsigned)s->evLost);
+    s->evLost = 0;
+    int head = s->evHead, tail = s->evTail;
+    while (tail != head) {
+      const Slot::Ev &e = s->events[tail];
+      Serial.printf(" %u:%u:%u", (unsigned)e.idx, (unsigned)e.val, (unsigned)e.ms);
+      tail = (tail + 1) % Slot::kEvents;
+    }
+    s->evTail = tail;
+    Serial.println();
+    Serial.println("ok");
   } else {  // out
     if (sscanf(line.c_str(), "%*s %*s %u", &n) != 1 || n > kMaxOutputs) {
       Serial.println("err bad count");
@@ -2225,7 +2271,7 @@ static void cmdTest(const String &line) {
 
 static void cmdLine(String line) {
   line.trim();
-  if (line.startsWith("in ") || line.startsWith("param ") || line.startsWith("tick ") || line.startsWith("out ") || line.startsWith("reset ") || line.startsWith("force ") || line.startsWith("unforce ")) {
+  if (line.startsWith("in ") || line.startsWith("param ") || line.startsWith("tick ") || line.startsWith("out ") || line.startsWith("ev ") || line.startsWith("reset ") || line.startsWith("force ") || line.startsWith("unforce ")) {
     cmdTest(line);
   } else if (line.startsWith("put ")) {
     cmdPut(line);
@@ -2234,10 +2280,17 @@ static void cmdLine(String line) {
     for (int i = g_jCount - n; i < g_jCount; i++)
       Serial.printf("%u %s\n", (unsigned)g_journal[i % kJournal].ms, g_journal[i % kJournal].text);
     Serial.println("end");
+  } else if (line == "rmax") {
+    for (auto &s : g_slots) {
+      s.maxUs = 0;
+      s.periodMaxUs = 0;
+    }
+    Serial.println("ok");
   } else if (line == "list" || line == "stats") {
     for (auto &s : g_slots)
       if (s.used)
-        Serial.printf("%s %s steps=%u restarts=%u out0=%08x crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
+        Serial.printf("%s %s steps=%u restarts=%u out0=%08x us=%u/%u/%u/%u crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)s.lastUs, (unsigned)s.maxUs, (unsigned)s.periodMaxUs, (unsigned)s.sumUs, (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
+    Serial.println("caps=ev,us");
     uint32_t ip = 0;
 #ifdef CRAB_WIFI
     if (g_net.complete) ip = g_net.ip;

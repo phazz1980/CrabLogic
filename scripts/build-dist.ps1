@@ -1,6 +1,6 @@
 ﻿# Release build of CrabLogic and assembly of the distribution folder and archive.
-# Usage: build.cmd (double-click) or `powershell -File scripts\build-dist.ps1 [-NoZip]`.
-param([switch]$NoZip, [switch]$WithCore)
+# Usage: build.cmd (double-click) or `powershell -File scripts\build-dist.ps1 [-NoZip] [-Release]`. `-Release` (for a published release) leaves out the build-time mark.
+param([switch]$NoZip, [switch]$WithCore, [switch]$Release)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -66,6 +66,8 @@ foreach ($bin in $bins) {
 Write-Host '== Сборка (cargo build --release) ==' -ForegroundColor Cyan
 Push-Location $root
 try {
+    # A published release carries no build-time mark (see crab-editor/build.rs); local builds do.
+    if ($Release) { $env:CRAB_RELEASE = '1' } else { Remove-Item Env:CRAB_RELEASE -ErrorAction SilentlyContinue }
     & cargo build --release --workspace
     if ($LASTEXITCODE -ne 0) { Fail 'сборка не удалась, см. вывод cargo выше.' }
 } finally {
