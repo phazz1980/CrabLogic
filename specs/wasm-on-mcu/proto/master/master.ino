@@ -19,6 +19,7 @@
 // `list` gives per module `us=<last>/<max>/<period max>/<sum>` (step time, us) and the line `caps=ev,us`.
 #include <LittleFS.h>
 #include <esp_crc.h>
+#include <Preferences.h>  // retain() always needs it, not only the web page
 // Drivers are compiled in only when the project needs them (CRAB_SENSORS, CRAB_PCF defined by the editor).
 #ifdef CRAB_PCF
 #include <Wire.h>
@@ -43,7 +44,6 @@
 #ifdef CRAB_WEB
 #include "flprogWebServer.h"
 #include <esp_mac.h>
-#include <Preferences.h>
 #ifdef CRAB_WIFI
 #include <WiFi.h>
 #endif
@@ -65,7 +65,7 @@ static const int kJournal = 24;
 
 enum { P_GPIO_READ = 1, P_GPIO_WRITE = 2, P_ADC = 4, P_PWM = 8, P_MILLIS = 16, P_SENSOR = 32,
        P_PCF_READ = 64, P_PCF_WRITE = 128, P_MODBUS = 256, P_UART = 512, P_TEXT = 1024, P_NET = 2048,
-       P_NATIVE = 4096, P_MATH = 8192, P_RETAIN = 16384 };
+       P_NATIVE = 4096, P_MATH = 8192, P_RETAIN = 16384, P_TAG_TEXT = 32768, P_RETAIN_TEXT = 65536 };
 
 #if defined(CRAB_SENSORS) || defined(CRAB_PCF) || defined(CRAB_MODBUS) || defined(CRAB_NET)
 #define CRAB_HWTASK 1
@@ -123,7 +123,7 @@ static const int kQueueMax = 16, kQueueDefault = 8, kMaxTopics = 16;
 struct Slot {
   bool used = false;
   char name[16] = "";
-  uint16_t perms = 0;
+  uint32_t perms = 0;
   uint8_t *wasm = nullptr;  // wasm3 keeps pointing into these bytes
   size_t wasmLen = 0;
   IM3Environment env = nullptr;
@@ -424,6 +424,74 @@ m3ApiRawFunction(h_retain) {
   if (!g_retOpen) m3ApiReturn(op == 0 ? val : 0);
   if (op == 0) m3ApiReturn((int32_t)g_retPrefs.getUInt(k, (uint32_t)val));
   if ((int32_t)g_retPrefs.getUInt(k, ~(uint32_t)val) != val) g_retPrefs.putUInt(k, (uint32_t)val);
+  m3ApiReturn(1);
+}
+// tag_text(op, id, ptr, n): texts shared between modules (up to 128 bytes per tag).
+// op 0 reads into [ptr, ptr+n) and returns the length, op 1 stores n bytes.
+static char *g_tagText[64];
+static uint8_t g_tagTextLen[64];
+m3ApiRawFunction(h_tag_text) {
+  m3ApiReturnType(int32_t);
+  m3ApiGetArg(int32_t, op);
+  m3ApiGetArg(int32_t, id);
+  m3ApiGetArg(int32_t, ptr);
+  m3ApiGetArg(int32_t, n);
+  if (id < 0 || id >= 64 || n < 0 || !inMem(runtime, ptr, n)) m3ApiReturn(0);
+  if (op == 0) {
+    int32_t len = 0;
+    portENTER_CRITICAL(&g_mux);
+    if (g_tagText[id]) {
+      len = g_tagTextLen[id] < n ? g_tagTextLen[id] : n;
+      memcpy((uint8_t *)_mem + ptr, g_tagText[id], len);
+    }
+    portEXIT_CRITICAL(&g_mux);
+    m3ApiReturn(len);
+  }
+  if (!g_tagText[id]) {
+    char *p = (char *)malloc(128);
+    if (!p) m3ApiReturn(0);
+    portENTER_CRITICAL(&g_mux);
+    g_tagText[id] = p;
+    portEXIT_CRITICAL(&g_mux);
+  }
+  if (n > 128) n = 128;
+  portENTER_CRITICAL(&g_mux);
+  memcpy(g_tagText[id], (uint8_t *)_mem + ptr, n);
+  g_tagTextLen[id] = (uint8_t)n;
+  portEXIT_CRITICAL(&g_mux);
+  m3ApiReturn(1);
+}
+// retain_text(op, key, ptr, n): a text kept in flash (up to 128 bytes, stored with one marker byte so an
+// empty text is a value too). op 0 reads and returns the length or -1 when nothing is stored; op 1 writes a
+// changed text.
+m3ApiRawFunction(h_retain_text) {
+  m3ApiReturnType(int32_t);
+  m3ApiGetArg(int32_t, op);
+  m3ApiGetArg(int32_t, key);
+  m3ApiGetArg(int32_t, ptr);
+  m3ApiGetArg(int32_t, n);
+  if (n < 0 || !inMem(runtime, ptr, n) || !g_retOpen) m3ApiReturn(-1);
+  char k[12];
+  snprintf(k, sizeof k, "k%08x", (unsigned)key);
+  uint8_t tmp[132];
+  size_t total = g_retPrefs.isKey(k) ? g_retPrefs.getBytesLength(k) : 0;
+  if (op == 0) {
+    if (total < 1 || total > sizeof tmp) m3ApiReturn(-1);
+    g_retPrefs.getBytes(k, tmp, total);
+    int32_t len = (int32_t)total - 1;
+    if (len > n) len = n;
+    memcpy((uint8_t *)_mem + ptr, tmp, len);
+    m3ApiReturn(len);
+  }
+  if (n > 128) n = 128;
+  uint8_t now[132];
+  memcpy(now, (uint8_t *)_mem + ptr, n);
+  now[n] = 1;
+  if (total == (size_t)n + 1 && total <= sizeof tmp) {
+    g_retPrefs.getBytes(k, tmp, total);
+    if (memcmp(tmp, now, total) == 0) m3ApiReturn(1);
+  }
+  g_retPrefs.putBytes(k, now, (size_t)n + 1);
   m3ApiReturn(1);
 }
 m3ApiRawFunction(h_millis) {
@@ -2000,6 +2068,8 @@ static void linkAll(Slot &s, IM3Module m) {
   if (s.perms & P_PWM) L("pwm_write", "v(ii)", h_pwm_write);
   if (s.perms & P_MATH) L("math", "f(iff)", h_math);
   if (s.perms & P_RETAIN) L("retain", "i(iii)", h_retain);
+  if (s.perms & P_TAG_TEXT) L("tag_text", "i(iiii)", h_tag_text);
+  if (s.perms & P_RETAIN_TEXT) L("retain_text", "i(iiii)", h_retain_text);
   if (s.perms & P_MILLIS) L("millis", "i()", h_millis);
 #ifdef CRAB_SENSORS
   if (s.perms & P_SENSOR) L("sensor_read", "f(iii)", h_sensor_read);
@@ -2026,8 +2096,8 @@ static void linkAll(Slot &s, IM3Module m) {
 }
 
 // ---- module lifecycle (call with g_mgmt held) ----
-static uint16_t parsePerms(const String &a) {
-  uint16_t p = 0;
+static uint32_t parsePerms(const String &a) {
+  uint32_t p = 0;
   if (a.indexOf("gpio_read") >= 0) p |= P_GPIO_READ;
   if (a.indexOf("gpio_write") >= 0) p |= P_GPIO_WRITE;
   if (a.indexOf("adc_read") >= 0) p |= P_ADC;
@@ -2043,6 +2113,8 @@ static uint16_t parsePerms(const String &a) {
   if (a.indexOf("native") >= 0) p |= P_NATIVE;
   if (a.indexOf("math") >= 0) p |= P_MATH;
   if (a.indexOf("retain") >= 0) p |= P_RETAIN;
+  if (a.indexOf("tag_text") >= 0) p |= P_TAG_TEXT;
+  if (a.indexOf("retain_text") >= 0) p |= P_RETAIN_TEXT;
   return p;
 }
 
