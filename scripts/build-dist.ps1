@@ -105,12 +105,14 @@ foreach ($dir in 'library', 'examples', 'libs') {
         Write-Host "Пропуск: нет папки $dir" -ForegroundColor Yellow
         continue
     }
-    # .crab holds per-project arduino-cli build caches: hundreds of MB, not for distribution.
-    & robocopy $src $dst /MIR /XD .crab /NFL /NDL /NJH /NJS /NP | Out-Null
+    # .crab (and .flp, its name before the rename) holds per-project arduino-cli build caches: hundreds of MB, not for distribution.
+    & robocopy $src $dst /MIR /XD .crab .flp /NFL /NDL /NJH /NJS /NP | Out-Null
     # robocopy: codes below 8 mean success.
     if ($LASTEXITCODE -ge 8) { Fail "не удалось скопировать $dir (robocopy $LASTEXITCODE)." }
     # Excluded dirs are also kept from purging, so drop ones left from earlier copies.
-    Get-ChildItem $dst -Recurse -Directory -Force -Filter .crab | Remove-Item -Recurse -Force
+    foreach ($cache in '.crab', '.flp') {
+        Get-ChildItem $dst -Recurse -Directory -Force -Filter $cache | Remove-Item -Recurse -Force
+    }
 }
 # -WithCore: the ESP32 core goes into esp32core (arduino-cli data folder) so builds work offline.
 if ($WithCore) {
