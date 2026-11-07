@@ -1,0 +1,6 @@
+[project]
+name = "wasm_convert"
+description = "Преобразование типов для сверки модуля WASM с crab-sim"
+
+[board]
+fqbn = "esp32:esp32:esp32"

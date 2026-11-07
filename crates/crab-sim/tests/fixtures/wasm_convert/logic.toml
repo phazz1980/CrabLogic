@@ -1,0 +1,71 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = -0.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "near"
+type = "float_to_int"
+mode = 0
+
+[[block]]
+id = "down"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "up"
+type = "float_to_int"
+mode = 2
+
+[[block]]
+id = "cut"
+type = "float_to_int"
+mode = 3
+
+[[block]]
+id = "back"
+type = "int_to_float"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "near.in"
+[[link]]
+from = "xr.out"
+to = "down.in"
+[[link]]
+from = "xr.out"
+to = "up.in"
+[[link]]
+from = "xr.out"
+to = "cut.in"
+[[link]]
+from = "near.out"
+to = "back.in"

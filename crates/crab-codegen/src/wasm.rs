@@ -521,10 +521,19 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let Some(p) = inst.lib.def.params.get(i) else {
             return Ty::F;
         };
+        if Self::param_is_input(inst, &p.name) {
+            return Ty::of(inst.inputs[p.name.as_str()].ty);
+        }
         match inst.param_vars.get(p.name.as_str()) {
             Some(var) => self.var_ty(var),
             None => Ty::of_kind(p.kind),
         }
+    }
+
+    /// A parameter turned into an input (`param_in`) that has a source: its value comes
+    /// from the link on every scan, not from the constant.
+    fn param_is_input(inst: &Instance, name: &str) -> bool {
+        inst.block.param_in.contains(name) && inst.inputs.contains_key(name)
     }
 
     fn param(&mut self, inst: &Instance, i: usize) -> Ty {
@@ -532,6 +541,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.c_f(0.0);
             return Ty::F;
         };
+        if Self::param_is_input(inst, &p.name) {
+            return self.operand(inst, &p.name);
+        }
         if let Some(var) = inst.param_vars.get(p.name.as_str()) {
             self.var_read(var)
         } else {
@@ -561,8 +573,15 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let Some(p) = inst.lib.def.params.get(i) else {
             return self.c_i(0);
         };
-        if let Some(var) = inst.param_vars.get(p.name.as_str()) {
-            match self.var_read(var) {
+        let fed = if Self::param_is_input(inst, &p.name) {
+            Some(self.operand(inst, &p.name))
+        } else {
+            inst.param_vars
+                .get(p.name.as_str())
+                .map(|var| self.var_read(var))
+        };
+        if let Some(ty) = fed {
+            match ty {
                 Ty::F => self.op(I::I32TruncSatF32U),
                 Ty::I => {
                     let x = self.tmp_i();
@@ -587,10 +606,13 @@ impl<'a, 'p> Emitter<'a, 'p> {
     /// Constant value of parameter `i`, for blocks that cannot take it from a variable.
     fn const_param(&self, inst: &Instance, i: usize) -> Result<f64, WasmError> {
         let p = &inst.lib.def.params[i];
-        if inst.param_vars.contains_key(p.name.as_str()) {
+        if inst.param_vars.contains_key(p.name.as_str()) || Self::param_is_input(inst, &p.name) {
             return Err(self.unsupported(
                 inst,
-                &format!("параметр «{}» из переменной пока не поддержан", p.name),
+                &format!(
+                    "параметр «{}» из переменной или входа пока не поддержан",
+                    p.name
+                ),
             ));
         }
         Ok(inst
@@ -2060,6 +2082,56 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 }
                 self.op(I::LocalGet(r));
                 w
+            }
+            "float_to_int" => {
+                // Same as the sketch: `roundf` (half away from zero), `floorf`, `ceilf` or a
+                // cut; the result saturates and NaN is 0.
+                if self.input_ty(inst, 0) == Ty::I {
+                    self.input_as(inst, 0, Ty::I);
+                    self.set_out(inst, 0, Ty::I);
+                    return Ok(());
+                }
+                if inst.param_vars.contains_key("mode") {
+                    return Err(self.unsupported(
+                        inst,
+                        "способ округления из входа пока не поддержан в модулях",
+                    ));
+                }
+                let mode = inst
+                    .params
+                    .get("mode")
+                    .map_or(0.0, |v| num(v, ParamKind::Int)) as i64;
+                self.input_as(inst, 0, Ty::F);
+                match mode {
+                    0 => {
+                        // x + copysign(0.5, x) in f64 is exact for any f32, then cut.
+                        let x = self.tmp_f();
+                        self.op(I::LocalSet(x));
+                        self.op(I::LocalGet(x));
+                        self.op(I::F64PromoteF32);
+                        self.op(I::F64Const(0.5.into()));
+                        self.op(I::LocalGet(x));
+                        self.op(I::F64PromoteF32);
+                        self.op(I::F64Copysign);
+                        self.op(I::F64Add);
+                        self.op(I::F64Trunc);
+                        self.op(I::I32TruncSatF64S);
+                    }
+                    1 => {
+                        self.op(I::F32Floor);
+                        self.coerce(Ty::F, Ty::I);
+                    }
+                    2 => {
+                        self.op(I::F32Ceil);
+                        self.coerce(Ty::F, Ty::I);
+                    }
+                    _ => self.coerce(Ty::F, Ty::I),
+                }
+                Ty::I
+            }
+            "int_to_float" => {
+                self.input_as(inst, 0, Ty::F);
+                Ty::F
             }
             "var_get" => {
                 let name = inst.block.var_name().unwrap_or_default().to_owned();

@@ -1,0 +1,84 @@
+# Generator times come from inputs (param_in), not from the constants in the block.
+
+[[block]]
+id = "on_ms"
+type = "constant"
+value = 200
+
+[[block]]
+id = "off_ms"
+type = "constant"
+value = 600
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "500ms"
+time_off = "500ms"
+param_in = ["time_on", "time_off"]
+
+[[block]]
+id = "on_i"
+type = "float_to_int"
+[[block]]
+id = "off_i"
+type = "float_to_int"
+
+[[link]]
+from = "on_ms.out"
+to = "on_i.in"
+[[link]]
+from = "off_ms.out"
+to = "off_i.in"
+[[link]]
+from = "on_i.out"
+to = "gen.time_on"
+[[link]]
+from = "off_i.out"
+to = "gen.time_off"
+
+# TON, TOF and TP: the time comes from an input too.
+[[block]]
+id = "t_ms"
+type = "constant"
+value = 150
+[[block]]
+id = "t_i"
+type = "float_to_int"
+[[block]]
+id = "ton"
+type = "timer_on"
+time = "100ms"
+param_in = ["time"]
+[[block]]
+id = "tof"
+type = "timer_off"
+time = "100ms"
+param_in = ["time"]
+[[block]]
+id = "tp"
+type = "pulse"
+time = "100ms"
+param_in = ["time"]
+
+[[link]]
+from = "t_ms.out"
+to = "t_i.in"
+[[link]]
+from = "t_i.out"
+to = "ton.time"
+[[link]]
+from = "t_i.out"
+to = "tof.time"
+[[link]]
+from = "t_i.out"
+to = "tp.time"
+[[link]]
+from = "gen.out"
+to = "ton.in"
+[[link]]
+from = "gen.out"
+to = "tof.in"
+[[link]]
+from = "gen.out"
+to = "tp.in"

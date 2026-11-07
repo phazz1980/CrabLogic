@@ -578,3 +578,24 @@ fn web_page_goes_through_the_master() {
     assert_eq!(io.web_items[4].value, 1.0, "led follows the switch");
     assert_eq!(io.web_items[6].text, "Привет, Мир");
 }
+
+#[test]
+fn type_conversions_match_the_simulation() {
+    // 40 steps of -0.5 pass the ties (-0.5, -1.5, ...) and whole values in every mode.
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_convert")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    assert!(built.watched.len() >= 5, "{:?}", built.watched);
+    compare(
+        "crates/crab-sim/tests/fixtures/wasm_convert",
+        built.watched.len(),
+        40,
+        100,
+    );
+}
+
+#[test]
+fn parameters_read_from_inputs_match_the_simulation() {
+    compare("crates/crab-sim/tests/fixtures/wasm_param_in", 10, 80, 50);
+}
