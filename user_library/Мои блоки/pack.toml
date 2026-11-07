@@ -1,2 +1,5 @@
 name = "Мои блоки"
 version = 1
+
+[history]
+chip_temp = ["7815ae11ad3d30db"]

@@ -626,7 +626,7 @@ pub fn chart_window(dbg: &mut DebugState, pal: &Palette, ctx: &egui::Context) {
                         remove = Some(index);
                     }
                 });
-                strip(ui, pal, &dbg.live.history[index]);
+                strip(ui, pal, index, &dbg.live.history[index]);
             }
         });
     if !open {
@@ -749,7 +749,7 @@ pub fn diagnostics_window(
                         ui.monospace(format!("{v:.0}"));
                     }
                 });
-                strip(ui, pal, points);
+                strip(ui, pal, title.to_string(), points);
             }
             ui.separator();
             if ui
@@ -767,11 +767,84 @@ pub fn diagnostics_window(
     }
 }
 
-fn strip(ui: &mut Ui, pal: &Palette, points: &[(f64, f64)]) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 80.0), Sense::hover());
+/// What one chart shows: the width of the window and how far its right edge is behind the
+/// newest point (zero follows the data).
+#[derive(Clone, Copy)]
+struct ChartView {
+    span: f64,
+    back: f64,
+}
+
+impl Default for ChartView {
+    fn default() -> Self {
+        Self {
+            span: DEFAULT_SPAN,
+            back: 0.0,
+        }
+    }
+}
+
+const DEFAULT_SPAN: f64 = 60.0;
+const MIN_SPAN: f64 = 0.5;
+const MAX_SPAN: f64 = 3600.0;
+/// Heights of the plot and of the strip with the time labels.
+const PLOT_H: f32 = 80.0;
+const AXIS_H: f32 = 13.0;
+
+/// A step of the time grid (seconds) that gives about one label per `want` seconds.
+fn time_step(want: f64) -> f64 {
+    const STEPS: [f64; 18] = [
+        0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0,
+        1800.0, 3600.0, 7200.0,
+    ];
+    STEPS
+        .iter()
+        .copied()
+        .find(|s| *s >= want)
+        .unwrap_or(STEPS[STEPS.len() - 1])
+}
+
+/// Time since the start of the session: `m:ss`, `h:mm:ss`, with tenths when `fine`.
+fn time_label(t: f64, fine: bool) -> String {
+    let t = t.max(0.0);
+    let whole = t as u64;
+    let (h, m, sec) = (whole / 3600, whole / 60 % 60, whole % 60);
+    let frac = if fine {
+        format!(".{}", ((t - whole as f64) * 10.0) as u64)
+    } else {
+        String::new()
+    };
+    if h > 0 {
+        format!("{h}:{m:02}:{sec:02}{frac}")
+    } else {
+        format!("{m}:{sec:02}{frac}")
+    }
+}
+
+/// The value a chart has at time `t`: the last point not after it.
+fn value_at(points: &[(f64, f64)], t: f64) -> Option<f64> {
+    let k = points.partition_point(|p| p.0 <= t);
+    k.checked_sub(1).map(|k| points[k].1)
+}
+
+/// A chart of `points` (time since the start of the session, value) with a time axis. The
+/// wheel zooms around the pointer, dragging moves the window, a double click goes back to the
+/// last minute that follows the data.
+fn strip(
+    ui: &mut Ui,
+    pal: &Palette,
+    key: impl std::hash::Hash + std::fmt::Debug,
+    points: &[(f64, f64)],
+) {
+    let id = ui.scope_id().with(("chart", key));
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), PLOT_H + AXIS_H),
+        Sense::click_and_drag(),
+    );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2.0, pal.sheet);
-    let Some(&(t_end, _)) = points.last() else {
+    let plot = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - AXIS_H));
+    let Some(&(t_last, _)) = points.last() else {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -781,33 +854,156 @@ fn strip(ui: &mut Ui, pal: &Palette, points: &[(f64, f64)]) {
         );
         return;
     };
-    let t_start = t_end - 60.0;
-    let visible: Vec<&(f64, f64)> = points.iter().filter(|p| p.0 >= t_start).collect();
+    let mut view: ChartView = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    let width = f64::from(plot.width().max(1.0));
+    if response.double_clicked() {
+        view = ChartView::default();
+    }
+    if response.hovered() {
+        // The wheel belongs to the chart here, not to the window around it.
+        let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+        if wheel != 0.0 {
+            ui.input_mut(|i| {
+                i.smooth_scroll_delta = Vec2::ZERO;
+            });
+            let x = response
+                .hover_pos()
+                .map_or(0.5, |p| f64::from((p.x - plot.min.x) / plot.width()));
+            let end = t_last - view.back;
+            let under = end - view.span * (1.0 - x);
+            let span = (view.span * (-f64::from(wheel) * 0.004).exp()).clamp(MIN_SPAN, MAX_SPAN);
+            // The moment under the pointer stays under it.
+            view.back = (t_last - (under + span * (1.0 - x))).max(0.0);
+            view.span = span;
+        }
+    }
+    if response.dragged() {
+        let dt = f64::from(response.drag_delta().x) / width * view.span;
+        view.back = (view.back + dt).max(0.0);
+    }
+    let first = points.first().map_or(0.0, |p| p.0);
+    view.back = view.back.min((t_last - first).max(0.0));
+    ui.data_mut(|d| d.insert_temp(id, view));
+
+    let t_end = t_last - view.back;
+    let t_start = t_end - view.span;
+    // The points of the window and one on each side, so the line reaches the edges.
+    let a = points.partition_point(|p| p.0 < t_start).saturating_sub(1);
+    let b = (points.partition_point(|p| p.0 <= t_end) + 1).min(points.len());
+    let visible = &points[a..b];
     let (lo, hi) = visible.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
         (lo.min(p.1), hi.max(p.1))
     });
-    let span = if hi - lo < 1e-9 { 1.0 } else { hi - lo };
+    let span_y = if hi - lo < 1e-9 { 1.0 } else { hi - lo };
+    let to_x = |t: f64| plot.min.x + ((t - t_start) / view.span) as f32 * plot.width();
     let to_screen = |t: f64, y: f64| {
         Pos2::new(
-            rect.min.x + ((t - t_start) / 60.0) as f32 * rect.width(),
-            rect.max.y - 6.0 - ((y - lo) / span) as f32 * (rect.height() - 12.0),
+            to_x(t),
+            plot.max.y - 6.0 - ((y - lo) / span_y) as f32 * (plot.height() - 12.0),
         )
     };
-    let line: Vec<Pos2> = visible.iter().map(|p| to_screen(p.0, p.1)).collect();
-    painter.line(line, Stroke::new(1.5, pal.accent));
     let font = egui::FontId::monospace(9.0);
+    // Time grid and labels.
+    let step = time_step(view.span * 70.0 / width);
+    let grid = pal.weak.gamma_multiply(0.25);
+    let mut t = (t_start / step).ceil() * step;
+    while t <= t_end {
+        let x = to_x(t);
+        painter.line_segment(
+            [Pos2::new(x, plot.min.y), Pos2::new(x, plot.max.y)],
+            Stroke::new(1.0, grid),
+        );
+        painter.text(
+            Pos2::new(x + 2.0, rect.max.y - 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            time_label(t, step < 1.0),
+            font.clone(),
+            pal.weak,
+        );
+        t += step;
+    }
+    let line: Vec<Pos2> = visible.iter().map(|p| to_screen(p.0, p.1)).collect();
+    painter
+        .with_clip_rect(plot)
+        .line(line, Stroke::new(1.5, pal.accent));
     painter.text(
-        rect.left_top() + Vec2::new(3.0, 2.0),
+        plot.left_top() + Vec2::new(3.0, 2.0),
         egui::Align2::LEFT_TOP,
         format!("{hi:.2}"),
         font.clone(),
         pal.weak,
     );
     painter.text(
-        rect.left_bottom() + Vec2::new(3.0, -2.0),
+        plot.left_bottom() + Vec2::new(3.0, -2.0),
         egui::Align2::LEFT_BOTTOM,
         format!("{lo:.2}"),
-        font,
+        font.clone(),
         pal.weak,
     );
+    if view.back > 0.0 {
+        painter.text(
+            plot.right_top() + Vec2::new(-3.0, 2.0),
+            egui::Align2::RIGHT_TOP,
+            crate::i18n::fmt("−{0} с от конца", &[&format!("{:.1}", view.back)]),
+            font.clone(),
+            pal.weak,
+        );
+    }
+    // Under the pointer: the time and the value there.
+    if let Some(pos) = response.hover_pos().filter(|p| plot.contains(*p)) {
+        let t = t_start + f64::from((pos.x - plot.min.x) / plot.width()) * view.span;
+        painter.line_segment(
+            [Pos2::new(pos.x, plot.min.y), Pos2::new(pos.x, plot.max.y)],
+            Stroke::new(1.0, pal.weak),
+        );
+        if let Some(v) = value_at(points, t) {
+            let right = pos.x > plot.center().x;
+            let (align, dx) = if right {
+                (egui::Align2::RIGHT_TOP, -4.0)
+            } else {
+                (egui::Align2::LEFT_TOP, 4.0)
+            };
+            painter.text(
+                Pos2::new(pos.x + dx, plot.min.y + 12.0),
+                align,
+                format!("{}  {v:.3}", time_label(t, true)),
+                font,
+                pal.text,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod chart_tests {
+    use super::*;
+
+    #[test]
+    fn time_grid_step_grows_with_the_window() {
+        assert_eq!(time_step(0.03), 0.05);
+        assert_eq!(time_step(7.0), 10.0);
+        assert_eq!(time_step(70.0 * 60.0 / 400.0), 15.0);
+        assert_eq!(time_step(1e9), 7200.0);
+    }
+
+    #[test]
+    fn time_labels() {
+        assert_eq!(time_label(75.0, false), "1:15");
+        assert_eq!(time_label(3725.0, false), "1:02:05");
+        assert_eq!(time_label(1.25, true), "0:01.2");
+        assert_eq!(time_label(-3.0, false), "0:00");
+    }
+
+    #[test]
+    fn value_under_the_pointer_is_the_last_point_before_it() {
+        let p = [(1.0, 0.0), (2.0, 1.0), (2.0, 0.0), (5.0, 1.0)];
+        assert_eq!(value_at(&p, 0.5), None);
+        assert_eq!(value_at(&p, 1.5), Some(0.0));
+        assert_eq!(
+            value_at(&p, 2.0),
+            Some(0.0),
+            "an upright edge ends on the new level"
+        );
+        assert_eq!(value_at(&p, 9.0), Some(1.0));
+    }
 }

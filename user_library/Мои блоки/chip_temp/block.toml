@@ -2,14 +2,14 @@
 type = "chip_temp"
 name = "Температура чипа"
 symbol = "T чип"
-group = "Датчики"
+group = "Мои блоки"
 description = "Встроенный датчик температуры кристалла (ESP32-C3, S2, S3, C6). Это температура чипа, а не воздуха."
 memory = true
 
 [[output]]
 name = "temp"
 label = "Температура"
-type = "float"
+type = "int"
 description = "Температура кристалла, °C (до первого замера и на ESP32 без датчика — 0)"
 
 [[output]]
@@ -23,5 +23,5 @@ name = "period"
 label = "Период"
 type = "duration"
 default = "1s"
-min = 100
+min = 100.0
 description = "Период опроса датчика"

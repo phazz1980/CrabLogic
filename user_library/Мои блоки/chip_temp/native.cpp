@@ -5,7 +5,7 @@ struct State {
   uint32_t last;
   uint32_t period;
   bool first;
-  float temp;
+  int temp;
   bool ok;
 };
 
