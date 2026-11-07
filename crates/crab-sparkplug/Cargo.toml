@@ -1,0 +1,7 @@
+[package]
+name = "crab-sparkplug"
+description = "MQTT Sparkplug B 3.0: protobuf payloads, topics, birth/data/death messages (no network code)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1277,6 +1277,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "crab-sparkplug"
+version = "1.5.0"
+
+[[package]]
 name = "crab-web"
 version = "1.5.0"
 dependencies = [
