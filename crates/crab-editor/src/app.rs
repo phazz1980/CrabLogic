@@ -3353,6 +3353,10 @@ impl eframe::App for EditorApp {
         self.poll_job(&ctx);
         self.precompile(&ctx);
         self.poll_debug();
+        // Wires of fast 0/1 signals follow the history of the board: redraw about 30 times a second.
+        if self.debug.as_ref().is_some_and(|d| d.animating()) {
+            ctx.request_repaint_after(Duration::from_millis(33));
+        }
         self.poll_sim(&ctx);
         self.poll_ai();
         self.poll_console(&ctx);

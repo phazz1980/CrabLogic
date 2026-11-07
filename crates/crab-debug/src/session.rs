@@ -33,6 +33,11 @@ pub struct Live {
     /// Problems to show to the user (connection lost, wrong schema).
     pub status: String,
     pub frames: u64,
+    /// The board sends changes of 0/1 outputs with their time: the history of those is exact,
+    /// so the editor may show them as they were a moment ago instead of the last sample.
+    pub events: bool,
+    /// Zero of the time of `history` (the start of the session); only the master session sets it.
+    pub clock: Option<std::time::Instant>,
     /// Latest cycle time report of the board.
     pub stats: Option<Stats>,
     /// The firmware is locked with a password and has not let this session in.

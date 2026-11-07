@@ -41,6 +41,9 @@ struct StatSample {
     stats: crab_debug::Stats,
 }
 
+/// How far behind the board the wires of 0/1 signals are, seconds: a bit more than a poll.
+const SHOW_DELAY: f64 = 0.35;
+
 /// How long the diagnostics charts keep their samples, seconds.
 const STAT_HISTORY_SECS: f64 = 120.0;
 
@@ -158,7 +161,28 @@ impl DebugState {
             return None;
         }
         let i = self.table.output_index(port)?;
-        Some((self.live.values[i]?, self.live.forced[i].is_some()))
+        Some((self.shown(i)?, self.live.forced[i].is_some()))
+    }
+
+    /// Value of table entry `i` for the schema. A 0/1 signal the board reports with the time of
+    /// every change is shown as it was `SHOW_DELAY` ago, read from its history: wires blink in
+    /// step with the board instead of following the polls.
+    fn shown(&self, i: usize) -> Option<Value> {
+        let v = self.live.values[i]?;
+        if let (Value::Bool(_), true, Some(clock)) = (v, self.live.events, self.live.clock) {
+            let target = clock.elapsed().as_secs_f64() - SHOW_DELAY;
+            let h = &self.live.history[i];
+            let k = h.partition_point(|p| p.0 <= target);
+            if k > 0 {
+                return Some(Value::Bool(h[k - 1].1 != 0.0));
+            }
+        }
+        Some(v)
+    }
+
+    /// The schema must be redrawn often while it shows signals that follow the history.
+    pub fn animating(&self) -> bool {
+        self.online() && self.live.events
     }
 
     pub fn var(&self, name: &str) -> Option<(Value, bool)> {
@@ -166,7 +190,7 @@ impl DebugState {
             return None;
         }
         let i = self.table.var_index(name)?;
-        Some((self.live.values[i]?, self.live.forced[i].is_some()))
+        Some((self.shown(i)?, self.live.forced[i].is_some()))
     }
 
     /// Live string on a block output (not forceable).

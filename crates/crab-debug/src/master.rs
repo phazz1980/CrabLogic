@@ -129,6 +129,7 @@ fn run(
     wake: impl Fn(),
 ) {
     let started = Instant::now();
+    live.lock().expect("live state").clock = Some(started);
     loop {
         let mut port = match connect() {
             Ok(port) => port,
@@ -264,6 +265,7 @@ fn handle_line(
     }
     if let Some(caps) = text.strip_prefix("caps=") {
         aux.events = caps.split(',').any(|c| c.trim() == "ev");
+        l.events = aux.events;
         return false;
     }
     // `list` answer: `free=<bytes> largest=<bytes>`.
@@ -506,9 +508,13 @@ fn apply_events(
             continue;
         }
         let h = &mut l.history[*i];
-        if let Some((t, y)) = h.last().copied().filter(|p| p.0 < t_rx) {
-            let _ = t;
-            push_point(h, t_rx, y);
+        if let Some((_, y)) = h.last().copied().filter(|p| p.0 < t_rx) {
+            // A flat stretch is one segment: only its end moves.
+            if h.len() >= 2 && h[h.len() - 2].1 == y {
+                h.last_mut().expect("not empty").0 = t_rx;
+            } else {
+                push_point(h, t_rx, y);
+            }
             changed = true;
         }
     }
@@ -907,5 +913,35 @@ mod tests {
         let stats = live.lock().unwrap().stats.clone().unwrap();
         assert_eq!(stats.max_us, 0);
         assert!(!aux.events, "no events without caps");
+    }
+
+    #[test]
+    fn a_flat_signal_stays_two_points() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        for _ in 0..50 {
+            handle_line(
+                "ev sheet1 1000 0 0:1:900",
+                &table,
+                &modules,
+                &mut vec![0],
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now() - Duration::from_secs(5),
+                &live,
+            );
+            handle_line(
+                "ev sheet1 1100 0",
+                &table,
+                &modules,
+                &mut vec![0],
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        // Repeated polls without changes only move the end of the last segment.
+        assert!(live.lock().unwrap().history[0].len() < 210);
     }
 }
