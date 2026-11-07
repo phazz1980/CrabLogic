@@ -391,18 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn the_rust_sample_fits_the_firmware() {
-        let wasm = std::fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/timer_on_rs/block.wasm"),
-        )
-        .unwrap();
-        let info = inspect_module(&wasm).unwrap();
-        assert_eq!(info.imports, ["input", "param", "output"]);
-        assert!(info.has_init);
-        assert_eq!(info.memory_bytes, 65536);
-    }
-
-    #[test]
     fn minimal_module_is_accepted() {
         let info = inspect_module(&minimal(&[])).unwrap();
         assert!(info.imports.is_empty() && !info.has_init);
@@ -523,25 +511,5 @@ void x() { my_block_f3(&i->common); }"
             std::fs::read_to_string(dir.join(FIRMWARE_C_FILE)).unwrap(),
             "old"
         );
-    }
-
-    /// Needs the translator: `CRAB_W2C2=<path to w2c2> cargo test -p crab-build`.
-    #[test]
-    fn rust_sample_is_translated_into_one_file() {
-        let Some(w2c2) = std::env::var_os("CRAB_W2C2") else {
-            return;
-        };
-        let dir = temp_dir("real");
-        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/timer_on_rs");
-        std::fs::copy(sample.join(MODULE_FILE), dir.join(MODULE_FILE)).unwrap();
-        let got = translate_firmware(Path::new(&w2c2), &dir, "timer_on_rs").unwrap();
-        assert!(matches!(got, FirmwareTranslation::Translated(_)), "{got:?}");
-        let text = std::fs::read_to_string(dir.join(FIRMWARE_C_FILE)).unwrap();
-        assert!(
-            text.contains("_step") && !text.contains("#include"),
-            "{text}"
-        );
-        let again = translate_firmware(Path::new(&w2c2), &dir, "timer_on_rs").unwrap();
-        assert_eq!(again, FirmwareTranslation::UpToDate);
     }
 }

@@ -1,0 +1,132 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[var]]
+name = "msg"
+type = "string"
+init = "start"
+
+[[var]]
+name = "name"
+type = "string"
+init = "init"
+retain = true
+
+[[var]]
+name = "frozen"
+type = "string"
+init = "cold"
+retain = true
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 0.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "txt"
+type = "num_to_text"
+decimals = 0
+prefix = "n="
+
+[[block]]
+id = "ms"
+type = "var_set"
+var = "msg"
+
+[[block]]
+id = "hello"
+type = "text_const"
+value = "hello"
+
+[[block]]
+id = "mg"
+type = "var_get"
+var = "msg"
+
+[[block]]
+id = "mgl"
+type = "text_length"
+
+[[block]]
+id = "hl"
+type = "text_length"
+
+[[block]]
+id = "gen"
+type = "generator"
+time_on = "500ms"
+time_off = "700ms"
+
+[[block]]
+id = "nm"
+type = "var_set"
+var = "name"
+write_enable = true
+
+[[block]]
+id = "nr"
+type = "var_get"
+var = "name"
+
+[[block]]
+id = "nrl"
+type = "text_length"
+
+[[block]]
+id = "fr"
+type = "var_get"
+var = "frozen"
+
+[[block]]
+id = "frl"
+type = "text_length"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "txt.in"
+[[link]]
+from = "txt.out"
+to = "ms.in"
+[[link]]
+from = "mg.out"
+to = "mgl.in"
+[[link]]
+from = "hello.out"
+to = "hl.in"
+[[link]]
+from = "mg.out"
+to = "nm.in"
+[[link]]
+from = "gen.out"
+to = "nm.en"
+[[link]]
+from = "nr.out"
+to = "nrl.in"
+[[link]]
+from = "fr.out"
+to = "frl.in"

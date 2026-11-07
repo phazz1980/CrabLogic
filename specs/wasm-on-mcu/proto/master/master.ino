@@ -41,12 +41,12 @@
 #ifdef CRAB_MODBUS
 #include "flprogModbusTCP.h"
 #endif
-#ifdef CRAB_WEB
-#include "flprogWebServer.h"
-#include <esp_mac.h>
 #ifdef CRAB_WIFI
 #include <WiFi.h>
 #endif
+#ifdef CRAB_WEB
+#include "flprogWebServer.h"
+#include <esp_mac.h>
 #endif
 #endif
 
@@ -100,15 +100,19 @@ static SemaphoreHandle_t g_sensorLock;
 // ---- PCF8574 expanders on I2C: the same task talks to them, modules take the last byte / hand over a new one ----
 struct Pcf {
   volatile bool used = false;
-  int32_t key = 0;       // address | sda << 8 | scl << 16 (a pin is one byte, 0xFF = board default)
-  bool writer = false;   // a chip is either read or written by the modules
+  int32_t key = 0;       // address | sda << 8 | scl << 16 (a pin is one byte, 0xFF = board default); bit 24: 16 pins
+  bool writer = false;   // the modules write the chip
+  bool reader = false;   // the modules read the chip (it may be both)
+  uint8_t bytes = 1;     // 1 for PCF8574, 2 for PCF8575
   uint32_t period = 20;
-  volatile uint8_t value = 0xFF;  // last byte read / byte to write
+  volatile uint16_t value = 0xFFFF;  // last word read
+  volatile uint16_t want = 0xFFFF;   // word to write
   volatile bool ok = false;
   // task state
   bool ready = false;
-  int16_t sent = -1;     // last byte written, -1 = none yet
-  uint32_t last = 0;
+  int32_t sent = -1;     // last word written, -1 = none yet
+  uint32_t last = 0;     // last write attempt
+  uint32_t lastRead = 0;
 };
 static const int kMaxPcf = 8;
 static Pcf g_pcf[kMaxPcf];
@@ -609,18 +613,24 @@ m3ApiRawFunction(h_sensor_read) {
 
 #ifdef CRAB_PCF
 // ---- PCF8574 access ----
-static Pcf *pcfFor(int32_t key, bool writer, uint32_t period, uint8_t first) {
+static Pcf *pcfFor(int32_t key, bool writer, uint32_t period, uint16_t first) {
   Pcf *found = nullptr;
   xSemaphoreTake(g_sensorLock, portMAX_DELAY);
   for (auto &c : g_pcf) {
     if (c.used && c.key == key) { found = &c; break; }
   }
-  if (!found) {
+  if (found) {
+    // A chip with outputs and inputs: the first writer's word goes out as the module wants it.
+    if (writer && !found->writer) { found->want = first; found->writer = true; }
+    if (!writer) { found->reader = true; if (period >= 5 && period < found->period) found->period = period; }
+  } else {
     for (auto &c : g_pcf) {
       if (c.used) continue;
       c.key = key;
+      c.bytes = (key >> 24 & 1) ? 2 : 1;
       c.writer = writer;
-      c.value = first;  // a writer's first byte goes out as the module wants it, not as 0xFF
+      c.reader = !writer;
+      c.want = first;  // a writer's first word goes out as the module wants it, not as 0xFFFF
       c.period = period < 5 ? 5 : period;
       c.used = true;  // last: the task sees a complete entry
       found = &c;
@@ -640,28 +650,39 @@ static void pcfPoll(Pcf &c, uint32_t now) {
   }
   if (!c.ready) {
     // A pin reads as an input while the chip holds it high.
+    uint16_t first = c.writer ? c.want : 0xFFFF;
     Wire.beginTransmission(addr);
-    Wire.write(c.writer ? c.value : 0xFF);
+    Wire.write(first & 0xFF);
+    if (c.bytes > 1) Wire.write(first >> 8);
     c.ok = Wire.endTransmission() == 0;
-    if (c.writer && c.ok) c.sent = c.value;
+    if (c.writer && c.ok) c.sent = first;
     c.last = now;
+    c.lastRead = now;
     c.ready = true;
     return;
   }
   if (c.writer) {
     // Write on change; while the chip does not answer, retry twice a second.
-    uint8_t want = c.value;
-    if (c.ok ? want != c.sent : now - c.last >= 500) {
+    uint16_t want = c.want;
+    if (c.ok ? (int32_t)want != c.sent : now - c.last >= 500) {
       Wire.beginTransmission(addr);
-      Wire.write(want);
+      Wire.write(want & 0xFF);
+      if (c.bytes > 1) Wire.write(want >> 8);
       c.ok = Wire.endTransmission() == 0;
       c.last = now;
       if (c.ok) c.sent = want;
     }
-  } else if (now - c.last >= c.period) {
-    c.last = now;
-    if (Wire.requestFrom(addr, (uint8_t)1) == 1) { c.value = Wire.read(); c.ok = true; }
-    else c.ok = false;
+  }
+  if (c.reader && now - c.lastRead >= c.period) {
+    c.lastRead = now;
+    if (Wire.requestFrom(addr, c.bytes) == c.bytes) {
+      uint16_t word = Wire.read();
+      if (c.bytes > 1) word |= (uint16_t)Wire.read() << 8;
+      c.value = word;
+      c.ok = true;
+    } else {
+      c.ok = false;
+    }
   }
 }
 
@@ -670,7 +691,7 @@ m3ApiRawFunction(h_pcf_read) {
   m3ApiGetArg(int32_t, key);
   m3ApiGetArg(int32_t, period);
   m3ApiGetArg(int32_t, field);  // 0 last byte read, 1 chip answered (1 or 0)
-  Pcf *c = pcfFor(key, false, period < 0 ? 0 : period, 0xFF);
+  Pcf *c = pcfFor(key, false, period < 0 ? 0 : period, 0xFFFF);
   int32_t v = 0;
   if (c) v = field == 0 ? c->value : (c->ok ? 1 : 0);
   m3ApiReturn(v);
@@ -680,8 +701,8 @@ m3ApiRawFunction(h_pcf_write) {
   m3ApiReturnType(int32_t);
   m3ApiGetArg(int32_t, key);
   m3ApiGetArg(int32_t, value);
-  Pcf *c = pcfFor(key, true, 0, value & 0xFF);
-  if (c) c->value = value & 0xFF;
+  Pcf *c = pcfFor(key, true, 0, value & 0xFFFF);
+  if (c) c->want = value & 0xFFFF;
   m3ApiReturn(c && c->ok ? 1 : 0);  // whether the chip answered the last write
 }
 #endif
@@ -973,6 +994,7 @@ m3ApiRawFunction(h_text) {
 //   op 1 next byte or -1      op 2 bytes waiting      op 3 write: a = value bits, b = size code (0: 1 byte, 1: 2, 2: 4);
 //   returns 1 if it fitted into the transmit buffer      op 4 speed now      op 5 set speed a
 //   op 6 write text: a = pointer, b = length; returns 1 if it fitted
+//   op 7 new frame format as text ("8E1"): a = pointer, b = length; restarts the port, returns 1 if it is a format
 static int32_t g_ua[3][16];
 static bool g_uaOn[3];
 
@@ -990,6 +1012,18 @@ static uint32_t uartFrame(int data, int parity, int stop) {
   return SERIAL_5N1 + (data - 5) * 4 + (parity == 1 ? 2 : parity == 2 ? 3 : 0) + (stop == 2 ? 0x20 : 0);
 }
 
+// Everything goes out: the native USB of the C3 has a transmit buffer of a few hundred bytes, and
+// a long line would be cut where the buffer is full. Gives up after 200 ms (nobody is reading).
+static void consoleWrite(const uint8_t *p, size_t n) {
+  uint32_t t0 = millis();
+  while (n > 0 && millis() - t0 < 200) {
+    size_t w = Serial.write(p, n);
+    p += w;
+    n -= w;
+    if (!w) delay(1);
+  }
+}
+
 m3ApiRawFunction(h_uart) {
   m3ApiReturnType(int32_t);
   m3ApiGetArg(int32_t, op);
@@ -997,6 +1031,18 @@ m3ApiRawFunction(h_uart) {
   m3ApiGetArg(int32_t, a);
   m3ApiGetArg(int32_t, b);
   int32_t r = 0;
+  if (port == 0) {
+    // The console of the master (USB / UART0): a module may only send text or bytes there, as
+    // whole writes; the editor shows them as console lines.
+    if (op == 3) {
+      consoleWrite((const uint8_t *)&a, 1u << b);
+      r = 1;
+    } else if (op == 6 && inMem(runtime, a, b)) {
+      consoleWrite((const uint8_t *)_mem + a, (size_t)b);
+      r = 1;
+    }
+    m3ApiReturn(r);
+  }
   HardwareSerial *s = uartOf(port);
   if (s) {
     int32_t *c = g_ua[port];
@@ -1025,6 +1071,29 @@ m3ApiRawFunction(h_uart) {
     else if (op == 6 && inMem(runtime, a, b)) {
       // Text: b bytes at a, all or nothing.
       if (s->availableForWrite() >= (b < 64 ? b : 64)) { s->write((const uint8_t *)_mem + a, b); r = 1; }
+    } else if (op == 7 && inMem(runtime, a, b)) {
+      // "8N1", "7e2"...: spaces around are skipped, the letter may be of either case.
+      const char *f = (const char *)_mem + a;
+      int32_t n = b;
+      while (n > 0 && *f == ' ') { f++; n--; }
+      while (n > 0 && f[n - 1] == ' ') n--;
+      if (n == 3) {
+        int d = f[0] - '0', st = f[2] - '0';
+        char p = f[1] >= 'a' ? f[1] - 32 : f[1];
+        if (d >= 5 && d <= 8 && (st == 1 || st == 2) && (p == 'N' || p == 'E' || p == 'O')) {
+          int par = p == 'E' ? 1 : p == 'O' ? 2 : 0;
+          c[2] = d; c[3] = par; c[4] = st;
+          uint32_t sp = s->baudRate();
+          s->end();
+          s->setRxBufferSize(c[8] > 0 ? c[8] : 256);
+          s->begin(sp, uartFrame(d, par, st), c[5], c[6]);
+          if (c[7] >= 0) {
+            s->setPins(-1, -1, -1, c[7]);
+            s->setMode(UART_MODE_RS485_HALF_DUPLEX);
+          }
+          r = 1;
+        }
+      }
     }
   } else if (op == 1) r = -1;
   m3ApiReturn(r);
@@ -1186,7 +1255,11 @@ static void wifiPoll() {
   if (h != n.applied) {
     // New settings (first start, or a new module with other ones): re-apply and restart the radio.
     wifiApply();
-    if (n.appliedOnce) { g_wifi.clientOff(); g_wifi.apOff(); n.state = 255; }
+    if (n.appliedOnce) {
+      if (n.state != 255 && (n.state & 1)) g_wifi.clientOff();
+      if (n.state != 255 && (n.state & 2)) g_wifi.apOff();
+      n.state = 255;
+    }
     n.applied = h;
     n.appliedOnce = true;
   }
@@ -1195,11 +1268,22 @@ static void wifiPoll() {
   if (g_wnOn) want = wnWant();
 #endif
   if (want != n.state) {
+    // Switching off a part that never ran is skipped: softAPdisconnect() of the first start turns the
+    // access point on while the client is still starting, and the radio task crashed (hostap_attach).
+    uint8_t was = n.state == 255 ? 0 : n.state;
     n.state = want;
-    if (want & 1) g_wifi.clientOn(); else g_wifi.clientOff();
-    if (want & 2) g_wifi.apOn(); else g_wifi.apOff();
+    uint32_t before = ESP.getFreeHeap();
+    if (want & 1) g_wifi.clientOn(); else if (was & 1) g_wifi.clientOff();
+    if (want & 2) g_wifi.apOn(); else if (was & 2) g_wifi.apOff();
+    jlog("wifi", "радио %u: куча %u -> %u", (unsigned)want, (unsigned)before, (unsigned)ESP.getFreeHeap());
   }
+  uint32_t beforePool = ESP.getFreeHeap();
   g_wifi.pool();
+  static uint8_t poolLogs = 0;
+  if (poolLogs < 6 && ESP.getFreeHeap() + 4096 < beforePool) {
+    poolLogs++;
+    jlog("wifi", "pool: куча %u -> %u", (unsigned)beforePool, (unsigned)ESP.getFreeHeap());
+  }
   n.clientReady = g_wifi.clientIsReady();
   n.apReady = g_wifi.apIsReady();
   n.status = g_wifi.getStatus();
@@ -2520,6 +2604,8 @@ static void cmdLine(String line) {
     // Which master this is: the editor compares it with the one the project needs.
     Serial.printf("id=%s\n", CRAB_MASTER_ID);
 #endif
+    // What this master can do for modules beyond its first version (crab-codegen MASTER_CAPS).
+    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console");
 #ifdef CRAB_NATIVE_KINDS
     Serial.printf("native=%s\n", CRAB_NATIVE_KINDS);  // block type:instances, comma separated
 #endif
@@ -2540,6 +2626,11 @@ static void cmdLine(String line) {
       } else {
         ok = startSlot(*s);
       }
+    } else if (line.startsWith("del ") && LittleFS.exists("/modules/" + n + ".wasm")) {
+      // Not running (safe mode after a boot loop): the files still go.
+      LittleFS.remove("/modules/" + n + ".wasm");
+      LittleFS.remove("/modules/" + n + ".allow");
+      ok = true;
     }
     xSemaphoreGive(g_mgmt);
     Serial.println(ok ? "ok" : "err");
@@ -2562,8 +2653,25 @@ void setup() {
   g_retOpen = g_retPrefs.begin("crab_mod", false);
   if (!LittleFS.begin(true)) Serial.println("LittleFS failed");
   LittleFS.mkdir("/modules");
+  // Boot loop guard: a stored module that hangs or crashes the board right at the start would
+  // reset it again and again before any command could remove it. After three resets in a row
+  // by a watchdog or a panic the modules are not started; `del` and `put` still work.
+  static RTC_NOINIT_ATTR uint32_t badBoots;
+  static RTC_NOINIT_ATTR uint32_t badBootsMagic;
+  esp_reset_reason_t why = esp_reset_reason();
+  bool bad = why == ESP_RST_TASK_WDT || why == ESP_RST_INT_WDT || why == ESP_RST_WDT || why == ESP_RST_PANIC;
+  if (why == ESP_RST_POWERON || badBootsMagic != 0xB007B007u) badBoots = 0;
+  badBootsMagic = 0xB007B007u;
+  badBoots = bad ? badBoots + 1 : 0;
+  bool safe = badBoots >= 3;
+  if (safe) Serial.printf("safe mode: reset by watchdog %u times, modules are not started\n", (unsigned)badBoots);
+#ifdef CRAB_WIFI
+  // The network interfaces are made on the first use of the radio; doing that first in a module
+  // task (a stored module starts here, before loop) crashed in ieee80211_hostap_attach.
+  WiFi.persistent(false);  // settings come from the modules; nothing stored in the flash
+#endif
   File dir = LittleFS.open("/modules");
-  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+  for (File f = dir.openNextFile(); f && !safe; f = dir.openNextFile()) {
     String n = f.name();
     if (n.endsWith(".wasm")) {
       n.remove(n.length() - 5);

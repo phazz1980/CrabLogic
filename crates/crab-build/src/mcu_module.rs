@@ -54,6 +54,10 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// Bytes of a module sent at once, and the pause after each piece.
+const UPLOAD_PIECE: usize = 1024;
+const PIECE_PAUSE: Duration = Duration::from_millis(15);
+
 /// Sends `wasm` to the master as module `name` with the hardware rights in `allow`.
 pub fn upload_module<P: Read + Write>(
     port: &mut P,
@@ -95,8 +99,13 @@ pub fn upload_module<P: Read + Write>(
             return Err(ModuleUploadError::Rejected(reason.trim().to_owned()));
         }
     }
-    port.write_all(wasm)?;
-    port.flush()?;
+    // In pieces: the native USB of an ESP32-C3 has a receive buffer of a few KB and drops what does
+    // not fit when the master has not read yet (a module of 8 KB came out with a wrong CRC).
+    for piece in wasm.chunks(UPLOAD_PIECE) {
+        port.write_all(piece)?;
+        port.flush()?;
+        std::thread::sleep(PIECE_PAUSE);
+    }
     let mut swap_us = None;
     loop {
         let line = read_line(port)?;
@@ -117,13 +126,31 @@ pub struct MasterInfo {
     pub id: Option<String>,
     /// `native=`: native parts of blocks built in, as (block type, instances).
     pub natives: Vec<(String, u32)>,
+    /// `modcaps=`: features of modules this master has beyond its first version; empty for a
+    /// master that does not report any (an old one).
+    pub caps: Vec<String>,
 }
 
 impl MasterInfo {
+    /// What of `needs` this master does not have, in the order of `needs`.
+    pub fn missing_caps(&self, needs: &[String]) -> Vec<String> {
+        needs
+            .iter()
+            .filter(|n| !self.caps.contains(n))
+            .cloned()
+            .collect()
+    }
+
     /// Takes `id=...` and `native=type:n,...` lines; other lines are not about this.
     fn take_line(&mut self, line: &str) {
         if let Some(id) = line.strip_prefix("id=") {
             self.id = Some(id.trim().to_owned());
+        } else if let Some(list) = line.strip_prefix("modcaps=") {
+            self.caps = list
+                .split(',')
+                .map(|c| c.trim().to_owned())
+                .filter(|c| !c.is_empty())
+                .collect();
         } else if let Some(list) = line.strip_prefix("native=") {
             self.natives = list
                 .split(',')
@@ -133,6 +160,32 @@ impl MasterInfo {
                 })
                 .collect();
         }
+    }
+}
+
+/// The error for a module the master on the board cannot run: it lacks features the module uses.
+pub fn missing_caps_message(module: &str, missing: &[String]) -> String {
+    let what = missing
+        .iter()
+        .map(|c| cap_title(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "модулю «{module}» нужно от мастера: {what}. Мастер на плате старее — перезалейте мастер («Залить мастер-прошивку»)"
+    )
+}
+
+/// What a master feature of `modcaps=` is for, in words.
+fn cap_title(cap: &str) -> &str {
+    match cap {
+        "math" => "математика (sin/cos/tan/pow)",
+        "retain" => "сохранение значений во флеш",
+        "tag_text" => "текстовые теги между листами",
+        "retain_text" => "сохранение текста во флеш",
+        "uart_format" => "смена формата UART",
+        "pcf_expander" => "расширители PCF8574/PCF8575",
+        "uart_console" => "вывод в консоль мастера (UART0/USB)",
+        other => other,
     }
 }
 
@@ -337,6 +390,31 @@ end
         assert_eq!(
             wait_for_master_info(&mut old, Duration::from_secs(2)).unwrap(),
             MasterInfo::default()
+        );
+    }
+
+    #[test]
+    fn caps_of_the_master_decide_which_modules_it_can_run() {
+        let mut port = StatsMaster {
+            answer: b"free=1 largest=1
+caps=ev,us
+modcaps=math,retain
+end
+"
+            .to_vec(),
+            out: Default::default(),
+        };
+        let info = wait_for_master_info(&mut port, Duration::from_secs(2)).unwrap();
+        assert_eq!(info.caps, ["math", "retain"]);
+        let needs = ["math".to_owned(), "uart_format".to_owned()];
+        assert_eq!(info.missing_caps(&needs), ["uart_format"]);
+        assert!(info.missing_caps(&[]).is_empty());
+        // An old master reports nothing: everything new is missing.
+        assert_eq!(MasterInfo::default().missing_caps(&needs), needs);
+        let text = missing_caps_message("main", &["uart_format".to_owned()]);
+        assert!(
+            text.contains("«main»") && text.contains("перезалейте мастер"),
+            "{text}"
         );
     }
 

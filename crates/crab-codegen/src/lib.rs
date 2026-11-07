@@ -27,7 +27,7 @@ pub use lang::Lang;
 pub use preview::{preview_block, preview_id};
 pub use program::{Input, Instance, Program, Signal, Source};
 pub use sheet::{LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
-pub use wasm::{WasmError, WasmModule};
+pub use wasm::{WasmError, WasmModule, MASTER_CAPS};
 
 use crab_core::{Library, Project};
 

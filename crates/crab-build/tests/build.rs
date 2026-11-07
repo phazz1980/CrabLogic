@@ -291,3 +291,24 @@ type = \"pin\"
         result.as_ref().err()
     );
 }
+
+/// `CRAB_PORT=COM5 cargo test -p crab-build --test build -- --ignored flash_master_to_board`
+/// builds the master for the project `examples/$CRAB_EXAMPLE` (default `math_more`) and flashes it. Replaces the firmware!
+#[test]
+#[ignore = "flashes the board in CRAB_PORT"]
+fn flash_master_to_board() {
+    let port = std::env::var("CRAB_PORT").expect("set CRAB_PORT");
+    let cli = ArduinoCli::locate().unwrap();
+    let example = std::env::var("CRAB_EXAMPLE").unwrap_or_else(|_| "math_more".into());
+    let project = Project::load(repo_path(&format!("examples/{example}"))).unwrap();
+    let mut board = project.config.board.clone();
+    board.fqbn = std::env::var("CRAB_FQBN").unwrap_or(board.fqbn);
+    let features =
+        crab_build::MasterFeatures::of_blocks(project.logic.blocks.iter().map(|b| b.kind.as_str()));
+    let mut log = Vec::new();
+    let result = cli.upload_master(&project.work_dir(), &board, &features, &port, &mut |line| {
+        log.push(line.to_owned())
+    });
+    let errors: Vec<&String> = log.iter().filter(|l| l.contains("error")).collect();
+    assert!(result.is_ok(), "{:?}\n{errors:?}", result.as_ref().err());
+}

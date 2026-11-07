@@ -60,6 +60,9 @@ pub trait WasmEmit {
     /// Calls the master's `retain(op, key, value)`: `op` 0 reads (`value` is the default), 1
     /// writes. `value` pushes an `i32`; the answer (an `i32`) is left on the stack.
     fn retain(&mut self, op: i32, key: i32, value: &mut dyn FnMut(&mut dyn WasmEmit));
+    /// Pushes parameter `i` converted to `want`: the constant of the block, or the value of the
+    /// variable or input the parameter is bound to.
+    fn param_as(&mut self, i: usize, want: WTy);
     /// A scratch local of the block; it lives until the end of the block's code.
     fn tmp(&mut self, ty: WTy) -> u32;
     /// `if (cond on the stack) then else`, both branches leave a value of `ty`.
@@ -183,9 +186,8 @@ fn bit_not(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 
 /// Bit `bit` of input 0 as `0`/`1` (the shift count wraps at 32, as in the sketch).
 fn read_bit(e: &mut dyn WasmEmit) -> Result<(), String> {
-    let bit = e.const_param(0)? as i64 as i32;
     e.input_as(0, WTy::I);
-    e.c_i(bit);
+    e.param_as(0, WTy::I);
     e.op(Instruction::I32ShrS);
     e.c_i(1);
     e.op(Instruction::I32And);
@@ -198,8 +200,11 @@ fn bit_read(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 }
 
 fn bit_write(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
-    let mask = 1_i32.wrapping_shl(e.const_param(0)? as i64 as u32);
-    let x = e.tmp(WTy::I);
+    let (x, mask) = (e.tmp(WTy::I), e.tmp(WTy::I));
+    e.c_i(1);
+    e.param_as(0, WTy::I);
+    e.op(Instruction::I32Shl);
+    e.op(Instruction::LocalSet(mask));
     e.input_as(0, WTy::I);
     e.op(Instruction::LocalSet(x));
     e.flag(1);
@@ -207,12 +212,14 @@ fn bit_write(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
         WTy::I,
         &mut |e| {
             e.op(Instruction::LocalGet(x));
-            e.c_i(mask);
+            e.op(Instruction::LocalGet(mask));
             e.op(Instruction::I32Or);
         },
         &mut |e| {
             e.op(Instruction::LocalGet(x));
-            e.c_i(!mask);
+            e.op(Instruction::LocalGet(mask));
+            e.c_i(-1);
+            e.op(Instruction::I32Xor);
             e.op(Instruction::I32And);
         },
     );
@@ -323,9 +330,10 @@ fn dword_to_bytes(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 /// `1` when the input moved by more than the dead band since the value last reported; the first
 /// scan only remembers the input.
 fn number_change(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
-    let band = e.const_param(0)? as f32;
     let (prev, init) = (e.state(WTy::F), e.state(WTy::I));
-    let (x, hit) = (e.tmp(WTy::F), e.tmp(WTy::I));
+    let (x, hit, band) = (e.tmp(WTy::F), e.tmp(WTy::I), e.tmp(WTy::F));
+    e.param_as(0, WTy::F);
+    e.op(Instruction::LocalSet(band));
     e.input_as(0, WTy::F);
     e.op(Instruction::LocalSet(x));
     // hit = init && |x - prev| > band
@@ -334,7 +342,7 @@ fn number_change(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
     e.op(Instruction::GlobalGet(prev));
     e.op(Instruction::F32Sub);
     e.op(Instruction::F32Abs);
-    e.c_f(band);
+    e.op(Instruction::LocalGet(band));
     e.op(Instruction::F32Gt);
     e.op(Instruction::I32And);
     e.op(Instruction::LocalSet(hit));
@@ -404,11 +412,13 @@ fn segments(e: &mut dyn WasmEmit, v: u32, points: &[(f32, f32)], k: usize) {
 /// A new number between `min` and `max` on every rising edge of the input; the generator is the
 /// same xorshift as in the simulation.
 fn random(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
-    let lo = e.const_param(0)? as f32;
-    let hi = e.const_param(1)? as f32;
     let state = e.state_init(WTy::I, crate::RANDOM_SEED as i32);
     let prev = e.state(WTy::I);
-    let en = e.tmp(WTy::I);
+    let (en, lo, hi) = (e.tmp(WTy::I), e.tmp(WTy::F), e.tmp(WTy::F));
+    e.param_as(0, WTy::F);
+    e.op(Instruction::LocalSet(lo));
+    e.param_as(1, WTy::F);
+    e.op(Instruction::LocalSet(hi));
     e.flag(0);
     e.op(Instruction::LocalSet(en));
     e.op(Instruction::LocalGet(en));
@@ -428,8 +438,10 @@ fn random(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
             e.op(Instruction::I32Xor);
             e.op(Instruction::GlobalSet(state));
         }
-        e.c_f(lo);
-        e.c_f(hi - lo);
+        e.op(Instruction::LocalGet(lo));
+        e.op(Instruction::LocalGet(hi));
+        e.op(Instruction::LocalGet(lo));
+        e.op(Instruction::F32Sub);
         e.op(Instruction::GlobalGet(state));
         e.c_i(10_001);
         e.op(Instruction::I32RemU);
@@ -446,15 +458,15 @@ fn random(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 }
 
 /// Arduino `constrain` of the float in local `x`: no panic when the limits are swapped.
-fn constrain(e: &mut dyn WasmEmit, x: u32, lo: f32, hi: f32) {
+fn constrain(e: &mut dyn WasmEmit, x: u32, lo: u32, hi: u32) {
     e.op(Instruction::LocalGet(x));
-    e.c_f(lo);
+    e.op(Instruction::LocalGet(lo));
     e.op(Instruction::F32Lt);
-    e.choose(WTy::F, &mut |e| e.c_f(lo), &mut |e| {
+    e.choose(WTy::F, &mut |e| e.op(Instruction::LocalGet(lo)), &mut |e| {
         e.op(Instruction::LocalGet(x));
-        e.c_f(hi);
+        e.op(Instruction::LocalGet(hi));
         e.op(Instruction::F32Gt);
-        e.choose(WTy::F, &mut |e| e.c_f(hi), &mut |e| {
+        e.choose(WTy::F, &mut |e| e.op(Instruction::LocalGet(hi)), &mut |e| {
             e.op(Instruction::LocalGet(x))
         });
     });
@@ -463,9 +475,12 @@ fn constrain(e: &mut dyn WasmEmit, x: u32, lo: f32, hi: f32) {
 /// The PID of the sketch in 32 bit floats: integral limited to the output range, derivative on
 /// the error, time from the scan clock.
 fn pid(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
-    let p = |e: &dyn WasmEmit, i| e.const_param(i).map(|v| v as f32);
-    let (kp, ki, kd) = (p(e, 0)?, p(e, 1)?, p(e, 2)?);
-    let (lo, hi) = (p(e, 3)?, p(e, 4)?);
+    let (kp, ki, kd) = (e.tmp(WTy::F), e.tmp(WTy::F), e.tmp(WTy::F));
+    let (lo, hi) = (e.tmp(WTy::F), e.tmp(WTy::F));
+    for (i, local) in [kp, ki, kd, lo, hi].into_iter().enumerate() {
+        e.param_as(i, WTy::F);
+        e.op(Instruction::LocalSet(local));
+    }
     let (integral, prev_err) = (e.state(WTy::F), e.state(WTy::F));
     let (last, running) = (e.state(WTy::I), e.state(WTy::I));
     let (err, dt, tmp) = (e.tmp(WTy::F), e.tmp(WTy::F), e.tmp(WTy::F));
@@ -494,18 +509,18 @@ fn pid(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
                         e.op(Instruction::LocalGet(err));
                         e.op(Instruction::LocalGet(dt));
                         e.op(Instruction::F32Mul);
-                        e.c_f(ki);
+                        e.op(Instruction::LocalGet(ki));
                         e.op(Instruction::F32Mul);
                         e.op(Instruction::F32Add);
                         e.op(Instruction::LocalSet(tmp));
                         constrain(e, tmp, lo, hi);
                         e.op(Instruction::GlobalSet(integral));
-                        e.c_f(kp);
+                        e.op(Instruction::LocalGet(kp));
                         e.op(Instruction::LocalGet(err));
                         e.op(Instruction::F32Mul);
                         e.op(Instruction::GlobalGet(integral));
                         e.op(Instruction::F32Add);
-                        e.c_f(kd);
+                        e.op(Instruction::LocalGet(kd));
                         e.op(Instruction::LocalGet(err));
                         e.op(Instruction::GlobalGet(prev_err));
                         e.op(Instruction::F32Sub);
@@ -529,7 +544,7 @@ fn pid(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
                     e.op(Instruction::GlobalSet(last));
                     e.op(Instruction::LocalGet(err));
                     e.op(Instruction::GlobalSet(prev_err));
-                    e.c_f(kp);
+                    e.op(Instruction::LocalGet(kp));
                     e.op(Instruction::LocalGet(err));
                     e.op(Instruction::F32Mul);
                     e.op(Instruction::LocalSet(tmp));
@@ -543,7 +558,7 @@ fn pid(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
             e.op(Instruction::GlobalSet(running));
             e.c_f(0.0);
             e.op(Instruction::GlobalSet(integral));
-            e.c_f(lo);
+            e.op(Instruction::LocalGet(lo));
             e.set_out(0, WTy::F);
         },
     );
@@ -619,13 +634,21 @@ fn encoder(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 
 /// `sinf`, `cosf` or `tanf` of the input, in degrees when the unit parameter is 0.
 fn trig(e: &mut dyn WasmEmit, op: i32) -> Result<Option<WTy>, String> {
-    let degrees = e.const_param(0)? == 0.0;
     let x = e.tmp(WTy::F);
     e.input_as(0, WTy::F);
-    if degrees {
-        e.c_f(0.017_453_292);
-        e.op(Instruction::F32Mul);
-    }
+    e.op(Instruction::LocalSet(x));
+    // Unit 0 is degrees.
+    e.param_as(0, WTy::I);
+    e.op(Instruction::I32Eqz);
+    e.choose(
+        WTy::F,
+        &mut |e| {
+            e.op(Instruction::LocalGet(x));
+            e.c_f(0.017_453_292);
+            e.op(Instruction::F32Mul);
+        },
+        &mut |e| e.op(Instruction::LocalGet(x)),
+    );
     e.op(Instruction::LocalSet(x));
     e.math(op, x, x);
     Ok(Some(WTy::F))

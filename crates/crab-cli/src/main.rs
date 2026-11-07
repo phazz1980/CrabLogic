@@ -509,11 +509,17 @@ fn run_upload_wasm(
         .or_else(|| file.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_default();
     let allow = allow.unwrap_or_else(|| manifest.map(|m| m.allow).unwrap_or_default());
-    push_module(&name, &wasm, &allow, port)
+    push_module(&name, &wasm, &allow, &[], port)
 }
 
 /// Sends one module to the master firmware over serial.
-fn push_module(name: &str, wasm: &[u8], allow: &[String], port: Option<String>) -> ExitCode {
+fn push_module(
+    name: &str,
+    wasm: &[u8],
+    allow: &[String],
+    needs: &[String],
+    port: Option<String>,
+) -> ExitCode {
     let failed = |message: String| {
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)
@@ -538,10 +544,16 @@ fn push_module(name: &str, wasm: &[u8], allow: &[String], port: Option<String>) 
     // Release DTR/RTS so opening the port does not reset the board.
     let _ = serial.write_data_terminal_ready(false);
     let _ = serial.write_request_to_send(false);
-    if let Err(e) =
-        crab_build::mcu_module::wait_for_master(&mut serial, std::time::Duration::from_secs(8))
-    {
-        return failed(e.to_string());
+    let info = match crab_build::mcu_module::wait_for_master_info(
+        &mut serial,
+        std::time::Duration::from_secs(8),
+    ) {
+        Ok(info) => info,
+        Err(e) => return failed(e.to_string()),
+    };
+    let missing = info.missing_caps(needs);
+    if !missing.is_empty() {
+        return failed(crab_build::mcu_module::missing_caps_message(name, &missing));
     }
     println!("Модуль «{name}» ({} байт) -> {port}...", wasm.len());
     match crab_build::mcu_module::upload_module(&mut serial, name, wasm, allow) {
@@ -618,7 +630,13 @@ fn run_gen_wasm(
     }
     if upload {
         for (module, allow) in modules.iter().zip(&allows) {
-            let code = push_module(&module.name, &module.wasm, allow, port.clone());
+            let code = push_module(
+                &module.name,
+                &module.wasm,
+                allow,
+                &module.needs,
+                port.clone(),
+            );
             if code != ExitCode::SUCCESS {
                 return code;
             }

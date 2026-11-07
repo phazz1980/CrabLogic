@@ -13,11 +13,27 @@ fn repo_path(rel: &str) -> PathBuf {
 fn template_wins_over_module() {
     let dir = std::env::temp_dir().join(format!("crab-fwsrc-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let block_dir = dir.join("timer_on_rs");
+    let block_dir = dir.join("sample_rs");
     std::fs::create_dir_all(&block_dir).unwrap();
-    std::fs::copy(
-        repo_path("library/timer_on_rs/block.toml"),
+    std::fs::write(
         block_dir.join("block.toml"),
+        r#"[block]
+type = "sample_rs"
+name = "Sample"
+group = "Test"
+description = "A block with a module of its own."
+memory = true
+
+[[input]]
+name = "in"
+type = "bool"
+description = "In"
+
+[[output]]
+name = "out"
+type = "bool"
+description = "Out"
+"#,
     )
     .unwrap();
 
@@ -34,12 +50,8 @@ fn template_wins_over_module() {
 }
 
 #[test]
-fn library_samples_report_their_source() {
+fn library_blocks_report_their_source() {
     let (lib, _) = Library::load(repo_path("library")).unwrap();
-    assert_eq!(
-        lib.get("timer_on_rs").unwrap().firmware_source(),
-        FirmwareSource::Module
-    );
     assert_eq!(
         lib.get("ethernet").unwrap().firmware_source(),
         FirmwareSource::None

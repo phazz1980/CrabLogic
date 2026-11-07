@@ -23,16 +23,47 @@ impl Emitter<'_, '_> {
 
     /// A text setting of the master (`ssid`, `ip`...), sent once.
     fn net_text(&mut self, inst: &Instance, code: i32, name: &str) -> Result<(), WasmError> {
-        if inst.param_vars.contains_key(name) {
-            return Err(self.unsupported(
-                inst,
-                &format!("параметр «{name}» из переменной пока не поддержан"),
-            ));
+        let (ptr, len) = self.setting_text(inst, name)?;
+        self.net_call(1, code, ptr, len);
+        self.op(I::Drop);
+        Ok(())
+    }
+
+    /// Pointer and length of a text setting: the constant, or the buffer of the text variable the
+    /// parameter is bound to.
+    pub(super) fn setting_text(
+        &mut self,
+        inst: &Instance,
+        name: &str,
+    ) -> Result<(A, A), WasmError> {
+        if let Some(var) = inst.param_vars.get(name) {
+            let Some((buf, _)) = self.string_var_buf(var) else {
+                return Err(self.unsupported(
+                    inst,
+                    &format!("параметр «{name}»: переменная «{var}» не текстовая или не найдена"),
+                ));
+            };
+            return Ok((A::C(buf.ptr as i32), A::G(buf.len)));
         }
         let text = self.text_param(inst, name);
         let s = self.const_str(text.as_bytes());
-        self.net_call(1, code, A::C(s.ptr as i32), A::C(text.len() as i32));
-        self.op(I::Drop);
+        Ok((A::C(s.ptr as i32), A::C(text.len() as i32)))
+    }
+
+    /// Sends again, on every step, the settings taken from variables: the master compares them
+    /// with what it applied and re-applies the changed ones.
+    pub(super) fn refresh_settings(
+        &mut self,
+        inst: &Instance,
+        items: &[(i32, i32, &str)],
+    ) -> Result<(), WasmError> {
+        for &(op, code, name) in items {
+            if inst.param_vars.contains_key(name) {
+                let (ptr, len) = self.setting_text(inst, name)?;
+                self.net_call4(op, [A::C(code), ptr, len, A::C(0)]);
+                self.op(I::Drop);
+            }
+        }
         Ok(())
     }
 
@@ -74,6 +105,18 @@ impl Emitter<'_, '_> {
         self.c_i(1);
         self.op(I::GlobalSet(done));
         self.op(I::End);
+        self.refresh_settings(
+            inst,
+            &[
+                (1, 1, "ssid"),
+                (1, 2, "password"),
+                (1, 3, "ip"),
+                (1, 4, "gateway"),
+                (1, 5, "subnet"),
+                (1, 6, "ap_ssid"),
+                (1, 7, "ap_password"),
+            ],
+        )?;
 
         // Radio request: mode + 1 (client 1, access point 2, both 3), 0 while `en` is off.
         if mode == 3 {
@@ -95,6 +138,19 @@ impl Emitter<'_, '_> {
         if inst.inputs.contains_key("en") {
             self.flag(inst, Self::in_pos(inst, "en"));
             self.op(I::I32Mul);
+        }
+        if client {
+            if let Some(var) = inst.param_vars.get("ssid") {
+                // A client without a network name keeps scanning: it stays off until there is one.
+                if let Some((buf, _)) = self.string_var_buf(var) {
+                    self.op(I::GlobalGet(buf.len));
+                    self.c_i(0);
+                    self.op(I::I32Ne);
+                    self.c_i(-2);
+                    self.op(I::I32Or);
+                    self.op(I::I32And);
+                }
+            }
         }
         let state = self.tmp_i();
         self.op(I::LocalSet(state));
@@ -133,15 +189,8 @@ impl Emitter<'_, '_> {
 
     /// Same as `net_text` for the Ethernet settings (op 7).
     fn eth_text(&mut self, inst: &Instance, code: i32, name: &str) -> Result<(), WasmError> {
-        if inst.param_vars.contains_key(name) {
-            return Err(self.unsupported(
-                inst,
-                &format!("параметр «{name}» из переменной пока не поддержан"),
-            ));
-        }
-        let text = self.text_param(inst, name);
-        let s = self.const_str(text.as_bytes());
-        self.net_call(7, code, A::C(s.ptr as i32), A::C(text.len() as i32));
+        let (ptr, len) = self.setting_text(inst, name)?;
+        self.net_call(7, code, ptr, len);
         self.op(I::Drop);
         Ok(())
     }
@@ -171,6 +220,7 @@ impl Emitter<'_, '_> {
         self.c_i(1);
         self.op(I::GlobalSet(done));
         self.op(I::End);
+        self.refresh_settings(inst, &[(7, 1, "ip"), (7, 2, "gateway"), (7, 3, "subnet")])?;
 
         if inst.outputs.contains_key("ready") {
             self.net_call(8, 0, A::C(0), A::C(0));

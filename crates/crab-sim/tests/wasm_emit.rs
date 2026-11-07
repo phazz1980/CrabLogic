@@ -727,6 +727,139 @@ fn text_selectors_and_variables_match_the_simulation() {
     compare("crates/crab-sim/tests/fixtures/wasm_strsel", 10, 40, 100);
 }
 
+/// FNV-1a as the key of a retained variable (`crab-codegen` hashes `name:type`).
+fn retain_key(name: &str, ty: &str) -> i32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for b in format!("{name}:{ty}").bytes() {
+        hash = (hash ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    hash as i32
+}
+
+#[test]
+fn texts_cross_sheets_and_are_kept_in_flash() {
+    use crab_sim::mcu::StubIo;
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_xsheet")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let first = program.wasm_module_with(1, true).unwrap();
+    let second = program.wasm_module_with(2, true).unwrap();
+    for built in [&first, &second] {
+        assert!(
+            built.manifest.contains("\"tag_text\""),
+            "{}",
+            built.manifest
+        );
+    }
+    assert!(
+        second.manifest.contains("\"retain_text\""),
+        "{}",
+        second.manifest
+    );
+    let load = |built: &crab_codegen::WasmModule, io: StubIo| {
+        let manifest = Manifest::parse(&built.manifest).unwrap();
+        McuModule::load_with(&built.wasm, &manifest, built.watched.len(), io).unwrap()
+    };
+    let frozen = retain_key("frozen", "String");
+    let mut io = StubIo::default();
+    io.retain_text.insert(frozen, b"preset".to_vec());
+    let mut m1 = load(&first, StubIo::default());
+    let mut m2 = load(&second, io);
+    // Numbers and texts that cross the border go from one module to the other after every scan.
+    let relay = |from: &McuModule, to: &mut McuModule| {
+        for id in 0..16 {
+            if let Some(w) = from.tag(id) {
+                to.set_tag(id, w);
+            }
+        }
+        for (id, text) in from.text_tags() {
+            to.set_text_tag(*id, text.clone());
+        }
+    };
+    let out = |built: &crab_codegen::WasmModule, m: &McuModule, label: &str| {
+        let i = built.watched.iter().position(|l| l == label).unwrap();
+        m.outputs()[i]
+    };
+    let mut sim = Simulation::new(&project.logic, &lib).unwrap();
+    for step in 0..40u32 {
+        sim.step(100).unwrap();
+        m1.step(100).unwrap();
+        relay(&m1, &mut m2);
+        m2.step(100).unwrap();
+        for (built, m) in [(&first, &m1), (&second, &m2)] {
+            for (i, label) in built.watched.iter().enumerate() {
+                // The simulation has no flash: the kept text only shows in the module.
+                if label == "frl.out" {
+                    continue;
+                }
+                let (block, port) = label.split_once('.').unwrap();
+                let expected = word(&program, label, sim.output(block, port).unwrap());
+                assert_eq!(m.outputs()[i], expected, "step {step}: {label}");
+            }
+        }
+    }
+    // The text that crossed was the number printed on the first sheet.
+    assert_ne!(out(&second, &m2, "mgl.out"), Word::int(0));
+    assert_eq!(out(&second, &m2, "hl.out"), Word::int(5));
+    // The kept text is read at start (`frozen`), the written one goes to flash.
+    assert_eq!(out(&second, &m2, "frl.out"), Word::int(6));
+    let saved = m2
+        .io()
+        .retain_text
+        .get(&retain_key("name", "String"))
+        .cloned();
+    assert!(
+        saved.is_some_and(|t| t.starts_with(b"n=")),
+        "{:?}",
+        m2.io().retain_text
+    );
+}
+
+#[test]
+fn blocks_on_expander_pins_match_the_simulation() {
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_expander")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert_eq!(manifest.allow, ["pcf_read", "pcf_write"]);
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    let mut sim = Simulation::new(&project.logic, &lib).unwrap();
+    let key_in = 34 | 0xFF << 8 | 0xFF << 16;
+    let key_out = 32 | 0xFF << 8 | 0xFF << 16 | 1 << 24;
+    for step in 0..60u32 {
+        // Buttons to the ground (pressed = low), the limit switch on the output chip too.
+        let level = |period: u32| i32::from((step / period).is_multiple_of(2));
+        let (p2, p3, p15) = (level(3), level(5), level(7));
+        for (pin, v) in [(2, p2), (3, p3), (15, p15)] {
+            sim.bench_mut().set_level(pin, f64::from(v));
+        }
+        let io = module.io_mut();
+        io.pcf_in.insert(
+            (key_in, 0),
+            0xFF & !(1 << 2) & !(1 << 3) | p2 << 2 | p3 << 3,
+        );
+        io.pcf_in.insert((key_in, 1), 1);
+        io.pcf_in
+            .insert((key_out, 0), 0xFFFF & !(1 << 15) | p15 << 15);
+        io.pcf_in.insert((key_out, 1), 1);
+        sim.step(50).unwrap();
+        module.step(50).unwrap();
+        for (i, label) in built.watched.iter().enumerate() {
+            let (block, port) = label.split_once('.').unwrap();
+            let expected = word(&program, label, sim.output(block, port).unwrap());
+            assert_eq!(module.outputs()[i], expected, "step {step}: {label}");
+        }
+        // The chip gets the physical levels of the outputs, inputs high.
+        let mut want: i32 = 0xFFFF;
+        for pin in [4, 5, 9] {
+            let v = sim.bench().driven(pin).unwrap_or(0.0) as i32;
+            want = want & !(1 << pin) | v << pin;
+        }
+        assert_eq!(module.io().pcf_out[&key_out], want, "step {step}: relays");
+    }
+}
+
 #[test]
 fn sparkplug_node_and_metrics_reach_the_master_ops() {
     let lib = library();
@@ -754,4 +887,97 @@ fn sparkplug_node_and_metrics_reach_the_master_ops() {
             ("Whole".to_string(), 1, 22), // float_to_int rounds 21.5
         ]
     );
+}
+
+#[test]
+fn network_settings_follow_text_variables() {
+    use crab_sim::mcu::StubIo;
+    let lib = library();
+    let project = Project::load(repo_path("examples/wifi_bound")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let key = retain_key("Сеть", "String");
+    let run = |kept: Option<&[u8]>| {
+        let mut io = StubIo::default();
+        if let Some(text) = kept {
+            io.retain_text.insert(key, text.to_vec());
+        }
+        let mut module =
+            McuModule::load_with(&built.wasm, &manifest, built.watched.len(), io).unwrap();
+        module.step(10).unwrap();
+        module.step(10).unwrap();
+        (module.io().net_text.get(&1).cloned(), module.io().net_radio)
+    };
+    // The name from the variable (the initial one, or the one kept in flash) goes to the master.
+    assert_eq!(run(None), (Some("MyNetwork".to_owned()), 1));
+    assert_eq!(run(Some(b"HomeNet")), (Some("HomeNet".to_owned()), 1));
+    // Without a name the client stays off.
+    assert_eq!(run(Some(b"")), (Some(String::new()), 0));
+}
+
+#[test]
+fn uart_frame_format_comes_from_an_input() {
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_uartfmt")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    module.step(10).unwrap();
+    let io = module.io();
+    assert_eq!(io.uart_format.get(&2).map(String::as_str), Some("8E1"));
+    assert_eq!(io.uart_speed.get(&2), Some(&19200));
+}
+
+#[test]
+fn block_parameters_taken_from_variables_are_read_every_scan() {
+    // The simulation does not know bound parameters, so the module is checked on its own.
+    let lib = library();
+    let project =
+        Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_param_var")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    let at = |label: &str| built.watched.iter().position(|l| l == label).unwrap();
+    let (chg, pid) = (at("chg.out"), at("pid.out"));
+    let mut reports = Vec::new();
+    for step in 0..14 {
+        module.step(100).unwrap();
+        if step == 0 {
+            // kp = 2 from the variable, error 20 - 0: the output is 40 (the block's own kp is 1).
+            assert_eq!(module.outputs()[pid], Word::float(40.0));
+        }
+        if module.outputs()[chg] == Word::int(1) {
+            reports.push(step);
+        }
+    }
+    // x grows by 1.5; the dead band 4 comes from the variable (the block's own is 1): a report
+    // every third scan once the input has moved by more than 4.
+    assert_eq!(reports, [3, 6, 9, 12]);
+}
+
+/// Modules that use what only a newer master can do say so in `needs`; the others need nothing.
+#[test]
+fn modules_list_what_they_need_from_the_master() {
+    let lib = library();
+    let needs = |dir: &str| {
+        let project = Project::load(repo_path(dir)).unwrap();
+        let program = Program::build(&project, &lib).unwrap();
+        program.wasm_module(1).unwrap().needs
+    };
+    let fixtures = "crates/crab-sim/tests/fixtures";
+    assert_eq!(needs(&format!("{fixtures}/wasm_trig")), ["math"]);
+    assert_eq!(needs(&format!("{fixtures}/wasm_retain")), ["retain"]);
+    assert_eq!(
+        needs(&format!("{fixtures}/wasm_expander")),
+        ["pcf_expander"]
+    );
+    assert_eq!(
+        needs(&format!("{fixtures}/wasm_logic")),
+        Vec::<String>::new()
+    );
+    // Text to USB goes to the console of the master.
+    assert!(needs("examples/selftest_logic3").contains(&"uart_console".to_owned()));
 }

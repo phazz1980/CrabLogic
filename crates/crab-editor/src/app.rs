@@ -3175,6 +3175,7 @@ impl EditorApp {
                         let info = crab_build::mcu_module::MasterInfo {
                             id: Some(id.clone()),
                             natives: d.live.master_natives.clone(),
+                            ..Default::default()
                         };
                         let features = crate::job::master_features(p, &self.lib);
                         match crab_build::master_state(&info, &features) {

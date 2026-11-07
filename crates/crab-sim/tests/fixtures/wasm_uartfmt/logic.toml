@@ -1,0 +1,18 @@
+[[block]]
+id = "fmt"
+type = "text_const"
+value = "8E1"
+
+[[block]]
+id = "cfg"
+type = "uart_config"
+uart = 2
+runtime = true
+speed = 9600
+rx = 16
+tx = 17
+const = { new_speed = 19200, apply = true }
+
+[[link]]
+from = "fmt.out"
+to = "cfg.new_format"

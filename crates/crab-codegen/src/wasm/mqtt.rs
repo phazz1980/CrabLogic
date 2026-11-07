@@ -24,23 +24,8 @@ impl Emitter<'_, '_> {
     }
 
     fn mqtt_text(&mut self, inst: &Instance, code: i32, name: &str) -> Result<(), WasmError> {
-        if inst.param_vars.contains_key(name) {
-            return Err(self.unsupported(
-                inst,
-                &format!("параметр «{name}» из переменной пока не поддержан"),
-            ));
-        }
-        let text = self.text_param(inst, name);
-        let s = self.const_str(text.as_bytes());
-        self.net_call4(
-            10,
-            [
-                A::C(code),
-                A::C(s.ptr as i32),
-                A::C(text.len() as i32),
-                A::C(0),
-            ],
-        );
+        let (ptr, len) = self.setting_text(inst, name)?;
+        self.net_call4(10, [A::C(code), ptr, len, A::C(0)]);
         self.op(I::Drop);
         Ok(())
     }
@@ -80,6 +65,15 @@ impl Emitter<'_, '_> {
         self.c_i(1);
         self.op(I::GlobalSet(done));
         self.op(I::End);
+        self.refresh_settings(
+            inst,
+            &[
+                (10, 1, "broker"),
+                (10, 2, "client_id"),
+                (10, 3, "user"),
+                (10, 4, "password"),
+            ],
+        )?;
         for (name, field) in [("connected", 0), ("error", 1)] {
             if inst.outputs.contains_key(name) {
                 self.net_call4(11, [A::C(field), A::C(0), A::C(0), A::C(0)]);

@@ -122,16 +122,19 @@ fn unsupported_block_is_refused_with_its_name() {
     let lib = library();
     let mut project = background();
     project.logic.vars[0].retain = false;
-    project
-        .logic
-        .blocks
-        .iter_mut()
-        .find(|b| b.id == "blink_led")
-        .unwrap()
-        .expander = Some("pcf".into());
+    // One chip used from two sheets: its word cannot be shared between modules.
+    for id in ["blink_led", "button"] {
+        project
+            .logic
+            .blocks
+            .iter_mut()
+            .find(|b| b.id == id)
+            .unwrap()
+            .expander = Some("pcf".into());
+    }
     project.logic.expanders.push(crab_core::expander::Expander {
         id: "pcf".into(),
-        chip: Default::default(),
+        chip: crab_core::ExpanderChip::Pcf8575,
         address: 0x20,
         sda: -1,
         scl: -1,

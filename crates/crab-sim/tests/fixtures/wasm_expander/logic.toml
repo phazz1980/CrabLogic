@@ -1,0 +1,70 @@
+[[expander]]
+id = "xin"
+chip = "pcf8574"
+address = 34
+
+[[expander]]
+id = "xout"
+chip = "pcf8575"
+address = 32
+
+[[block]]
+id = "b0"
+type = "digital_in"
+expander = "xin"
+pin = 2
+inverted = true
+
+[[block]]
+id = "b1"
+type = "digital_in"
+expander = "xin"
+pin = 3
+inverted = true
+
+[[block]]
+id = "limit"
+type = "digital_in"
+expander = "xout"
+pin = 15
+inverted = true
+
+[[block]]
+id = "both"
+type = "and"
+
+[[block]]
+id = "r0"
+type = "digital_out"
+expander = "xout"
+pin = 4
+inverted = true
+
+[[block]]
+id = "r1"
+type = "digital_out"
+expander = "xout"
+pin = 5
+inverted = true
+
+[[block]]
+id = "r2"
+type = "digital_out"
+expander = "xout"
+pin = 9
+
+[[link]]
+from = "b0.out"
+to = "both.a"
+[[link]]
+from = "b1.out"
+to = "both.b"
+[[link]]
+from = "b0.out"
+to = "r0.in"
+[[link]]
+from = "both.out"
+to = "r1.in"
+[[link]]
+from = "limit.out"
+to = "r2.in"

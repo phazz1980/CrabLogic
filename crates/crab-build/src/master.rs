@@ -514,6 +514,7 @@ CRAB_STEP(State& s, In in, Out& out) {}
         let info = |id: Option<&str>, natives: &[(&str, u32)]| MasterInfo {
             id: id.map(str::to_owned),
             natives: natives.iter().map(|(k, n)| ((*k).to_owned(), *n)).collect(),
+            ..Default::default()
         };
         // The same firmware.
         assert_eq!(

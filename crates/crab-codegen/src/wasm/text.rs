@@ -9,7 +9,7 @@ const MEM_PAGE: u32 = 65536;
 /// The first bytes of the memory are scratch for results of `text` (a float, four IP bytes).
 pub(super) const MEM_START: u32 = 16;
 /// Buffer size of a string signal; longer text is cut (the built-in simulator keeps all of it).
-const STR_CAP: u32 = 128;
+pub(super) const STR_CAP: u32 = 128;
 const TEXT_KINDS: [&str; 13] = [
     "string_change",
     "ip_to_text",
@@ -141,21 +141,9 @@ impl Emitter<'_, '_> {
         self.signals.insert(signal, buf.len);
     }
 
-    /// A string signal can be used only inside its sheet and not copied to a variable.
-    pub(super) fn string_outputs_ok(&self, inst: &Instance) -> Result<(), WasmError> {
-        for (&name, &signal) in &inst.outputs {
-            if !self.bufs.contains_key(&signal) {
-                continue;
-            }
-            let label = signal_label(self.program, signal);
-            if self.tag_of(&TagKind::Signal(label)).is_some() || inst.output_vars.contains_key(name)
-            {
-                return Err(self.unsupported(
-                    inst,
-                    "строку нельзя передать на другой лист или в переменную: в модулях это пока не поддержано",
-                ));
-            }
-        }
+    /// Text outputs need no check: they are published and copied to variables after the block
+    /// (`publish_outputs`).
+    pub(super) fn string_outputs_ok(&mut self, _: &Instance) -> Result<(), WasmError> {
         Ok(())
     }
 
@@ -176,23 +164,27 @@ impl Emitter<'_, '_> {
         match &input.source {
             Source::Default(ParamValue::Text(t)) => Ok(self.const_str(t.as_bytes())),
             Source::Default(_) => Ok(empty),
-            Source::Var(name) => match self.str_vars.get(name) {
-                Some(b) => Ok(Str {
+            Source::Var(name) => match self.string_var_buf(name) {
+                Some((b, _)) => Ok(Str {
                     ptr: b.ptr,
                     len: Len::Global(b.len),
                 }),
-                None => Err(self.unsupported(
-                    inst,
-                    "строковая переменная общая с другим листом: в модулях это пока не поддержано",
-                )),
+                None => Err(self.unsupported(inst, "текстовая переменная не найдена")),
             },
-            Source::Signal { index, .. } => match self.bufs.get(index) {
-                Some(b) => Ok(Str {
-                    ptr: b.ptr,
-                    len: Len::Global(b.len),
-                }),
-                None => Err(self.unsupported(inst, "строка с другого листа пока не поддержана")),
-            },
+            Source::Signal { index, .. } => {
+                let remote = || {
+                    let label = signal_label(self.program, *index);
+                    let (n, _) = self.tag_of(&TagKind::Signal(label))?;
+                    self.str_tags.get(&n)
+                };
+                match self.bufs.get(index).or_else(remote) {
+                    Some(b) => Ok(Str {
+                        ptr: b.ptr,
+                        len: Len::Global(b.len),
+                    }),
+                    None => Err(self.unsupported(inst, "строка с другого листа не получена")),
+                }
+            }
         }
     }
 
@@ -270,10 +262,16 @@ impl Emitter<'_, '_> {
     }
 
     /// The blocks of the "Строки" group.
-    /// The buffer of a text variable that lives in this module (its initial text is in memory).
-    pub(super) fn string_var(&mut self, name: &str, init: &ParamValue) {
+    /// A buffer holding `init` (cut to the room) with its length in a global.
+    pub(super) fn text_buffer(&mut self, init: &ParamValue) -> Buf {
         let text = match init {
-            ParamValue::Text(t) => t.as_bytes()[..t.len().min(STR_CAP as usize)].to_vec(),
+            ParamValue::Text(t) => {
+                let mut n = t.len().min(STR_CAP as usize);
+                while !t.is_char_boundary(n) {
+                    n -= 1;
+                }
+                t.as_bytes()[..n].to_vec()
+            }
             _ => Vec::new(),
         };
         let ptr = self.alloc(STR_CAP);
@@ -281,14 +279,107 @@ impl Emitter<'_, '_> {
             self.data.push((ptr, text.clone()));
         }
         let len = self.global(Ty::I, &ParamValue::Int(text.len() as i64));
-        self.str_vars.insert(
-            name.to_owned(),
-            Buf {
-                ptr,
-                cap: STR_CAP,
-                len,
-            },
-        );
+        Buf {
+            ptr,
+            cap: STR_CAP,
+            len,
+        }
+    }
+
+    /// The buffer of a text variable that lives in this module (its initial text is in memory).
+    pub(super) fn string_var(&mut self, name: &str, init: &ParamValue) {
+        let buf = self.text_buffer(init);
+        self.str_vars.insert(name.to_owned(), buf);
+    }
+
+    /// Buffer of a text variable of this sheet or of a text tag mirrored here, and the tag.
+    pub(super) fn string_var_buf(&self, name: &str) -> Option<(Buf, Option<u32>)> {
+        if let Some(b) = self.str_vars.get(name) {
+            return Some((*b, None));
+        }
+        let (n, _) = self.tag_of(&TagKind::Var(name.to_owned()))?;
+        self.str_tags.get(&n).map(|b| (*b, Some(n)))
+    }
+
+    /// Hands the text in `buf` to the master as the value of tag `n`.
+    pub(super) fn publish_text(&mut self, n: u32, buf: Buf) {
+        self.c_i(1);
+        self.c_i(n as i32);
+        self.c_i(buf.ptr as i32);
+        self.op(I::GlobalGet(buf.len));
+        self.hw_call(HW_TAG_TEXT);
+        self.op(I::Drop);
+    }
+
+    /// Creates the mirrors of the text tags the module uses (called while the emitter is built).
+    pub(super) fn collect_string_tags(&mut self) {
+        for t in self.module.tags.clone() {
+            if t.tag.ty != SignalType::String {
+                continue;
+            }
+            let mirrored = match &t.tag.kind {
+                TagKind::Var(_) => true,
+                TagKind::Signal(_) => t.reads,
+            };
+            if !mirrored {
+                continue;
+            }
+            let init = t.init.clone().unwrap_or(ParamValue::Text(String::new()));
+            let buf = self.text_buffer(&init);
+            self.str_tags.insert(t.tag.number, buf);
+            if t.init.is_some() {
+                self.hw.insert(HW_TAG_TEXT);
+            }
+        }
+    }
+
+    /// Start of a step: the texts other sheets published.
+    pub(super) fn pull_string_tags(&mut self) {
+        for t in self.module.tags.clone() {
+            if t.tag.ty != SignalType::String || !t.reads {
+                continue;
+            }
+            let Some(buf) = self.str_tags.get(&t.tag.number).copied() else {
+                continue;
+            };
+            self.c_i(0);
+            self.c_i(t.tag.number as i32);
+            self.c_i(buf.ptr as i32);
+            self.c_i(buf.cap as i32);
+            self.hw_call(HW_TAG_TEXT);
+            self.op(I::GlobalSet(buf.len));
+        }
+    }
+
+    /// After a block: its text outputs that other sheets read go to the master.
+    pub(super) fn publish_outputs(&mut self, inst: &Instance) {
+        for (&name, &var) in &inst.output_vars {
+            let Some(&signal) = inst.outputs.get(name) else {
+                continue;
+            };
+            let Some(from) = self.bufs.get(&signal).copied() else {
+                continue;
+            };
+            if let Some((to, tag)) = self.string_var_buf(var) {
+                let s = Str {
+                    ptr: from.ptr,
+                    len: Len::Global(from.len),
+                };
+                self.copy_str(to, s);
+                if let Some(n) = tag {
+                    self.publish_text(n, to);
+                }
+            }
+        }
+        for &signal in inst.outputs.values() {
+            let Some(buf) = self.bufs.get(&signal).copied() else {
+                continue;
+            };
+            let label = signal_label(self.program, signal);
+            if let Some((n, _)) = self.tag_of(&TagKind::Signal(label)) {
+                self.publish_text(n, buf);
+            }
+        }
     }
 
     /// `out = s` (cut to the room of `out`).
@@ -377,11 +468,8 @@ impl Emitter<'_, '_> {
             }
             "var_get" => {
                 let name = inst.block.var_name().unwrap_or_default().to_owned();
-                let Some(&var) = self.str_vars.get(&name) else {
-                    return Err(self.unsupported(
-                        inst,
-                        "строковая переменная общая с другим листом: в модулях это пока не поддержано",
-                    ));
+                let Some((var, _)) = self.string_var_buf(&name) else {
+                    return Err(self.unsupported(inst, "текстовая переменная не найдена"));
                 };
                 if let Some(out) = self.out_buf(inst, "out") {
                     let s = Str {
@@ -393,11 +481,8 @@ impl Emitter<'_, '_> {
             }
             "var_set" => {
                 let name = inst.block.var_name().unwrap_or_default().to_owned();
-                let Some(&var) = self.str_vars.get(&name) else {
-                    return Err(self.unsupported(
-                        inst,
-                        "строковая переменная общая с другим листом: в модулях это пока не поддержано",
-                    ));
+                let Some((var, tag)) = self.string_var_buf(&name) else {
+                    return Err(self.unsupported(inst, "текстовая переменная не найдена"));
                 };
                 let from = self.str_in(inst, &port(0))?;
                 let enable = inst
@@ -411,6 +496,9 @@ impl Emitter<'_, '_> {
                     self.op(I::If(BlockType::Empty));
                 }
                 self.copy_str(var, from);
+                if let Some(n) = tag {
+                    self.publish_text(n, var);
+                }
                 if enable {
                     self.op(I::End);
                 }

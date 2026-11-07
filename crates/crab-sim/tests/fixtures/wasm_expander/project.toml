@@ -1,0 +1,6 @@
+[project]
+name = "wasm_expander"
+description = "Модуль и симуляция: блоки на расширителях PCF8574 и PCF8575"
+
+[board]
+fqbn = "esp32:esp32:esp32"

@@ -1,0 +1,6 @@
+[project]
+name = "wasm_xsheet"
+description = "Модуль и симуляция: строки между листами и сохраняемые строки"
+
+[board]
+fqbn = "esp32:esp32:esp32"

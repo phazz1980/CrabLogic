@@ -1,0 +1,6 @@
+[project]
+name = "wasm_uartfmt"
+description = "Модуль и симуляция: формат UART из входа"
+
+[board]
+fqbn = "esp32:esp32:esp32"

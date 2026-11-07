@@ -57,6 +57,8 @@ const HARDWARE: &[&str] = &[
     "native",
     "math",
     "retain",
+    "tag_text",
+    "retain_text",
 ];
 
 const FUEL_PER_CALL: u64 = 5_000_000;
@@ -169,6 +171,8 @@ pub struct StubIo {
     pub pcf_out: HashMap<i32, i32>,
     /// Words kept "in flash" by `retain`, by key.
     pub retain: HashMap<i32, i32>,
+    /// Texts kept "in flash" by `retain_text`, by key.
+    pub retain_text: HashMap<i32, Vec<u8>>,
     /// Modbus settings the module handed over, as `(code, value)` in order (the apply call is code 63).
     pub modbus_cfg: Vec<(i32, i32)>,
     /// What a Modbus read returns, by `(slave, table | kind << 4 | master << 8, register)`; the bits of an int or float.
@@ -179,6 +183,8 @@ pub struct StubIo {
     pub modbus_status: HashMap<i32, i32>,
     /// UART settings the module handed over, as `(port, code, value)` in order (code 63 opens).
     pub uart_cfg: Vec<(i32, i32, i32)>,
+    /// The last frame format the module asked for, by port (`8E1`).
+    pub uart_format: HashMap<i32, String>,
     /// Bytes waiting in a port's receive buffer, by port.
     pub uart_rx: HashMap<i32, std::collections::VecDeque<u8>>,
     /// What the module sent, by port, as `(value, size code)`.
@@ -217,16 +223,16 @@ pub struct StubIo {
     pub mqtt_state: HashMap<i32, i32>,
     /// Publications the module queued (ops 12, 13): topic, payload, retain.
     pub mqtt_published: Vec<(String, String, bool)>,
-    /// Filters the module subscribed to (op 14); the index is the slot.
-    pub mqtt_filters: Vec<String>,
-    /// Last message and counter of each slot (ops 15, 16).
-    pub mqtt_slots: Vec<(String, i32)>,
     /// Sparkplug setup (op 30): texts by code (1 group, 2 node), enable flag, setup complete.
     pub sp_text: HashMap<i32, String>,
     pub sp_enable: i32,
     pub sp_complete: bool,
     /// Sparkplug metrics asked with op 31: name, type (0 bool, 1 int, 2 float), last value bits (op 32).
     pub sp_metrics: Vec<(String, i32, u32)>,
+    /// Filters the module subscribed to (op 14); the index is the slot.
+    pub mqtt_filters: Vec<String>,
+    /// Last message and counter of each slot (ops 15, 16).
+    pub mqtt_slots: Vec<(String, i32)>,
     /// Layout JSON the module gave the web page (`net` op 17, code 1).
     pub web_layout: String,
     /// Widgets of the page (op 17, code 2); the module writes values (ops 19, 20) and reads what
@@ -257,6 +263,7 @@ struct Host {
     params: Vec<Word>,
     outputs: Vec<Word>,
     tags: HashMap<i32, Word>,
+    text_tags: HashMap<i32, Vec<u8>>,
     io: StubIo,
     subscriptions: Vec<String>,
     published: Vec<(String, Vec<u8>)>,
@@ -299,6 +306,7 @@ impl McuModule {
                 params: Vec::new(),
                 outputs: vec![Word::default(); n_outputs],
                 tags: HashMap::new(),
+                text_tags: HashMap::new(),
                 io,
                 subscriptions: Vec::new(),
                 published: Vec::new(),
@@ -408,6 +416,15 @@ impl McuModule {
 
     pub fn set_tag(&mut self, id: i32, value: Word) {
         self.store.data_mut().tags.insert(id, value);
+    }
+
+    /// The texts of the string tags the module has written, by tag number.
+    pub fn text_tags(&self) -> &HashMap<i32, Vec<u8>> {
+        &self.store.data().text_tags
+    }
+
+    pub fn set_text_tag(&mut self, id: i32, value: Vec<u8>) {
+        self.store.data_mut().text_tags.insert(id, value);
     }
 
     pub fn io(&self) -> &StubIo {
@@ -591,6 +608,58 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
             c.data().io.adc_in.get(&pin).copied().unwrap_or(0)
         })
         .map_err(bad)?
+        // `tag_text(op, id, ptr, n)`: 0 reads the text of a tag into the memory, 1 stores one.
+        .func_wrap(
+            "crab",
+            "tag_text",
+            |mut c: Caller<'_, Host>, op: i32, id: i32, ptr: i32, n: i32| -> i32 {
+                if op == 0 {
+                    let text = c.data().text_tags.get(&id).cloned().unwrap_or_default();
+                    let len = text.len().min(n.max(0) as usize);
+                    let Some(memory) = c.get_export("memory").and_then(|e| e.into_memory()) else {
+                        return 0;
+                    };
+                    if memory.write(&mut c, ptr as usize, &text[..len]).is_err() {
+                        return 0;
+                    }
+                    len as i32
+                } else {
+                    let Some(bytes) = read_bytes(&mut c, ptr, n, 128) else {
+                        return 0;
+                    };
+                    c.data_mut().text_tags.insert(id, bytes);
+                    1
+                }
+            },
+        )
+        .map_err(bad)?
+        // `retain_text(op, key, ptr, n)`: 0 reads (the length, or -1 when nothing is kept), 1 writes.
+        .func_wrap(
+            "crab",
+            "retain_text",
+            |mut c: Caller<'_, Host>, op: i32, key: i32, ptr: i32, n: i32| -> i32 {
+                if op == 0 {
+                    let Some(text) = c.data().io.retain_text.get(&key).cloned() else {
+                        return -1;
+                    };
+                    let len = text.len().min(n.max(0) as usize);
+                    let Some(memory) = c.get_export("memory").and_then(|e| e.into_memory()) else {
+                        return -1;
+                    };
+                    if memory.write(&mut c, ptr as usize, &text[..len]).is_err() {
+                        return -1;
+                    }
+                    len as i32
+                } else {
+                    let Some(bytes) = read_bytes(&mut c, ptr, n, 128) else {
+                        return -1;
+                    };
+                    c.data_mut().io.retain_text.insert(key, bytes);
+                    1
+                }
+            },
+        )
+        .map_err(bad)?
         // `retain(op, key, value)`: 0 reads (the value is the default), 1 writes.
         .func_wrap(
             "crab",
@@ -672,7 +741,7 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
             "crab",
             "uart",
             |mut c: Caller<'_, Host>, op: i32, port: i32, a: i32, b: i32| -> i32 {
-                let text = if op == 6 {
+                let text = if op == 6 || op == 7 {
                     read_bytes(&mut c, a, b, 1024)
                 } else {
                     None
@@ -686,6 +755,18 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
                         }
                         None => 0,
                     },
+                    7 => {
+                        let f = String::from_utf8_lossy(&text.unwrap_or_default())
+                            .trim()
+                            .to_uppercase();
+                        let ok = matches!(f.as_bytes(), [d, p, s]
+                            if (b'5'..=b'8').contains(d) && matches!(p, b'N' | b'E' | b'O')
+                                && matches!(s, b'1' | b'2'));
+                        if ok {
+                            io.uart_format.insert(port, f);
+                        }
+                        i32::from(ok)
+                    }
                     0 => {
                         io.uart_cfg.push((port, a, b));
                         0
@@ -765,6 +846,51 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
                     None
                 };
                 match op {
+                    30 => {
+                        match a {
+                            1 | 2 => {
+                                let t = read_bytes(&mut c, b, len, 64);
+                                if let Some(t) = t {
+                                    c.data_mut()
+                                        .io
+                                        .sp_text
+                                        .insert(a, String::from_utf8_lossy(&t).into_owned());
+                                }
+                            }
+                            4 => c.data_mut().io.sp_enable = b,
+                            63 => c.data_mut().io.sp_complete = true,
+                            _ => {}
+                        }
+                        return 0;
+                    }
+                    31 => {
+                        let name = read_bytes(&mut c, a, b, 32);
+                        let io = &mut c.data_mut().io;
+                        return match name {
+                            Some(n) if !n.is_empty() => {
+                                let n = String::from_utf8_lossy(&n).into_owned();
+                                match io.sp_metrics.iter().position(|m| m.0 == n) {
+                                    Some(i) => i as i32,
+                                    None if io.sp_metrics.len() < 12 => {
+                                        io.sp_metrics.push((n, len, 0));
+                                        io.sp_metrics.len() as i32 - 1
+                                    }
+                                    None => -1,
+                                }
+                            }
+                            _ => -1,
+                        };
+                    }
+                    32 => {
+                        if let Some(m) = c.data_mut().io.sp_metrics.get_mut(a as usize) {
+                            m.2 = b as u32;
+                        }
+                        return 0;
+                    }
+                    33 => return 0, // no broker on the PC: the node is never online
+                    _ => {}
+                }
+                match op {
                     12 | 13 => {
                         let topic = read_bytes(&mut c, a, b, 128);
                         let payload = read_bytes(&mut c, len, d, 128);
@@ -831,51 +957,6 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
                                     io.web_net_item = d;
                                 }
                             }
-                match op {
-                    30 => {
-                        match a {
-                            1 | 2 => {
-                                let t = read_bytes(&mut c, b, len, 64);
-                                if let Some(t) = t {
-                                    c.data_mut()
-                                        .io
-                                        .sp_text
-                                        .insert(a, String::from_utf8_lossy(&t).into_owned());
-                                }
-                            }
-                            4 => c.data_mut().io.sp_enable = b,
-                            63 => c.data_mut().io.sp_complete = true,
-                            _ => {}
-                        }
-                        return 0;
-                    }
-                    31 => {
-                        let name = read_bytes(&mut c, a, b, 32);
-                        let io = &mut c.data_mut().io;
-                        return match name {
-                            Some(n) if !n.is_empty() => {
-                                let n = String::from_utf8_lossy(&n).into_owned();
-                                match io.sp_metrics.iter().position(|m| m.0 == n) {
-                                    Some(i) => i as i32,
-                                    None if io.sp_metrics.len() < 12 => {
-                                        io.sp_metrics.push((n, len, 0));
-                                        io.sp_metrics.len() as i32 - 1
-                                    }
-                                    None => -1,
-                                }
-                            }
-                            _ => -1,
-                        };
-                    }
-                    32 => {
-                        if let Some(m) = c.data_mut().io.sp_metrics.get_mut(a as usize) {
-                            m.2 = b as u32;
-                        }
-                        return 0;
-                    }
-                    33 => return 0, // no broker on the PC: the node is never online
-                    _ => {}
-                }
                             63 => c.data_mut().io.web_complete = true,
                             _ => {}
                         }

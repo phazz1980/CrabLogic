@@ -615,6 +615,16 @@ fn upload_modules(
         std::time::Duration::from_secs(8),
     )
     .map_err(|e| e.to_string())?;
+    // A module that uses what only a newer master can do would only fail on the board.
+    for module in &modules {
+        let missing = info.missing_caps(&module.needs);
+        if !missing.is_empty() {
+            return Err(crab_build::mcu_module::missing_caps_message(
+                &module.name,
+                &missing,
+            ));
+        }
+    }
     // A module that calls a native part the master does not have would only fail on the board.
     match crab_build::master_state(&info, &master_features(project, lib)) {
         crab_build::MasterState::MissingNative(missing) => {

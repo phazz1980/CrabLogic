@@ -1,0 +1,128 @@
+[[var]]
+name = "x"
+type = "float"
+
+[[var]]
+name = "band"
+type = "float"
+init = 4.0
+
+[[var]]
+name = "bit"
+type = "int"
+
+[[var]]
+name = "kp"
+type = "float"
+init = 2.0
+
+[[block]]
+id = "xr"
+type = "var_get"
+var = "x"
+
+[[block]]
+id = "step"
+type = "constant"
+value = 1.5
+
+[[block]]
+id = "nx"
+type = "add"
+
+[[block]]
+id = "xw"
+type = "var_set"
+var = "x"
+
+[[block]]
+id = "ki"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "eight"
+type = "constant"
+value = 8.0
+
+[[block]]
+id = "m"
+type = "mod"
+
+[[block]]
+id = "mi"
+type = "float_to_int"
+mode = 1
+
+[[block]]
+id = "bw"
+type = "var_set"
+var = "bit"
+
+[[block]]
+id = "chg"
+type = "number_change"
+deadband = 1.0
+
+[block.bind]
+deadband = "band"
+
+[[block]]
+id = "rd"
+type = "bit_read"
+bit = 0
+
+[block.bind]
+bit = "bit"
+
+[[block]]
+id = "sp"
+type = "constant"
+value = 20.0
+
+[[block]]
+id = "pid"
+type = "pid"
+kp = 1.0
+out_min = -50.0
+out_max = 50.0
+
+[block.bind]
+kp = "kp"
+
+[[link]]
+from = "xr.out"
+to = "nx.a"
+[[link]]
+from = "step.out"
+to = "nx.b"
+[[link]]
+from = "nx.out"
+to = "xw.in"
+[[link]]
+from = "xr.out"
+to = "ki.in"
+[[link]]
+from = "ki.out"
+to = "m.a"
+[[link]]
+from = "eight.out"
+to = "m.b"
+[[link]]
+from = "m.out"
+to = "mi.in"
+[[link]]
+from = "mi.out"
+to = "bw.in"
+[[link]]
+from = "xr.out"
+to = "chg.in"
+[[link]]
+from = "ki.out"
+to = "rd.in"
+[[link]]
+from = "sp.out"
+to = "pid.sp"
+[[link]]
+from = "xr.out"
+to = "pid.pv"

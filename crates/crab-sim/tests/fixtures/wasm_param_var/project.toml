@@ -1,0 +1,6 @@
+[project]
+name = "wasm_param_var"
+description = "Модуль и симуляция: параметры блоков из переменных"
+
+[board]
+fqbn = "esp32:esp32:esp32"

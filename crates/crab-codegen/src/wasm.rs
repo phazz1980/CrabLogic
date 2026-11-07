@@ -23,7 +23,7 @@ mod net;
 mod sparkplug;
 mod text;
 mod web;
-use text::{Buf, MEM_START};
+use text::{Buf, A, MEM_START, STR_CAP};
 
 const TAG_GET_I: u32 = 0;
 const TAG_GET_F: u32 = 1;
@@ -52,7 +52,9 @@ const HW_NET: u32 = HW_BASE + 10;
 const HW_NATIVE: u32 = HW_BASE + 11;
 const HW_MATH: u32 = HW_BASE + 12;
 const HW_RETAIN: u32 = HW_BASE + 13;
-const HW_NAMES: [&str; 14] = [
+const HW_TAG_TEXT: u32 = HW_BASE + 14;
+const HW_RETAIN_TEXT: u32 = HW_BASE + 15;
+const HW_NAMES: [&str; 16] = [
     "gpio_read",
     "gpio_write",
     "adc_read",
@@ -67,11 +69,26 @@ const HW_NAMES: [&str; 14] = [
     "native",
     "math",
     "retain",
+    "tag_text",
+    "retain_text",
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
 /// `f32` scratch locals are numbered from here until `finish` knows how many `i32` ones there are.
 const F_LOCAL_BASE: u32 = 1000;
+
+/// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
+/// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
+/// does not report a needed one has to be flashed again.
+pub const MASTER_CAPS: [&str; 7] = [
+    "math",
+    "retain",
+    "tag_text",
+    "retain_text",
+    "uart_format",
+    "pcf_expander",
+    "uart_console",
+];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
 #[derive(Debug, Clone)]
@@ -79,6 +96,9 @@ pub struct WasmModule {
     pub name: String,
     pub wasm: Vec<u8>,
     pub manifest: String,
+    /// What the module needs from the master firmware beyond the first version of it (see
+    /// `MASTER_CAPS`): a master that does not report all of these cannot run the module.
+    pub needs: Vec<String>,
     /// With `watch`: `block.port` of every signal, in the order of the `output` index.
     pub watched: Vec<String>,
 }
@@ -276,6 +296,9 @@ impl crab_blocks::WasmEmit for BlockEmit<'_, '_, '_> {
     fn now(&mut self) {
         self.e.op(I::GlobalGet(GLOBAL_NOW));
     }
+    fn param_as(&mut self, i: usize, want: crab_blocks::WTy) {
+        self.e.param_as(self.inst, i, want.into());
+    }
     fn block_key(&self) -> i32 {
         crate::retain::fnv(&format!("block:{}", self.inst.block.id)) as i32
     }
@@ -320,6 +343,30 @@ impl crab_blocks::WasmEmit for BlockEmit<'_, '_, '_> {
     }
 }
 
+/// An expander chip (`pcf8574`, `pcf8575`) with blocks on it: the pins as last read and the
+/// levels the blocks want, written once at the end of the step.
+#[derive(Clone)]
+struct XChip {
+    /// `address | sda << 8 | scl << 16`, bit 24 for 16 pins (the key of `pcf_read`/`pcf_write`).
+    key: i32,
+    period: i32,
+    in_word: u32,
+    out_word: u32,
+    /// Pins read by blocks: written high so the chip lets them float.
+    in_mask: i32,
+}
+
+/// A text variable kept in flash by the master (`retain_text`).
+#[derive(Clone)]
+struct RetainedText {
+    key: i32,
+    buf: Buf,
+    /// The last text known to be in flash.
+    saved: Buf,
+    /// Time of the last check.
+    last: u32,
+}
+
 /// A variable kept in flash by the master (`retain`).
 #[derive(Clone)]
 struct Retained {
@@ -352,6 +399,12 @@ struct Emitter<'a, 'p> {
     vars: HashMap<String, u32>,
     /// Text variables of the sheet: a buffer each (`text.rs`).
     str_vars: HashMap<String, Buf>,
+    /// Expander chips the blocks of this module stand on, by name.
+    xp: std::collections::BTreeMap<String, XChip>,
+    /// Mirrors of the text tags: what other sheets published, or what this sheet publishes.
+    str_tags: HashMap<u32, Buf>,
+    /// Retained text variables this module owns.
+    retained_text: Vec<RetainedText>,
     /// `i32` and `f32` scratch locals in use by the current block (`i32` ones start at 1: local 0 is `dt`).
     scratch_i: u32,
     scratch_f: u32,
@@ -362,6 +415,8 @@ struct Emitter<'a, 'p> {
     watched: Vec<String>,
     /// Hardware imports the code calls (placeholders, see `HW_BASE`).
     hw: std::collections::BTreeSet<u32>,
+    /// Newer master features used by the code that are not whole imports (see `WasmModule::needs`).
+    extras: std::collections::BTreeSet<&'static str>,
     /// Offsets in `code` where `step` is cut into separate functions (block boundaries only):
     /// wasm3 refuses a function that overruns its stack height limit.
     cuts: Vec<usize>,
@@ -403,6 +458,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
             signals: HashMap::new(),
             vars: HashMap::new(),
             str_vars: HashMap::new(),
+            xp: Default::default(),
+            str_tags: HashMap::new(),
+            retained_text: Vec::new(),
             scratch_i: 0,
             scratch_f: 0,
             peak_i: 0,
@@ -410,6 +468,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             watch: false,
             watched: Vec::new(),
             hw: Default::default(),
+            extras: Default::default(),
             cuts: Vec::new(),
             mem_top: MEM_START,
             mem_overflow: false,
@@ -436,6 +495,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
             let g = em.global(Ty::of(local.ty), &local.init);
             em.vars.insert(local.name.clone(), g);
         }
+        em.collect_string_tags();
+        em.collect_expanders();
         em.collect_retained();
         em
     }
@@ -456,6 +517,29 @@ impl<'a, 'p> Emitter<'a, 'p> {
             let Some(var) = logic.var(&name).filter(|v| v.retain) else {
                 continue;
             };
+            if var.ty.signal() == SignalType::String {
+                let found = match tag {
+                    Some(n) => self.str_tags.get(&n).copied(),
+                    None => self.str_vars.get(&name).copied(),
+                };
+                if let Some(buf) = found {
+                    let saved = Buf {
+                        ptr: self.alloc(STR_CAP),
+                        cap: STR_CAP,
+                        len: self.global(Ty::I, &ParamValue::Int(0)),
+                    };
+                    let last = self.state_i();
+                    self.hw.insert(HW_RETAIN_TEXT);
+                    self.hw.insert(HW_TEXT);
+                    self.retained_text.push(RetainedText {
+                        key: crate::retain::key_bits(var) as i32,
+                        buf,
+                        saved,
+                        last,
+                    });
+                }
+                continue;
+            }
             let ty = Ty::of(var.ty.signal());
             let init = var.init.clone().unwrap_or(ParamValue::Int(0));
             let default = match ty {
@@ -475,10 +559,192 @@ impl<'a, 'p> Emitter<'a, 'p> {
         }
     }
 
+    /// Collects the expander chips used by blocks of the module.
+    fn collect_expanders(&mut self) {
+        let program = self.program;
+        let logic = &program.project.logic;
+        for &bi in &self.module.blocks {
+            let inst = &program.blocks[bi];
+            let Some(name) = inst.block.expander.as_deref() else {
+                continue;
+            };
+            if inst.block.tag.is_some() {
+                continue;
+            }
+            let Some(e) = logic.expander(name) else {
+                continue;
+            };
+            let Some(p) = crab_core::expander::pin_param(&inst.lib.def) else {
+                continue;
+            };
+            let Some(ParamValue::Int(pin)) = inst.params.get(p.name.as_str()) else {
+                continue;
+            };
+            if !self.xp.contains_key(name) {
+                let all = ((1u32 << e.chip.pins()) - 1) as i32;
+                let pin_byte = |v: i64| (v & 0xFF) as i32;
+                let key = i32::from(e.address) & 0x7F
+                    | pin_byte(e.sda) << 8
+                    | pin_byte(e.scl) << 16
+                    | if e.chip.pins() > 8 { 1 << 24 } else { 0 };
+                let in_word = self.global(Ty::I, &ParamValue::Int(i64::from(all)));
+                let out_word = self.global(Ty::I, &ParamValue::Int(i64::from(all)));
+                self.extras.insert("pcf_expander");
+                self.xp.insert(
+                    name.to_owned(),
+                    XChip {
+                        key,
+                        period: e.period_ms().unwrap_or(20) as i32,
+                        in_word,
+                        out_word,
+                        in_mask: 0,
+                    },
+                );
+            }
+            if inst.block.kind == "digital_in" && (0..16).contains(pin) {
+                if let Some(chip) = self.xp.get_mut(name) {
+                    chip.in_mask |= 1 << pin;
+                }
+            }
+        }
+    }
+
+    /// Start of a step: the pins of the chips that have inputs.
+    fn expander_poll(&mut self) {
+        for chip in self.xp.values().cloned().collect::<Vec<_>>() {
+            if chip.in_mask == 0 {
+                continue;
+            }
+            // Only an answer of the chip counts: otherwise the previous pins stay.
+            self.c_i(chip.key);
+            self.c_i(chip.period);
+            self.c_i(1);
+            self.hw_call(HW_PCF_READ);
+            self.op(I::If(BlockType::Empty));
+            self.c_i(chip.key);
+            self.c_i(chip.period);
+            self.c_i(0);
+            self.hw_call(HW_PCF_READ);
+            self.op(I::GlobalSet(chip.in_word));
+            self.op(I::End);
+        }
+    }
+
+    /// End of a step: the wanted levels (inputs high) go to the chips.
+    fn expander_flush(&mut self) {
+        for chip in self.xp.values().cloned().collect::<Vec<_>>() {
+            self.c_i(chip.key);
+            self.op(I::GlobalGet(chip.out_word));
+            self.c_i(chip.in_mask);
+            self.op(I::I32Or);
+            self.hw_call(HW_PCF_WRITE);
+            self.op(I::Drop);
+        }
+    }
+
+    /// `digital_in` / `digital_out` standing on a pin of an expander.
+    fn expander_block(&mut self, inst: &Instance, name: &str) -> Result<(), WasmError> {
+        let program = self.program;
+        let shared = program.blocks.iter().enumerate().any(|(i, b)| {
+            b.block.expander.as_deref() == Some(name) && !self.module.blocks.contains(&i)
+        });
+        if shared {
+            return Err(self.unsupported(
+                inst,
+                "расширитель используют блоки с разных листов: в модулях это пока не поддержано",
+            ));
+        }
+        let Some(chip) = self.xp.get(name).cloned() else {
+            return Err(self.unsupported(inst, "расширитель не найден в проекте"));
+        };
+        let at = crab_core::expander::pin_param(&inst.lib.def)
+            .and_then(|p| inst.lib.def.params.iter().position(|q| q.name == p.name))
+            .unwrap_or(0);
+        let pin = self.const_param(inst, at)? as i32;
+        match inst.block.kind.as_str() {
+            "digital_in" => {
+                let inverted = self.const_param(inst, 2)? != 0.0;
+                self.op(I::GlobalGet(chip.in_word));
+                self.c_i(pin);
+                self.op(I::I32ShrU);
+                self.c_i(1);
+                self.op(I::I32And);
+                if inverted {
+                    self.op(I::I32Eqz);
+                }
+                self.set_out(inst, 0, Ty::I);
+            }
+            _ => {
+                let inverted = self.const_param(inst, 1)? != 0.0;
+                let logic = self.state_i();
+                self.hold_unless_enabled(inst, |e| {
+                    e.flag(inst, 0);
+                    e.op(I::GlobalSet(logic));
+                });
+                self.op(I::GlobalGet(chip.out_word));
+                self.c_i(!(1 << pin));
+                self.op(I::I32And);
+                self.op(I::GlobalGet(logic));
+                if inverted {
+                    self.op(I::I32Eqz);
+                }
+                self.c_i(pin);
+                self.op(I::I32Shl);
+                self.op(I::I32Or);
+                self.op(I::GlobalSet(chip.out_word));
+            }
+        }
+        Ok(())
+    }
+
     /// Writes a retained value that changed, at most once a second.
     fn retain_save(&mut self) {
         self.scratch_i = 0;
         self.scratch_f = 0;
+        for r in self.retained_text.clone() {
+            self.op(I::GlobalGet(GLOBAL_NOW));
+            self.op(I::GlobalGet(r.last));
+            self.op(I::I32Sub);
+            self.c_i(1000);
+            self.op(I::I32GeU);
+            self.op(I::If(BlockType::Empty));
+            self.op(I::GlobalGet(GLOBAL_NOW));
+            self.op(I::GlobalSet(r.last));
+            // equal? (mode 0, case sensitive)
+            self.text_call(
+                5,
+                [
+                    A::C(0),
+                    A::C(0),
+                    A::C(r.buf.ptr as i32),
+                    A::G(r.buf.len),
+                    A::C(r.saved.ptr as i32),
+                    A::G(r.saved.len),
+                ],
+            );
+            self.op(I::I32Eqz);
+            self.op(I::If(BlockType::Empty));
+            self.c_i(1);
+            self.c_i(r.key);
+            self.c_i(r.buf.ptr as i32);
+            self.op(I::GlobalGet(r.buf.len));
+            self.hw_call(HW_RETAIN_TEXT);
+            self.op(I::Drop);
+            self.text_call(
+                1,
+                [
+                    A::C(r.saved.ptr as i32),
+                    A::C(r.saved.cap as i32),
+                    A::C(r.buf.ptr as i32),
+                    A::G(r.buf.len),
+                    A::C(0),
+                    A::C(0),
+                ],
+            );
+            self.op(I::GlobalSet(r.saved.len));
+            self.op(I::End);
+            self.op(I::End);
+        }
         for r in self.retained.clone() {
             self.op(I::GlobalGet(GLOBAL_NOW));
             self.op(I::GlobalGet(r.last));
@@ -960,6 +1226,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.scratch_f = 0;
             self.web_setup(ui)?;
         }
+        self.pull_string_tags();
+        self.expander_poll();
         let blocks = self.module.blocks.clone();
         for (k, bi) in blocks.into_iter().enumerate() {
             if k > 0 && k % BLOCKS_PER_CHUNK == 0 {
@@ -970,7 +1238,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.scratch_f = 0;
             let program = self.program;
             self.block(&program.blocks[bi])?;
+            self.publish_outputs(&program.blocks[bi]);
         }
+        self.expander_flush();
         self.retain_save();
         Ok(())
     }
@@ -1122,7 +1392,14 @@ impl<'a, 'p> Emitter<'a, 'p> {
     /// (`pcf_read(key, period_ms, field)`: 0 byte, 1 answered) or hands over the byte to write
     /// (`pcf_write(key, byte)` returns whether the chip answered the last write).
     fn pcf_block(&mut self, inst: &Instance) -> Result<bool, WasmError> {
-        let reading = match inst.block.kind.as_str() {
+        let kind = inst
+            .lib
+            .def
+            .info
+            .code_of
+            .as_deref()
+            .unwrap_or(&inst.block.kind);
+        let reading = match kind {
             "pcf8574_in" => true,
             "pcf8574_out" => false,
             _ => return Ok(false),
@@ -1453,13 +1730,19 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let Some((u, _)) = crate::arduino::uart_of(self.program, inst) else {
             return Err(self.unsupported(inst, "не найден UART блока"));
         };
-        if !(1..=2).contains(&u.number) {
+        // Sending on USB / UART0 goes to the console of the master (its lines, shown by the editor);
+        // reading and configuring them stay with the master.
+        let console = (u.number == 0 || u.number == crab_core::uart::USB) && kind == "uart_send";
+        if !console && !(1..=2).contains(&u.number) {
             return Err(self.unsupported(
                 inst,
-                "USB и UART0 заняты протоколом мастера: в модуле доступны UART1 и UART2",
+                "USB и UART0 заняты протоколом мастера: читать и настраивать можно UART1 и UART2, отправлять — и в консоль мастера (UART0)",
             ));
         }
-        let port = i32::from(u.number);
+        if console {
+            self.extras.insert("uart_console");
+        }
+        let port = if console { 0 } else { i32::from(u.number) };
         let out_index = |name: &str| {
             inst.lib
                 .def
@@ -1503,11 +1786,11 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 let format_used = inst.inputs.get("new_format").is_some_and(
                     |i| !matches!(&i.source, Source::Default(ParamValue::Text(t)) if t.is_empty()),
                 );
-                if format_used {
-                    return Err(
-                        self.unsupported(inst, "смена формата UART пока не поддержана в модулях")
-                    );
-                }
+                let format = if format_used {
+                    Some(self.str_in(inst, "new_format")?)
+                } else {
+                    None
+                };
                 self.uart_setup(port, &u);
                 if inst.inputs.contains_key("apply") {
                     // On the rising edge of `apply` the speed changes.
@@ -1534,21 +1817,44 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     self.op(I::I32Eqz);
                     self.op(I::I32And);
                     self.op(I::If(BlockType::Empty));
+                    // A new frame format first (the port restarts at its present speed), then the speed.
+                    let ok = self.tmp_i();
+                    self.c_i(1);
+                    self.op(I::LocalSet(ok));
+                    if let Some(f) = format {
+                        self.push_arg(f.len());
+                        self.op(I::I32Eqz);
+                        self.choose(
+                            Ty::I,
+                            |e| e.c_i(1),
+                            |e| {
+                                e.c_i(7);
+                                e.extras.insert("uart_format");
+                                e.c_i(port);
+                                e.push_arg(f.ptr());
+                                e.push_arg(f.len());
+                                e.hw_call(HW_UART);
+                            },
+                        );
+                        self.op(I::LocalSet(ok));
+                    }
                     self.uart_call(5, port, |e| e.input_as(inst, speed, Ty::I), 0);
                     self.op(I::Drop);
+                    if inst.outputs.contains_key("ok") {
+                        self.op(I::LocalGet(ok));
+                        self.set_out(inst, out_index("ok"), Ty::I);
+                    }
                     self.op(I::End);
                     self.op(I::LocalGet(apply));
                     self.op(I::GlobalSet(prev));
-                    if inst.outputs.contains_key("ok") {
-                        self.c_i(1);
-                        self.set_out(inst, out_index("ok"), Ty::I);
-                    }
                 }
                 self.uart_call(4, port, |e| e.c_i(0), 0);
                 self.set_out(inst, out_index("baud"), Ty::I);
             }
             _ => {
-                self.uart_setup(port, &u);
+                if !console {
+                    self.uart_setup(port, &u);
+                }
                 self.uart_send(inst, port)?;
             }
         }
@@ -1693,6 +1999,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             || self.net_block(inst)?
             || self.native_block(inst)?
             || self.mqtt_block(inst)?
+            || self.sparkplug_block(inst)?
             || self.web_block(inst)?
         {
             return Ok(true);
@@ -1700,6 +2007,18 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let kind = inst.block.kind.as_str();
         if !matches!(kind, "digital_in" | "analog_in" | "digital_out" | "pwm_out") {
             return Ok(false);
+        }
+        if let Some(name) = inst
+            .block
+            .expander
+            .as_deref()
+            .filter(|_| inst.block.tag.is_none())
+        {
+            if matches!(kind, "digital_in" | "digital_out") {
+                let name = name.to_owned();
+                self.expander_block(inst, &name)?;
+                return Ok(true);
+            }
         }
         if inst.block.expander.is_some() {
             return Err(self.unsupported(inst, "вывод на расширителе пока не поддержан в модулях"));
@@ -1947,7 +2266,6 @@ impl<'a, 'p> Emitter<'a, 'p> {
                         e.op(I::F32Div);
                     },
                     |e| e.c_f(0.0),
-            || self.sparkplug_block(inst)?
                 );
                 Ty::F
             }
@@ -2424,12 +2742,6 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     self.set_out(inst, 0, Ty::I);
                     return Ok(());
                 }
-                if inst.param_vars.contains_key("mode") {
-                    return Err(self.unsupported(
-                        inst,
-                        "способ округления из входа пока не поддержан в модулях",
-                    ));
-                }
                 let mode = inst
                     .params
                     .get("mode")
@@ -2552,7 +2864,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 HW_PCF_READ => 10,
                 HW_PCF_WRITE => 7,
                 HW_MODBUS | HW_NET => 11,
-                HW_UART | HW_NATIVE => 12,
+                HW_UART | HW_NATIVE | HW_TAG_TEXT | HW_RETAIN_TEXT => 12,
                 HW_TEXT => 13,
                 HW_MATH => 14,
                 HW_RETAIN => 10,
@@ -2673,6 +2985,29 @@ impl<'a, 'p> Emitter<'a, 'p> {
 
         // The owner of a tag writes its initial value once.
         let mut init = Function::new([(1, ValType::I32)]);
+        for r in &self.retained_text {
+            // What flash holds replaces the initial text; the copy for the change check follows.
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::I32Const(r.key));
+            init.instruction(&I::I32Const(r.buf.ptr as i32));
+            init.instruction(&I::I32Const(r.buf.cap as i32));
+            init.instruction(&I::Call(remap(HW_RETAIN_TEXT)));
+            init.instruction(&I::LocalTee(0));
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::I32GeS);
+            init.instruction(&I::If(BlockType::Empty));
+            init.instruction(&I::LocalGet(0));
+            init.instruction(&I::GlobalSet(r.buf.len));
+            init.instruction(&I::End);
+            for v in [1, r.saved.ptr as i32, r.saved.cap as i32, r.buf.ptr as i32] {
+                init.instruction(&I::I32Const(v));
+            }
+            init.instruction(&I::GlobalGet(r.buf.len));
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::Call(remap(HW_TEXT)));
+            init.instruction(&I::GlobalSet(r.saved.len));
+        }
         for r in &self.retained {
             // The value kept in flash (or the initial one) goes where the variable lives.
             init.instruction(&I::I32Const(0));
@@ -2700,6 +3035,18 @@ impl<'a, 'p> Emitter<'a, 'p> {
             }
         }
         for t in &self.module.tags {
+            if t.tag.ty == SignalType::String {
+                // The owner of a text variable publishes its initial (or kept) text.
+                if let (Some(_), Some(buf)) = (&t.init, self.str_tags.get(&t.tag.number)) {
+                    for v in [1, t.tag.number as i32, buf.ptr as i32] {
+                        init.instruction(&I::I32Const(v));
+                    }
+                    init.instruction(&I::GlobalGet(buf.len));
+                    init.instruction(&I::Call(remap(HW_TAG_TEXT)));
+                    init.instruction(&I::Drop);
+                }
+                continue;
+            }
             if self.retained.iter().any(|r| r.tag == Some(t.tag.number)) {
                 continue;
             }
@@ -2759,10 +3106,19 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 format!("{:?}", t.tag.ty).to_lowercase()
             ));
         }
+        let mut needs: Vec<String> = used
+            .iter()
+            .map(|&h| HW_NAMES[(h - HW_BASE) as usize])
+            .filter(|n| MASTER_CAPS.contains(n))
+            .map(str::to_owned)
+            .collect();
+        needs.extend(self.extras.iter().map(|n| (*n).to_owned()));
+        needs.sort();
         WasmModule {
             name: self.module.name.clone(),
             wasm: module.finish(),
             manifest,
+            needs,
             watched: self.watched,
         }
     }

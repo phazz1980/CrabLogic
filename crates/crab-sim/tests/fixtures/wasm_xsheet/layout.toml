@@ -1,0 +1,49 @@
+[[sheet]]
+number = 2
+name = "Second"
+
+[block.mg]
+x = 40.0
+y = 40.0
+sheet = 2
+
+[block.mgl]
+x = 60.0
+y = 40.0
+sheet = 2
+
+[block.hl]
+x = 80.0
+y = 40.0
+sheet = 2
+
+[block.gen]
+x = 100.0
+y = 40.0
+sheet = 2
+
+[block.nm]
+x = 120.0
+y = 40.0
+sheet = 2
+
+[block.nr]
+x = 140.0
+y = 40.0
+sheet = 2
+
+[block.nrl]
+x = 160.0
+y = 40.0
+sheet = 2
+
+[block.fr]
+x = 180.0
+y = 40.0
+sheet = 2
+
+[block.frl]
+x = 200.0
+y = 40.0
+sheet = 2
+
