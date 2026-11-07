@@ -1958,17 +1958,71 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 Ty::I
             }
             "generator" => {
-                let start = self.state_i();
-                let (t_on, period) = (self.tmp_i(), self.tmp_i());
+                // Deadline form (`specs/generator-deadline`): one subtraction and one compare per
+                // scan; the division happens only when a scan skipped more than one phase.
+                // Zeroed state means "running since time 0" (as the old formula measured from 0).
+                let (start, ph, idle) = (self.state_i(), self.state_i(), self.state_i());
+                let (on, off, len, d, r, period) = (
+                    self.tmp_i(),
+                    self.tmp_i(),
+                    self.tmp_i(),
+                    self.tmp_i(),
+                    self.tmp_i(),
+                    self.tmp_i(),
+                );
                 self.flag(inst, 0);
                 self.choose(
                     Ty::I,
                     |e| {
                         e.param_ms(inst, 0);
-                        e.op(I::LocalSet(t_on));
-                        // period = max(on + off, 1)
-                        e.op(I::LocalGet(t_on));
+                        e.op(I::LocalSet(on));
                         e.param_ms(inst, 1);
+                        e.op(I::LocalSet(off));
+                        // (re)start after a disable: the first phase is "on" (`ph` is the off flag)
+                        e.op(I::GlobalGet(idle));
+                        e.op(I::If(BlockType::Empty));
+                        e.c_i(0);
+                        e.op(I::GlobalSet(idle));
+                        e.c_i(0);
+                        e.op(I::GlobalSet(ph));
+                        e.op(I::GlobalGet(GLOBAL_NOW));
+                        e.op(I::GlobalSet(start));
+                        e.op(I::End);
+                        // len = length of the current phase
+                        e.op(I::LocalGet(off));
+                        e.op(I::LocalGet(on));
+                        e.op(I::GlobalGet(ph));
+                        e.op(I::Select);
+                        e.op(I::LocalSet(len));
+                        e.since(start);
+                        e.op(I::LocalSet(d));
+                        e.op(I::LocalGet(d));
+                        e.op(I::LocalGet(len));
+                        e.op(I::I32GeU);
+                        e.op(I::If(BlockType::Empty));
+                        // d - len < length of the other phase (= on + off - len): switch once
+                        e.op(I::LocalGet(d));
+                        e.op(I::LocalGet(len));
+                        e.op(I::I32Sub);
+                        e.op(I::LocalGet(on));
+                        e.op(I::LocalGet(off));
+                        e.op(I::I32Add);
+                        e.op(I::LocalGet(len));
+                        e.op(I::I32Sub);
+                        e.op(I::I32LtU);
+                        e.op(I::If(BlockType::Empty));
+                        e.op(I::GlobalGet(ph));
+                        e.c_i(1);
+                        e.op(I::I32Xor);
+                        e.op(I::GlobalSet(ph));
+                        e.op(I::GlobalGet(start));
+                        e.op(I::LocalGet(len));
+                        e.op(I::I32Add);
+                        e.op(I::GlobalSet(start));
+                        e.op(I::Else);
+                        // catch up: period = max(on + off, 1), r = d % period
+                        e.op(I::LocalGet(on));
+                        e.op(I::LocalGet(off));
                         e.op(I::I32Add);
                         e.op(I::LocalSet(period));
                         e.c_i(1);
@@ -1977,15 +2031,43 @@ impl<'a, 'p> Emitter<'a, 'p> {
                         e.op(I::I32Eqz);
                         e.op(I::Select);
                         e.op(I::LocalSet(period));
-                        e.since(start);
+                        e.op(I::LocalGet(d));
                         e.op(I::LocalGet(period));
                         e.op(I::I32RemU);
-                        e.op(I::LocalGet(t_on));
+                        e.op(I::LocalSet(r));
+                        e.op(I::LocalGet(r));
+                        e.op(I::LocalGet(len));
                         e.op(I::I32LtU);
+                        e.op(I::If(BlockType::Empty));
+                        e.op(I::GlobalGet(GLOBAL_NOW));
+                        e.op(I::LocalGet(r));
+                        e.op(I::I32Sub);
+                        e.op(I::GlobalSet(start));
+                        e.op(I::Else);
+                        e.op(I::GlobalGet(ph));
+                        e.c_i(1);
+                        e.op(I::I32Xor);
+                        e.op(I::GlobalSet(ph));
+                        e.op(I::GlobalGet(GLOBAL_NOW));
+                        e.op(I::LocalGet(r));
+                        e.op(I::LocalGet(len));
+                        e.op(I::I32Sub);
+                        e.op(I::I32Sub);
+                        e.op(I::GlobalSet(start));
+                        e.op(I::End);
+                        e.op(I::End);
+                        e.op(I::End);
+                        // out = on phase and a non-empty on time
+                        e.op(I::GlobalGet(ph));
+                        e.op(I::I32Eqz);
+                        e.op(I::LocalGet(on));
+                        e.c_i(0);
+                        e.op(I::I32Ne);
+                        e.op(I::I32And);
                     },
                     |e| {
-                        e.op(I::GlobalGet(GLOBAL_NOW));
-                        e.op(I::GlobalSet(start));
+                        e.c_i(1);
+                        e.op(I::GlobalSet(idle));
                         e.c_i(0);
                     },
                 );

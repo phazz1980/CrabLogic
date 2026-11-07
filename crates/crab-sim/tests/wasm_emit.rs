@@ -599,3 +599,39 @@ fn type_conversions_match_the_simulation() {
 fn parameters_read_from_inputs_match_the_simulation() {
     compare("crates/crab-sim/tests/fixtures/wasm_param_in", 10, 80, 50);
 }
+
+#[test]
+fn generators_match_the_simulation_on_every_scan_step() {
+    for dt in [10, 50, 100, 250, 1500] {
+        compare("crates/crab-sim/tests/fixtures/wasm_generator", 7, 300, dt);
+    }
+}
+
+/// A generator that stays enabled follows `(t % period) < on` whatever the scan step is,
+/// also when a scan skips several phases (`specs/generator-deadline`).
+#[test]
+fn generator_keeps_the_phase_of_the_time_when_scans_skip_phases() {
+    let lib = library();
+    let project =
+        Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_generator")).unwrap();
+    let pairs = [
+        ("g1", 100u32, 100u32),
+        ("g2", 300, 500),
+        ("g4", 13, 7),
+        ("g7", 2, 1),
+        ("g5", 1, 1),
+    ];
+    for dt in [10u32, 50, 250, 1500, 777] {
+        let mut sim = Simulation::new(&project.logic, &lib).unwrap();
+        let mut t = 0u32;
+        for _ in 0..400 {
+            sim.step(dt).unwrap();
+            t += dt;
+            for (id, on, off) in pairs {
+                let want = (t % (on + off)) < on;
+                let got = sim.output(id, "out").unwrap() != 0.0;
+                assert_eq!(got, want, "{id} dt={dt} t={t}");
+            }
+        }
+    }
+}

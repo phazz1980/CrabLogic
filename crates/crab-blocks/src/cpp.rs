@@ -407,21 +407,45 @@ pub(crate) fn pulse(e: &CppCtx) -> CppParts {
     }
 }
 
+/// Deadline form (`specs/generator-deadline`): the same steps as the WASM module and `crab-sim`;
+/// the division is only in the branch where a scan skipped several phases.
 pub(crate) fn generator(e: &CppCtx) -> CppParts {
     let (id, out) = (&e.id, e.output("out"));
-    let period = e.int("time_on", 0) + e.int("time_off", 0);
     let mut l = Lines::default();
     l.line(format!("if ({}) {{", e.input("en")))
-        .line(format!(
-            "  unsigned long phase = (millis() - {id}_start) % ({period}UL);"
-        ))
-        .line(format!("  {out} = phase < {};", e.param_ul("time_on")))
+        .line(format!("  uint32_t {id}_on = (uint32_t)({});", e.param_ul("time_on")))
+        .line(format!("  uint32_t {id}_off = (uint32_t)({});", e.param_ul("time_off")))
+        .line(format!("  uint32_t {id}_now = (uint32_t)millis();"))
+        .line(format!("  if ({id}_idle) {{ {id}_idle = false; {id}_off_phase = false; {id}_start = {id}_now; }}"))
+        .line(format!("  uint32_t {id}_len = {id}_off_phase ? {id}_off : {id}_on;"))
+        .line(format!("  uint32_t {id}_d = {id}_now - {id}_start;"))
+        .line(format!("  if ({id}_d >= {id}_len) {{"))
+        .line(format!("    if ({id}_d - {id}_len < {id}_on + {id}_off - {id}_len) {{"))
+        .line(format!("      {id}_off_phase = !{id}_off_phase;"))
+        .line(format!("      {id}_start += {id}_len;"))
+        .line("    } else {")
+        .line(format!("      uint32_t {id}_period = {id}_on + {id}_off;"))
+        .line(format!("      if ({id}_period == 0) {id}_period = 1;"))
+        .line(format!("      uint32_t {id}_r = {id}_d % {id}_period;"))
+        .line(format!("      if ({id}_r < {id}_len) {{"))
+        .line(format!("        {id}_start = {id}_now - {id}_r;"))
+        .line("      } else {")
+        .line(format!("        {id}_off_phase = !{id}_off_phase;"))
+        .line(format!("        {id}_start = {id}_now - ({id}_r - {id}_len);"))
+        .line("      }")
+        .line("    }")
+        .line("  }")
+        .line(format!("  {out} = !{id}_off_phase && {id}_on != 0;"))
         .line("} else {")
-        .line(format!("  {id}_start = millis();"))
+        .line(format!("  {id}_idle = true;"))
         .line(format!("  {out} = false;"))
         .line("}");
     CppParts {
-        global: format!("unsigned long {id}_start = 0;"),
+        global: format!(
+            "uint32_t {id}_start = 0;
+bool {id}_off_phase = false;
+bool {id}_idle = false;"
+        ),
         looped: l.finish(),
         ..Default::default()
     }

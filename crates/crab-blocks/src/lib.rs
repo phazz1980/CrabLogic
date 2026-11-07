@@ -11,6 +11,7 @@ mod network;
 mod num;
 mod text;
 mod uart;
+mod wasm;
 mod web;
 
 pub use bench::{Bench, Signal, NO_BENCH};
@@ -19,6 +20,7 @@ pub use hardware::ds18b20_channel;
 pub use more::{next_random, RANDOM_SEED};
 pub use netsim::OWN_SLAVE;
 pub use num::{Types, V};
+pub use wasm::{get as wasm_block, Instruction, WTy, WasmEmit, WasmFn};
 pub use web::device_page;
 
 /// A built-in block: one Rust type that both simulates the block and writes its firmware code.
@@ -775,22 +777,50 @@ impl Behavior for Pulse {
     }
 }
 
+/// Deadline form (`specs/generator-deadline`): the same steps in WASM and in C++.
 #[derive(Default)]
 struct Generator {
     start: u32,
+    /// Zeroed state is "running since time 0" (as the old formula measured from 0).
+    off_phase: bool,
+    idle: bool,
 }
 
 impl Behavior for Generator {
     fn step(&mut self, ctx: &Ctx, out: &mut [f64]) {
-        if ctx.flag(0) {
-            let on = num::ms(ctx.param(0));
-            let period = on.wrapping_add(num::ms(ctx.param(1))).max(1);
-            let phase = num::elapsed(ctx.now_ms, self.start) % period;
-            out[0] = b(phase < on);
-        } else {
-            self.start = ctx.now_ms as u32;
+        if !ctx.flag(0) {
+            self.idle = true;
             out[0] = 0.0;
+            return;
         }
+        let now = ctx.now_ms as u32;
+        let on = num::ms(ctx.param(0));
+        let off = num::ms(ctx.param(1));
+        if self.idle {
+            self.idle = false;
+            self.off_phase = false;
+            self.start = now;
+        }
+        let len = if self.off_phase { off } else { on };
+        let d = num::elapsed(ctx.now_ms, self.start);
+        if d >= len {
+            if d.wrapping_sub(len) < on.wrapping_add(off).wrapping_sub(len) {
+                // one phase passed
+                self.off_phase = !self.off_phase;
+                self.start = self.start.wrapping_add(len);
+            } else {
+                // the scan skipped several phases: land where the time would be
+                let period = on.wrapping_add(off).max(1);
+                let r = d % period;
+                if r < len {
+                    self.start = now.wrapping_sub(r);
+                } else {
+                    self.off_phase = !self.off_phase;
+                    self.start = now.wrapping_sub(r - len);
+                }
+            }
+        }
+        out[0] = b(!self.off_phase && on != 0);
     }
 }
 

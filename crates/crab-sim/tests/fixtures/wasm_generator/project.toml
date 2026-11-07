@@ -1,0 +1,6 @@
+[project]
+name = "wasm_generator"
+description = "Генераторы для сверки модуля WASM с crab-sim на разных шагах скана"
+
+[board]
+fqbn = "esp32:esp32:esp32"

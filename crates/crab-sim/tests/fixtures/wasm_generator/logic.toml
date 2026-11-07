@@ -1,0 +1,42 @@
+[[block]]
+id = "g1"
+type = "generator"
+time_on = "100ms"
+time_off = "100ms"
+
+[[block]]
+id = "g2"
+type = "generator"
+time_on = "300ms"
+time_off = "500ms"
+
+[[block]]
+id = "g3"
+type = "generator"
+time_on = "7ms"
+time_off = "13ms"
+
+[[block]]
+id = "g4"
+type = "generator"
+time_on = "13ms"
+time_off = "7ms"
+
+[[block]]
+id = "g5"
+type = "generator"
+time_on = "1ms"
+time_off = "1ms"
+
+[[block]]
+id = "g6"
+type = "generator"
+time_on = "1000ms"
+time_off = "700ms"
+
+[[block]]
+id = "g7"
+type = "generator"
+time_on = "2ms"
+time_off = "1ms"
+

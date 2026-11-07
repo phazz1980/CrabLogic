@@ -31,7 +31,9 @@ DallasTemperature water_bus(&water_wire);
 unsigned long water_requested = 0;
 
 // period: generator
-unsigned long period_start = 0;
+uint32_t period_start = 0;
+bool period_off_phase = false;
+bool period_idle = false;
 
 // last_water: flash_store
 Preferences last_water_prefs;
@@ -95,10 +97,31 @@ void loop() {
 
   // period: generator
   if (true) {
-    unsigned long phase = (millis() - period_start) % (601000UL);
-    period_out = phase < 600000UL;
+    uint32_t period_on = (uint32_t)(600000UL);
+    uint32_t period_off = (uint32_t)(1000UL);
+    uint32_t period_now = (uint32_t)millis();
+    if (period_idle) { period_idle = false; period_off_phase = false; period_start = period_now; }
+    uint32_t period_len = period_off_phase ? period_off : period_on;
+    uint32_t period_d = period_now - period_start;
+    if (period_d >= period_len) {
+      if (period_d - period_len < period_on + period_off - period_len) {
+        period_off_phase = !period_off_phase;
+        period_start += period_len;
+      } else {
+        uint32_t period_period = period_on + period_off;
+        if (period_period == 0) period_period = 1;
+        uint32_t period_r = period_d % period_period;
+        if (period_r < period_len) {
+          period_start = period_now - period_r;
+        } else {
+          period_off_phase = !period_off_phase;
+          period_start = period_now - (period_r - period_len);
+        }
+      }
+    }
+    period_out = !period_off_phase && period_on != 0;
   } else {
-    period_start = millis();
+    period_idle = true;
     period_out = false;
   }
 

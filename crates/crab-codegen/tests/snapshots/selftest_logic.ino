@@ -50,7 +50,9 @@ String line4_out = String();
 bool tx4_sent = false;
 
 // gen: generator
-unsigned long gen_start = 0;
+uint32_t gen_start = 0;
+bool gen_off_phase = false;
+bool gen_idle = false;
 
 // tog: t_trigger
 bool tog_prev = false;
@@ -60,7 +62,9 @@ bool deb_last = false;
 unsigned long deb_changed = 0;
 
 // tick: generator
-unsigned long tick_start = 0;
+uint32_t tick_start = 0;
+bool tick_off_phase = false;
+bool tick_idle = false;
 
 // tx1: uart_send
 bool tx1_prev = false;
@@ -160,10 +164,31 @@ void loop() {
 
   // gen: generator
   if (true) {
-    unsigned long phase = (millis() - gen_start) % (1400UL);
-    gen_out = phase < 700UL;
+    uint32_t gen_on = (uint32_t)(700UL);
+    uint32_t gen_off = (uint32_t)(700UL);
+    uint32_t gen_now = (uint32_t)millis();
+    if (gen_idle) { gen_idle = false; gen_off_phase = false; gen_start = gen_now; }
+    uint32_t gen_len = gen_off_phase ? gen_off : gen_on;
+    uint32_t gen_d = gen_now - gen_start;
+    if (gen_d >= gen_len) {
+      if (gen_d - gen_len < gen_on + gen_off - gen_len) {
+        gen_off_phase = !gen_off_phase;
+        gen_start += gen_len;
+      } else {
+        uint32_t gen_period = gen_on + gen_off;
+        if (gen_period == 0) gen_period = 1;
+        uint32_t gen_r = gen_d % gen_period;
+        if (gen_r < gen_len) {
+          gen_start = gen_now - gen_r;
+        } else {
+          gen_off_phase = !gen_off_phase;
+          gen_start = gen_now - (gen_r - gen_len);
+        }
+      }
+    }
+    gen_out = !gen_off_phase && gen_on != 0;
   } else {
-    gen_start = millis();
+    gen_idle = true;
     gen_out = false;
   }
 
@@ -192,10 +217,31 @@ void loop() {
 
   // tick: generator
   if (true) {
-    unsigned long phase = (millis() - tick_start) % (1000UL);
-    tick_out = phase < 100UL;
+    uint32_t tick_on = (uint32_t)(100UL);
+    uint32_t tick_off = (uint32_t)(900UL);
+    uint32_t tick_now = (uint32_t)millis();
+    if (tick_idle) { tick_idle = false; tick_off_phase = false; tick_start = tick_now; }
+    uint32_t tick_len = tick_off_phase ? tick_off : tick_on;
+    uint32_t tick_d = tick_now - tick_start;
+    if (tick_d >= tick_len) {
+      if (tick_d - tick_len < tick_on + tick_off - tick_len) {
+        tick_off_phase = !tick_off_phase;
+        tick_start += tick_len;
+      } else {
+        uint32_t tick_period = tick_on + tick_off;
+        if (tick_period == 0) tick_period = 1;
+        uint32_t tick_r = tick_d % tick_period;
+        if (tick_r < tick_len) {
+          tick_start = tick_now - tick_r;
+        } else {
+          tick_off_phase = !tick_off_phase;
+          tick_start = tick_now - (tick_r - tick_len);
+        }
+      }
+    }
+    tick_out = !tick_off_phase && tick_on != 0;
   } else {
-    tick_start = millis();
+    tick_idle = true;
     tick_out = false;
   }
 

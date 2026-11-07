@@ -29,7 +29,9 @@ bool tx_sent = false;
 bool tx2_sent = false;
 
 // tick: generator
-unsigned long tick_start = 0;
+uint32_t tick_start = 0;
+bool tick_off_phase = false;
+bool tick_idle = false;
 
 // tx: uart_send
 bool tx_prev = false;
@@ -188,10 +190,31 @@ void loop() {
 
   // tick: generator
   if (true) {
-    unsigned long phase = (millis() - tick_start) % (1000UL);
-    tick_out = phase < 100UL;
+    uint32_t tick_on = (uint32_t)(100UL);
+    uint32_t tick_off = (uint32_t)(900UL);
+    uint32_t tick_now = (uint32_t)millis();
+    if (tick_idle) { tick_idle = false; tick_off_phase = false; tick_start = tick_now; }
+    uint32_t tick_len = tick_off_phase ? tick_off : tick_on;
+    uint32_t tick_d = tick_now - tick_start;
+    if (tick_d >= tick_len) {
+      if (tick_d - tick_len < tick_on + tick_off - tick_len) {
+        tick_off_phase = !tick_off_phase;
+        tick_start += tick_len;
+      } else {
+        uint32_t tick_period = tick_on + tick_off;
+        if (tick_period == 0) tick_period = 1;
+        uint32_t tick_r = tick_d % tick_period;
+        if (tick_r < tick_len) {
+          tick_start = tick_now - tick_r;
+        } else {
+          tick_off_phase = !tick_off_phase;
+          tick_start = tick_now - (tick_r - tick_len);
+        }
+      }
+    }
+    tick_out = !tick_off_phase && tick_on != 0;
   } else {
-    tick_start = millis();
+    tick_idle = true;
     tick_out = false;
   }
 

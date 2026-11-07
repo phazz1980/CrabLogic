@@ -163,13 +163,17 @@ bool bchg_prev = false;
 bool bchg_init = false;
 
 // rt: generator
-unsigned long rt_start = 0;
+uint32_t rt_start = 0;
+bool rt_off_phase = false;
+bool rt_idle = false;
 
 // rnd: random
 bool rnd_prev = false;
 
 // tick: generator
-unsigned long tick_start = 0;
+uint32_t tick_start = 0;
+bool tick_off_phase = false;
+bool tick_idle = false;
 
 // tx1: uart_send
 bool tx1_prev = false;
@@ -498,10 +502,31 @@ void loop() {
 
   // rt: generator
   if (true) {
-    unsigned long phase = (millis() - rt_start) % (600UL);
-    rt_out = phase < 300UL;
+    uint32_t rt_on = (uint32_t)(300UL);
+    uint32_t rt_off = (uint32_t)(300UL);
+    uint32_t rt_now = (uint32_t)millis();
+    if (rt_idle) { rt_idle = false; rt_off_phase = false; rt_start = rt_now; }
+    uint32_t rt_len = rt_off_phase ? rt_off : rt_on;
+    uint32_t rt_d = rt_now - rt_start;
+    if (rt_d >= rt_len) {
+      if (rt_d - rt_len < rt_on + rt_off - rt_len) {
+        rt_off_phase = !rt_off_phase;
+        rt_start += rt_len;
+      } else {
+        uint32_t rt_period = rt_on + rt_off;
+        if (rt_period == 0) rt_period = 1;
+        uint32_t rt_r = rt_d % rt_period;
+        if (rt_r < rt_len) {
+          rt_start = rt_now - rt_r;
+        } else {
+          rt_off_phase = !rt_off_phase;
+          rt_start = rt_now - (rt_r - rt_len);
+        }
+      }
+    }
+    rt_out = !rt_off_phase && rt_on != 0;
   } else {
-    rt_start = millis();
+    rt_idle = true;
     rt_out = false;
   }
 
@@ -513,10 +538,31 @@ void loop() {
 
   // tick: generator
   if (true) {
-    unsigned long phase = (millis() - tick_start) % (1000UL);
-    tick_out = phase < 100UL;
+    uint32_t tick_on = (uint32_t)(100UL);
+    uint32_t tick_off = (uint32_t)(900UL);
+    uint32_t tick_now = (uint32_t)millis();
+    if (tick_idle) { tick_idle = false; tick_off_phase = false; tick_start = tick_now; }
+    uint32_t tick_len = tick_off_phase ? tick_off : tick_on;
+    uint32_t tick_d = tick_now - tick_start;
+    if (tick_d >= tick_len) {
+      if (tick_d - tick_len < tick_on + tick_off - tick_len) {
+        tick_off_phase = !tick_off_phase;
+        tick_start += tick_len;
+      } else {
+        uint32_t tick_period = tick_on + tick_off;
+        if (tick_period == 0) tick_period = 1;
+        uint32_t tick_r = tick_d % tick_period;
+        if (tick_r < tick_len) {
+          tick_start = tick_now - tick_r;
+        } else {
+          tick_off_phase = !tick_off_phase;
+          tick_start = tick_now - (tick_r - tick_len);
+        }
+      }
+    }
+    tick_out = !tick_off_phase && tick_on != 0;
   } else {
-    tick_start = millis();
+    tick_idle = true;
     tick_out = false;
   }
 
