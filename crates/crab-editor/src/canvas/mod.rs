@@ -20,6 +20,7 @@ use crate::debugview::{self, Place};
 use crate::dialogs::Dialog;
 use crate::theme::Palette;
 
+mod apply;
 mod geometry;
 mod menus;
 mod paint;
@@ -28,7 +29,7 @@ mod tests;
 
 pub use self::menus::sheet_delete_dialog;
 pub use self::paint::block_preview;
-use self::{geometry::*, menus::*, paint::*};
+use self::{apply::*, geometry::*, menus::*, paint::*};
 
 // Sizes are multiples of the grid so that every port sits on a grid line.
 const HEAD_H: f32 = 20.0;
@@ -1203,111 +1204,20 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         app.sheet = s;
     }
     let lib = app.lib.clone();
-    let mut problems = Vec::new();
-    let mut added = None;
-    if let Some(doc) = &mut app.doc {
-        let group = moves.len() > 1;
-        for (id, delta) in moves {
-            if let Some(&pos) = doc.project.layout.blocks.get(&id) {
-                let moved = BlockPos {
-                    x: pos.x + delta.x,
-                    y: pos.y + delta.y,
-                    ..pos
-                };
-                let key = if group {
-                    "move:group".to_owned()
-                } else {
-                    format!("move:{id}")
-                };
-                let _ = doc.edit(&lib, Some(key), |p| p.move_block(&id, moved));
-            }
-        }
-        let group_end = drag_end.as_ref().and_then(|id| {
-            let ids = app.selection.as_ref()?.blocks();
-            (ids.len() > 1 && ids.contains(id)).then(|| ids.to_vec())
-        });
-        if let Some(ids) = group_end {
-            // A group stays on its sheets; positions snap to the grid.
-            let _ = doc.edit(&lib, Some("move:group".to_owned()), |p| {
-                for id in &ids {
-                    if let Some(&pos) = p.layout.blocks.get(id) {
-                        let snap = |v: f32| (v / GRID).round().max(0.0) * GRID;
-                        p.move_block(
-                            id,
-                            BlockPos {
-                                x: snap(pos.x),
-                                y: snap(pos.y),
-                                ..pos
-                            },
-                        )?;
-                    }
-                }
-                Ok::<_, crab_core::EditError>(())
-            });
-            doc.end_edit();
-        } else if let (Some(id), Some(pos)) = (&drag_end, landing) {
-            let _ = doc.edit(&lib, Some(format!("move:{id}")), |p| p.move_block(id, pos));
-            doc.end_edit();
-        }
-        if let Some((to, bend)) = wire_edit {
-            let key = format!("wire:{}.{}", to.block, to.port);
-            let _ = doc.edit(&lib, Some(key), |p| {
-                p.set_wire_bend(&to, bend);
-                Ok::<_, crab_core::EditError>(())
-            });
-        }
-        if wire_end {
-            doc.end_edit();
-        }
-        if let Some((to, broken)) = wire_break {
-            let _ = doc.edit(&lib, None, |p| {
-                p.set_wire_broken(&to, broken);
-                Ok::<_, crab_core::EditError>(())
-            });
-        }
-        if let Some((from, to)) = connect {
-            if let Err(e) = doc.edit(&lib, None, |p| p.connect(&lib, from, to)) {
-                problems.push(e.to_string());
-            }
-        }
-        if let Some((item, pos)) = drop {
-            let result = match item {
-                DragItem::Block(kind) => doc.edit(&lib, None, |p| p.add_block(&lib, &kind, pos)),
-                DragItem::Var(name) => doc.edit(&lib, None, |p| p.add_var_block(&name, false, pos)),
-                DragItem::Setting { id, name, ty, feed } => doc.edit(&lib, None, |p| {
-                    crate::netpanel::pull_out(p, &lib, &id, &name, ty, feed, pos)
-                }),
-                // A tag already on the board gets one more copy; otherwise the
-                // block itself is placed (or moved).
-                DragItem::Topic(id) => doc.edit(&lib, None, |p| {
-                    let tag = p.logic.tag_of(&id).to_owned();
-                    let is_tag = p.is_widget(&tag)
-                        || p.logic.block(&tag).is_some_and(|b| {
-                            lib.resolve(&p.logic, b).is_some_and(|l| {
-                                l.def
-                                    .params
-                                    .iter()
-                                    .any(|d| d.kind == crab_core::ParamKind::Pin)
-                            })
-                        });
-                    let placed = std::iter::once(tag.as_str())
-                        .chain(p.logic.tag_copies(&tag))
-                        .any(|b| p.layout.blocks.contains_key(b));
-                    // A widget never stands on a sheet itself, only its images do.
-                    if is_tag && (placed || p.is_widget(&tag)) {
-                        p.add_tag_copy(&tag, pos)
-                    } else {
-                        p.layout.blocks.insert(id.clone(), pos);
-                        Ok(id)
-                    }
-                }),
-            };
-            match result {
-                Ok(id) => added = Some(id),
-                Err(e) => problems.push(e.to_string()),
-            }
-        }
-    }
+    let (problems, added) = apply_edits(
+        app,
+        &lib,
+        Edits {
+            moves,
+            drag_end: drag_end.clone(),
+            landing,
+            wire_edit,
+            wire_end,
+            wire_break,
+            connect,
+            drop,
+        },
+    );
     if drag_end.is_some() {
         app.canvas.moving = None;
     }
@@ -1317,36 +1227,7 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         }
     }
     if let Some((a, b)) = sheet_swap {
-        if let Some(doc) = &mut app.doc {
-            let _ = doc.edit(&lib, None, |p| {
-                p.swap_sheets(a, b);
-                Ok::<_, crab_core::EditError>(())
-            });
-        }
-        let (ea, eb) = (app.extra_sheets.remove(&a), app.extra_sheets.remove(&b));
-        if ea {
-            app.extra_sheets.insert(b);
-        }
-        if eb {
-            app.extra_sheets.insert(a);
-        }
-        let (ca, cb) = (
-            app.canvas.collapsed.remove(&a),
-            app.canvas.collapsed.remove(&b),
-        );
-        if ca {
-            app.canvas.collapsed.insert(b);
-        }
-        if cb {
-            app.canvas.collapsed.insert(a);
-        }
-        // The focus and the view follow the moved sheet.
-        app.sheet = b;
-        if let Some(band) = bands.iter().find(|x| x.sheet == a) {
-            let offset = xf.pos(Pos2::new(0.0, band.top)).y - rect.min.y;
-            app.canvas.follow_sheet = Some((b, offset));
-            ui.ctx().request_repaint();
-        }
+        swap_sheets(app, ui, &lib, a, b, &bands, &xf, rect);
     }
     if let Some(sheet) = sheet_delete {
         app.sheet_delete = Some(sheet);
