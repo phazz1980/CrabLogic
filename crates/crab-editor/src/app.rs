@@ -1009,20 +1009,43 @@ impl EditorApp {
                     ui.label(&d.kind);
                 }
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button(crate::i18n::tr("Взять из проекта")).clicked() {
-                        take = self.block_diffs.iter().map(|d| d.kind.clone()).collect();
-                    }
-                    if ui
-                        .button(crate::i18n::tr(
-                            "Оставить блоки программы и сохранить проект",
-                        ))
-                        .clicked()
-                    {
-                        repack = true;
-                    }
-                });
-                if ui.button(crate::i18n::tr("Оставить как есть")).clicked() {
+                // A solid button with white text and a line below it saying what it does.
+                let choice = |ui: &mut egui::Ui, fill: egui::Color32, title: &str, hint: &str| {
+                    let button = egui::Button::new(
+                        egui::RichText::new(crate::i18n::tr(title))
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
+                    .min_size(egui::vec2(380.0, 30.0));
+                    let clicked = ui.add(button).clicked();
+                    ui.weak(crate::i18n::tr(hint));
+                    ui.add_space(8.0);
+                    clicked
+                };
+                if choice(
+                    ui,
+                    egui::Color32::from_rgb(38, 105, 185),
+                    "Взять из проекта",
+                    "Блоки в программе заменятся копиями из файла проекта",
+                ) {
+                    take = self.block_diffs.iter().map(|d| d.kind.clone()).collect();
+                }
+                if choice(
+                    ui,
+                    egui::Color32::from_rgb(40, 120, 70),
+                    "Оставить блоки программы и сохранить проект",
+                    "Проект сохранится с блоками из программы: копии в файле обновятся",
+                ) {
+                    repack = true;
+                }
+                if choice(
+                    ui,
+                    egui::Color32::from_rgb(88, 92, 100),
+                    "Оставить как есть",
+                    "Ничего не менять; вопрос появится при следующем открытии проекта",
+                ) {
                     close = true;
                 }
             });

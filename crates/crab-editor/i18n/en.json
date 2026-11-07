@@ -1251,5 +1251,8 @@
  "Ошибка сборки мастера ({0}): подробности в журнале": "Master build failed ({0}): see the log",
  "Мастер собран за {0} с": "Master built in {0} s",
  "Шаг 2 из 2: заливка на {0}...": "Step 2 of 2: uploading to {0}...",
- "Ядро и его инструменты разных версий или распакованы не полностью: удалите папку esp32core рядом с программой (и пакеты esp32 в Arduino15, если они есть) и скачайте ядро заново через «Файл → Ядра ESP32...»": "The core and its tools are of different versions or not fully unpacked: delete the esp32core folder next to the program (and the esp32 packages in Arduino15, if any) and download the core again via File → ESP32 cores..."
+ "Ядро и его инструменты разных версий или распакованы не полностью: удалите папку esp32core рядом с программой (и пакеты esp32 в Arduino15, если они есть) и скачайте ядро заново через «Файл → Ядра ESP32...»": "The core and its tools are of different versions or not fully unpacked: delete the esp32core folder next to the program (and the esp32 packages in Arduino15, if any) and download the core again via File → ESP32 cores...",
+ "Блоки в программе заменятся копиями из файла проекта": "The blocks in the program will be replaced with the copies from the project file",
+ "Проект сохранится с блоками из программы: копии в файле обновятся": "The project will be saved with the program's blocks: the copies in the file will be updated",
+ "Ничего не менять; вопрос появится при следующем открытии проекта": "Change nothing; the question will come back the next time the project is opened"
 }
