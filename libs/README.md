@@ -27,3 +27,12 @@
 сравните `version` в `library.properties`, при новой версии замените `src` (лишнее не переносим),
 проверьте сборку `examples/wifi_modes`, `examples/modbus_wifi`, `examples/web_ui` с чистой папкой
 библиотек пользователя (`ARDUINO_DIRECTORIES_USER` на пустую папку) и поправьте таблицу выше.
+
+## Локальные правки
+
+При обновлении библиотеки из источника эти правки нужно перенести заново.
+
+- `FLProg_Network/src/service/flprogNetworkMqttClient.{h,cpp}`: `setWill(topic, payload, length, retain)`,
+  `clearWill()`, `hasWill()` — will-сообщение MQTT (QoS 0) в пакете CONNECT (флаги `0x04`/`0x20`, поля после
+  идентификатора клиента, перед логином). Нужно для NDEATH в Sparkplug B (`specs/pubsub-bus`). Длина данных — до
+  `FLPROG_MQTT_MAX_WILL_PAYLOAD` (64) байт. Собирается `examples/mqtt`; на брокере will не проверен.

@@ -15,7 +15,11 @@
 Шаг 2 — Sparkplug B
 - [x] 8. `crab-sparkplug`: кодирование `Payload`/`Metric`, `bdSeq`, `seq`, топики, `Node` (will, birth, data, device-*). Номера полей и типов сверены с `sparkplug_b.proto` Eclipse Tahu; эталонные байты посчитаны вручную по схеме, а не получены из самой Tahu.
 - [ ] 9. Birth/death-сообщения из таблицы сигналов проекта. Готово: `birth_metrics(&[(имя, значение)])` с алиасами по порядку. Не готово: сбор списка (имя, значение) из `DebugTable` и примера проекта — упаковки образа со смещениями в коде пока нет (`debug-image`), поэтому метрики пока берутся из таблицы сигналов.
-- [ ] 10. Подключение к mqtt-модулю, LWT = `NDEATH`. (пример в `examples/`, на железе — отдельно)
+- [ ] 10. Подключение к mqtt-модулю, will = `NDEATH` (решения в `plan.md`):
+  - [x] 10a. `setWill` в клиенте FLProg_Network (`examples/mqtt` собирается; на брокере не проверено).
+  - [ ] 10b. Блоки `sparkplug_node`, `sparkplug_metric` и их WASM-вывод.
+  - [ ] 10c. `master.ino`: protobuf, `NBIRTH`/`NDATA`/`NDEATH`, will перед connect, birth после переподключения.
+  - [ ] 10d. Проверка на плате и на брокере; пример в `examples/`.
 - [ ] 11. Справка.
 
 Сверка с критериями spec.md в конце; на железе — отдельно.

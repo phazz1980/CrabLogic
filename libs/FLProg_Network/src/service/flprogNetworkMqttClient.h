@@ -181,6 +181,11 @@ public:
     bool setCredentials(const char *username, const char *password);
     void clearCredentials();
     bool hasCredentials() const { return _username[0] != 0; }
+    // CrabLogic patch (MQTT will, QoS 0): the broker publishes `payload` on `topic` if the client
+    // vanishes without DISCONNECT. Call before connect(); clearWill() removes it.
+    bool setWill(const char *topic, const uint8_t *payload, size_t length, bool retain = false);
+    void clearWill();
+    bool hasWill() const { return _willTopic[0] != 0; }
     const char *username() const { return _username; }
 
     void setKeepAlive(uint16_t seconds) { _keepAliveSeconds = seconds; }
@@ -366,6 +371,13 @@ private:
     char _clientId[FLPROG_MQTT_MAX_CLIENT_ID_LENGTH + 1] = {0};
     char _username[FLPROG_MQTT_MAX_USERNAME_LENGTH + 1] = {0};
     char _password[FLPROG_MQTT_MAX_PASSWORD_LENGTH + 1] = {0};
+#ifndef FLPROG_MQTT_MAX_WILL_PAYLOAD
+#define FLPROG_MQTT_MAX_WILL_PAYLOAD 64U
+#endif
+    char _willTopic[FLPROG_MQTT_MAX_TOPIC_LENGTH + 1] = {0};
+    uint8_t _willPayload[FLPROG_MQTT_MAX_WILL_PAYLOAD] = {0};
+    size_t _willLength = 0;
+    bool _willRetain = false;
 
     uint16_t _keepAliveSeconds = FLPROG_MQTT_DEFAULT_KEEPALIVE_SECONDS;
     uint32_t _connectTimeoutMs = FLPROG_MQTT_CONNECT_TIMEOUT_MS;

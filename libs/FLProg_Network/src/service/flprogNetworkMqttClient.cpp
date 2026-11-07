@@ -254,6 +254,28 @@ bool FLProgNetworkMqttClient::setCredentials(const char *usernameValue, const ch
     return true;
 }
 
+bool FLProgNetworkMqttClient::setWill(const char *topic, const uint8_t *payload, size_t length, bool retain)
+{
+    if (topic == nullptr || topic[0] == 0 || strlen(topic) > FLPROG_MQTT_MAX_TOPIC_LENGTH ||
+        length > FLPROG_MQTT_MAX_WILL_PAYLOAD || (payload == nullptr && length != 0))
+    {
+        _error = FLPROG_MQTT_ERROR_CREDENTIALS;
+        return false;
+    }
+    memcpy(_willTopic, topic, strlen(topic) + 1);
+    if (length != 0) memcpy(_willPayload, payload, length);
+    _willLength = length;
+    _willRetain = retain;
+    return true;
+}
+
+void FLProgNetworkMqttClient::clearWill()
+{
+    _willTopic[0] = 0;
+    _willLength = 0;
+    _willRetain = false;
+}
+
 void FLProgNetworkMqttClient::clearCredentials()
 {
     _username[0] = 0;
@@ -371,6 +393,11 @@ bool FLProgNetworkMqttClient::buildConnectPacket()
     _txBuffer[offset++] = 'T';
     _txBuffer[offset++] = 4; // MQTT 3.1.1
     uint8_t flags = 0x02U; // Clean Session baseline.
+    if (_willTopic[0] != 0)
+    {
+        flags |= 0x04U; // Will flag, QoS 0
+        if (_willRetain) flags |= 0x20U;
+    }
     if (_username[0] != 0)
     {
         flags |= 0x80U;
@@ -380,6 +407,18 @@ bool FLProgNetworkMqttClient::buildConnectPacket()
     _txBuffer[offset++] = (uint8_t)(_keepAliveSeconds >> 8);
     _txBuffer[offset++] = (uint8_t)(_keepAliveSeconds & 0xFFU);
     if (!writeUtf(offset, _clientId, FLPROG_MQTT_MAX_CLIENT_ID_LENGTH)) return false;
+    if (_willTopic[0] != 0)
+    {
+        if (!writeUtf(offset, _willTopic, FLPROG_MQTT_MAX_TOPIC_LENGTH)) return false;
+        if (offset + 2U + _willLength > FLPROG_MQTT_MAX_PACKET_SIZE) return false;
+        _txBuffer[offset++] = (uint8_t)(_willLength >> 8);
+        _txBuffer[offset++] = (uint8_t)(_willLength & 0xFFU);
+        if (_willLength != 0)
+        {
+            memcpy(_txBuffer + offset, _willPayload, _willLength);
+            offset += _willLength;
+        }
+    }
     if (_username[0] != 0)
     {
         if (!writeUtf(offset, _username, FLPROG_MQTT_MAX_USERNAME_LENGTH)) return false;
