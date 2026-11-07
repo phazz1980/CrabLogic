@@ -48,11 +48,11 @@ if ($editors.Count -gt 0) {
 
 # A running exe (e.g. crablogic-mcp started by Claude) cannot be overwritten but can be renamed:
 # move locked binaries aside so cargo can write new ones; remove leftovers when free.
-$release = Join-Path $root 'target\release'
-Get-ChildItem $release -Filter '*.exe.old*' -ErrorAction SilentlyContinue |
+$releaseDir = Join-Path $root 'target\release'
+Get-ChildItem $releaseDir -Filter '*.exe.old*' -ErrorAction SilentlyContinue |
     ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch {} }
 foreach ($bin in $bins) {
-    $path = Join-Path $release $bin
+    $path = Join-Path $releaseDir $bin
     if (-not (Test-Path $path)) { continue }
     try {
         [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None').Close()
