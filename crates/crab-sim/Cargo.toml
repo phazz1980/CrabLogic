@@ -7,6 +7,7 @@ description = "Runs WASM block modules (wasmi) to simulate a block on the PC"
 [dependencies]
 crab-core = { path = "../crab-core" }
 crab-blocks = { path = "../crab-blocks" }
+crab-kernel = { path = "../crab-kernel", features = ["serde", "std"] }
 wasmi = "2.0.0"
 serde.workspace = true
 toml.workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "crab-kernel"
+version.workspace = true
+edition.workspace = true
+description = "Module microkernel: handles, message bus, resource leases, host ABI and engine trait (no_std + alloc)"
+
+[features]
+default = ["engine-wasmi"]
+# The PC engine (wasmi); the board uses its own engine behind the same trait.
+engine-wasmi = ["dep:wasmi"]
+# Manifest topic declarations read with serde.
+serde = ["dep:serde"]
+# Math of the host C library instead of libm (the PC simulator compares with std).
+std = []
+
+[dependencies]
+libm = "0.2"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }
+wasmi = { version = "2.0.0", default-features = false, features = ["libm", "validate"], optional = true }
+
+[dev-dependencies]
+wat = "1.263.0"

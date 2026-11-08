@@ -1234,6 +1234,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crab-kernel"
+version = "1.5.0"
+dependencies = [
+ "libm",
+ "serde",
+ "wasmi 2.0.0",
+ "wat",
+]
+
+[[package]]
 name = "crab-mcp"
 version = "1.5.0"
 dependencies = [
@@ -1270,6 +1280,7 @@ dependencies = [
  "crab-build",
  "crab-codegen",
  "crab-core",
+ "crab-kernel",
  "serde",
  "toml 0.8.23",
  "wasmi 2.0.0",

@@ -1,0 +1,184 @@
+//! The kernel of one board: modules by [`Handle`], the bus between them and the leases they hold.
+//!
+//! Life cycle: [`Kernel::add`] (a module the engine has loaded) → [`Kernel::run_quantum`] →
+//! [`Kernel::swap`] (the new instance is ready → the leases pass to it → the old one goes) →
+//! [`Kernel::unload`]. A trap ends every lease of the module (its outputs go to their safe
+//! state); the module stays and takes its outputs again when it next writes them.
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::marker::PhantomData;
+
+use crate::bus::{Bus, TopicDecl};
+use crate::engine::Instance;
+use crate::handle::{Handle, SlotMap};
+use crate::host::{Devices, ModuleHost};
+
+/// One step of a module outside a kernel: time passes for its devices, then `step` runs.
+pub fn step_module<I, D>(inst: &mut I, dt_ms: u32) -> Result<(), String>
+where
+    I: Instance<ModuleHost<D>>,
+    D: Devices,
+{
+    inst.host_mut().devices.tick(dt_ms);
+    inst.call_step(dt_ms)
+}
+
+/// Hands a message to a module if it subscribed to `topic`; returns whether it was delivered.
+pub fn deliver_message<I, D>(inst: &mut I, topic: &str, data: &[u8]) -> Result<bool, String>
+where
+    I: Instance<ModuleHost<D>>,
+    D: Devices,
+{
+    if !inst.host().subscriptions.iter().any(|t| t == topic) {
+        return Ok(false);
+    }
+    inst.call_on_message(topic, data)?;
+    Ok(true)
+}
+
+pub struct Kernel<I, D> {
+    modules: SlotMap<I>,
+    /// Scan order: the order modules were added; a replacement keeps the place.
+    order: Vec<Handle>,
+    bus: Bus,
+    _devices: PhantomData<D>,
+}
+
+impl<I, D> Default for Kernel<I, D> {
+    fn default() -> Self {
+        Self {
+            modules: SlotMap::new(),
+            order: Vec::new(),
+            bus: Bus::new(),
+            _devices: PhantomData,
+        }
+    }
+}
+
+impl<I, D> Kernel<I, D>
+where
+    I: Instance<ModuleHost<D>>,
+    D: Devices,
+{
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a loaded module with the topics it declares and its queue size (0 → default).
+    pub fn add(&mut self, inst: I, topics: &[TopicDecl], queue: usize) -> Result<Handle, String> {
+        self.bus.declare(topics)?;
+        let h = self.insert(inst)?;
+        self.bus.attach(h, queue);
+        self.note(h);
+        self.order.push(h);
+        Ok(h)
+    }
+
+    fn insert(&mut self, inst: I) -> Result<Handle, String> {
+        self.modules
+            .insert(inst)
+            .ok_or_else(|| String::from("слишком много модулей"))
+    }
+
+    fn note(&mut self, h: Handle) {
+        if let Some(m) = self.modules.get(h) {
+            self.bus.note_subscriptions(h, &m.host().subscriptions);
+        }
+    }
+
+    /// Puts a new instance in the place of `old`: the topics and their last values stay, the
+    /// leases pass to the new instance (no output changes), the messages waiting for the old one
+    /// are dropped. Returns the handle of the new module; `old` goes stale.
+    pub fn swap(
+        &mut self,
+        old: Handle,
+        inst: I,
+        topics: &[TopicDecl],
+        queue: usize,
+    ) -> Result<Handle, String> {
+        let pos = self
+            .order
+            .iter()
+            .position(|&h| h == old)
+            .ok_or_else(|| String::from("нет такого модуля"))?;
+        self.bus.declare(topics)?;
+        let new = self.insert(inst)?;
+        let mut leaving = self.modules.remove(old).expect("module in order");
+        if let Some(m) = self.modules.get_mut(new) {
+            leaving
+                .host_mut()
+                .leases
+                .hand_over(&mut m.host_mut().leases);
+        }
+        drop(leaving);
+        self.bus.transfer(old, new, queue);
+        self.note(new);
+        self.order[pos] = new;
+        Ok(new)
+    }
+
+    /// Removes a module: its leases end (outputs go to their safe state), its mailbox closes.
+    pub fn unload(&mut self, h: Handle) -> Option<I> {
+        let inst = self.modules.remove(h)?;
+        self.order.retain(|&x| x != h);
+        self.bus.detach(h);
+        let mut inst = inst;
+        inst.host_mut().leases.release();
+        Some(inst)
+    }
+
+    /// One scan of every module: deliver what waits, run `step`, route what was published.
+    /// The first error stops the scan; the failing module's leases end.
+    pub fn run_quantum(&mut self, dt_ms: u32) -> Result<(), String> {
+        for i in 0..self.order.len() {
+            let h = self.order[i];
+            if let Err(e) = self.step_one(h, dt_ms) {
+                if let Some(m) = self.modules.get_mut(h) {
+                    m.host_mut().leases.release();
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
+        let waiting = self.bus.take(h);
+        let Some(m) = self.modules.get_mut(h) else {
+            return Ok(());
+        };
+        for (topic, data) in waiting {
+            deliver_message(m, &topic, &data)?;
+        }
+        step_module(m, dt_ms)?;
+        let published = core::mem::take(&mut m.host_mut().published);
+        self.note(h);
+        for (topic, data) in published {
+            self.bus.publish(&topic, data);
+        }
+        Ok(())
+    }
+
+    /// Delivers a message from the outside world as if a module had published it.
+    pub fn publish(&mut self, topic: &str, data: &[u8]) {
+        self.bus.publish(topic, data.to_vec());
+    }
+
+    pub fn get(&self, h: Handle) -> Option<&I> {
+        self.modules.get(h)
+    }
+
+    pub fn get_mut(&mut self, h: Handle) -> Option<&mut I> {
+        self.modules.get_mut(h)
+    }
+
+    /// Modules in scan order.
+    pub fn handles(&self) -> &[Handle] {
+        &self.order
+    }
+
+    pub fn bus(&self) -> &Bus {
+        &self.bus
+    }
+}
