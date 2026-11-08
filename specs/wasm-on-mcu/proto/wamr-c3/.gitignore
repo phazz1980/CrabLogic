@@ -1,0 +1,5 @@
+.deps/
+build/
+tools/prep/target/
+sketch/src/wamr/
+sketch/modules.h

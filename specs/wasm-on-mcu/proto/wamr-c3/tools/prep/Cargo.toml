@@ -1,0 +1,12 @@
+# Host tool: .wat -> .wasm, wamrc -> .aot, and sketch/modules.h with all blobs.
+[package]
+name = "prep"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmprinter = "0.263.0"
+wat = "1"
