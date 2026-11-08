@@ -14,6 +14,7 @@
 //   swap <name>      reload the module from the flash      list      stats      log      del <name>
 //   ev <name>        changes of 0/1 outputs since the last `ev`: `ev <name> <now_ms> <lost> <idx>:<val>:<ms> ...`
 //   rmax             forget the longest step / period of all modules
+//   pins             pins held by modules and what happens to them when the module fails (stage 1a)
 //   topic <name> <state|event> <maxlen>   bus topic: last value or queue, longest message (<= 64)
 //   queue <module> <n>                    event queue of a module (1..16, default 8)
 //   bus                                   queue size and lost events per module; per topic kind, refused, last value
@@ -21,6 +22,7 @@
 // (compiled code), `wasm=` (module bytes); then `caps=ev,us`, `free= largest= min=` (heap), `stack=<task>:<bytes left>,...`.
 #include <esp_partition.h>
 #include <esp_crc.h>
+#include <soc/gpio_reg.h>  // `pins` reads the output register
 #include <Preferences.h>  // retain() always needs it, not only the web page
 // Drivers are compiled in only when the project needs them (CRAB_SENSORS, CRAB_PCF defined by the editor).
 #ifdef CRAB_PCF
@@ -401,6 +403,76 @@ static void pinOnce(int32_t pin, uint8_t mode) {
   g_pinInit |= 1ULL << pin;
   pinMode(pin, mode);
 }
+
+// ---- pin leases (specs/wasm-kernel, stage 1a) ----
+// The first module that drives a pin (or pulls an input up) holds it. When that module traps, hangs,
+// is reset or deleted, the master puts its pins into the safe state the module asked for: bits 9-10
+// of the pin number of `gpio_write` / `pwm_write` (the block's `on_fault`; 0 low / PWM off, 1 high /
+// PWM full, 2 leave as it is). A pulled-up input loses the pull-up.
+enum PinUse : uint8_t { PIN_FREE, PIN_OUT, PIN_PWM, PIN_PULLUP_IN };
+enum PinFault : uint8_t { FAULT_LOW, FAULT_HIGH, FAULT_HOLD };
+struct PinLease {
+  int8_t slot = -1;
+  uint8_t use = PIN_FREE, fault = FAULT_LOW;
+  bool warned = false;  // another module also drives the pin: told the journal once
+};
+static PinLease g_pins[64];
+
+// Notes that the module in slot `s` uses `pin`. Called from the module's task on every write; the
+// table changes only on the first one (or when another module drives a pin it does not hold).
+static void pinLease(Slot *s, int pin, uint8_t use, uint8_t fault) {
+  if (pin < 0 || pin > 63) return;
+  int8_t me = (int8_t)(s - g_slots);
+  PinLease &l = g_pins[pin];
+  if (l.slot == me && l.use == use && l.fault == fault) return;
+  bool clash = false;
+  portENTER_CRITICAL(&g_mux);
+  if (l.slot < 0 || l.slot == me) {
+    l.slot = me;
+    l.use = use;
+    l.fault = fault;
+  } else if (!l.warned) {
+    l.warned = clash = true;
+  }
+  portEXIT_CRITICAL(&g_mux);
+  if (clash) jlog(s->name, "вывод %d уже занят модулем %s", pin, g_slots[l.slot].name);
+}
+
+// Puts the pins of the (stopped) module in slot `s` into their safe state and frees them.
+static void pinsSafe(Slot &s) {
+  int8_t me = (int8_t)(&s - g_slots);
+  for (int pin = 0; pin < 64; pin++) {
+    PinLease &l = g_pins[pin];
+    if (l.slot != me) continue;
+    PinLease was = l;
+    portENTER_CRITICAL(&g_mux);
+    l = PinLease();
+    portEXIT_CRITICAL(&g_mux);
+    if (was.fault == FAULT_HOLD && was.use != PIN_PULLUP_IN) continue;
+    switch (was.use) {
+      case PIN_OUT:
+        digitalWrite(pin, was.fault == FAULT_HIGH);
+        break;
+      case PIN_PWM:
+        if (was.fault == FAULT_HIGH) {
+          analogWrite(pin, 255);
+        } else {
+          // PWM stopped: the channel goes, the pin stays a low output.
+          analogWrite(pin, 0);
+          ledcDetach(pin);
+          pinMode(pin, OUTPUT);
+          digitalWrite(pin, LOW);
+          g_pinInit |= 1ULL << pin;
+        }
+        break;
+      case PIN_PULLUP_IN:
+        pinMode(pin, INPUT);
+        g_pinInit &= ~(1ULL << pin);  // the next module sets its own mode
+        break;
+    }
+  }
+}
+
 m3ApiRawFunction(h_gpio_read) {
   m3ApiReturnType(int32_t);
   m3ApiGetArg(int32_t, pin);
@@ -408,12 +480,16 @@ m3ApiRawFunction(h_gpio_read) {
   bool pullup = pin & 0x100;
   pin &= 0xFF;
   pinOnce(pin, pullup ? INPUT_PULLUP : INPUT);
+  if (pullup) pinLease(slotOf(_ctx), pin, PIN_PULLUP_IN, FAULT_LOW);
   m3ApiReturn(digitalRead(pin));
 }
 m3ApiRawFunction(h_gpio_write) {
   m3ApiGetArg(int32_t, pin);
   m3ApiGetArg(int32_t, v);
+  uint8_t fault = pin >> 9 & 3;
+  pin &= 0xFF;
   pinOnce(pin, OUTPUT);
+  pinLease(slotOf(_ctx), pin, PIN_OUT, fault);
   digitalWrite(pin, v);
   m3ApiSuccess();
 }
@@ -425,6 +501,9 @@ m3ApiRawFunction(h_adc_read) {
 m3ApiRawFunction(h_pwm_write) {
   m3ApiGetArg(int32_t, pin);
   m3ApiGetArg(int32_t, v);  // 8 bits, 0..255
+  uint8_t fault = pin >> 9 & 3;
+  pin &= 0xFF;
+  pinLease(slotOf(_ctx), pin, PIN_PWM, fault);
   analogWrite(pin, v);
   m3ApiSuccess();
 }
@@ -2503,11 +2582,14 @@ static uint32_t memBytes(IM3Runtime rt) {
   return rt && rt->memory.mallocated ? (uint32_t)rt->memory.mallocated->length : 0;
 }
 
-static void stopSlot(Slot &s) {
+// Stops the module. `safe`: its pins go into their safe state (`pinsSafe`); a module replaced by
+// its new version keeps them, so the outputs do not jump while the new one starts.
+static void stopSlot(Slot &s, bool safe = true) {
   if (s.task) {
     vTaskDelete(s.task);
     s.task = nullptr;
   }
+  if (safe) pinsSafe(s);
   if (s.rt) m3_FreeRuntime(s.rt);
   if (s.env) m3_FreeEnvironment(s.env);
   s.rt = nullptr;
@@ -2728,7 +2810,7 @@ static bool startSlot(Slot &s, bool paused = false) {
   s.wasmLen = h.len;
   s.perms = parsePerms(String(h.allow));
   if (!loadOnBigStack(s)) {
-    stopSlot(s);
+    stopSlot(s, false);  // the callers decide about the pins
     return false;
   }
   s.steps = 0;
@@ -2743,7 +2825,7 @@ static bool startSlot(Slot &s, bool paused = false) {
   if (xTaskCreatePinnedToCore(slotTask, s.name, kTaskStackBytes, &s, 1, &s.task, kCore) != pdPASS) {
     s.task = nullptr;
     jlog(s.name, "нет памяти под задачу (свободно %u, крупнейший блок %u)", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-    stopSlot(s);
+    stopSlot(s, false);
     return false;
   }
   return true;
@@ -2985,7 +3067,7 @@ static void cmdPut(const String &line) {
   if (s) {
     int old = s->area;  // -1 for a new module
     uint32_t t0 = micros();
-    stopSlot(*s);
+    stopSlot(*s, false);
     s->area = a;
     ok = startSlot(*s);
     Serial.printf("swap_us=%u\n", (unsigned)(micros() - t0));
@@ -2997,6 +3079,7 @@ static void cmdPut(const String &line) {
       s->area = old;
       restored = startSlot(*s);
     }
+    if (!ok && !restored) pinsSafe(*s);
   }
   xSemaphoreGive(g_mgmt);
   Serial.println(ok ? "ok" : restored ? "err not started, old version runs (see log)" : "err not started (see log)");
@@ -3167,6 +3250,20 @@ static void cmdLine(String line) {
     for (int i = g_jCount - n; i < g_jCount; i++)
       Serial.printf("%u %s\n", (unsigned)g_journal[i % kJournal].ms, g_journal[i % kJournal].text);
     Serial.println("end");
+  } else if (line == "pins") {
+    // Held pins: `<pin> <module> out|pwm|pullup fault=0|1|hold level=0|1` (output register, pins < 32,
+    // plain outputs only: PWM goes through the matrix), then `out=<GPIO_OUT_REG hex>` for the free pins too.
+    uint32_t outReg = REG_READ(GPIO_OUT_REG);
+    for (int pin = 0; pin < 64; pin++) {
+      PinLease l = g_pins[pin];
+      if (l.slot < 0) continue;
+      static const char *uses[] = {"free", "out", "pwm", "pullup"}, *faults[] = {"0", "1", "hold", "?"};
+      Serial.printf("%d %s %s fault=%s", pin, g_slots[l.slot].name, uses[l.use & 3], faults[l.fault & 3]);
+      if (pin < 32 && l.use == PIN_OUT) Serial.printf(" level=%u", (unsigned)(outReg >> pin & 1));
+      Serial.println();
+    }
+    Serial.printf("out=%08x\n", (unsigned)outReg);
+    Serial.println("end");
   } else if (line == "rmax") {
     for (auto &s : g_slots) {
       s.maxUs = 0;
@@ -3192,7 +3289,7 @@ static void cmdLine(String line) {
     Serial.printf("id=%s\n", CRAB_MASTER_ID);
 #endif
     // What this master can do for modules beyond its first version (crab-codegen MASTER_CAPS).
-    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console,flashmod"
+    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console,flashmod,on_fault"
 #ifdef CRAB_MQTT
       ",sparkplug"
 #endif
@@ -3216,14 +3313,17 @@ static void cmdLine(String line) {
     Slot *s = findSlot(n.c_str(), false);
     bool ok = false;
     if (s) {
-      stopSlot(*s);
-      if (line.startsWith("del ")) {
+      // `swap` restarts the same module: its pins stay as they are unless it does not start.
+      bool del = line.startsWith("del ");
+      stopSlot(*s, del);
+      if (del) {
         areaDropName(n.c_str(), -1);
         s->area = -1;
         slotRelease(*s);
         ok = true;
       } else {
         ok = startSlot(*s);
+        if (!ok) pinsSafe(*s);
       }
     } else if (line.startsWith("del ") && areaOf(n.c_str()) >= 0) {
       // Not running (safe mode after a boot loop): the module still goes.

@@ -1014,12 +1014,28 @@ const NATIVE_USB_CHIPS: [&str; 3] = [
     "esp32:esp32:esp32h2",
 ];
 
+/// The FQBN without its options: `esp32:esp32:esp32c3:CDCOnBoot=cdc` → `esp32:esp32:esp32c3`.
+fn fqbn_base(fqbn: &str) -> &str {
+    match fqbn.match_indices(':').nth(2) {
+        Some((i, _)) => &fqbn[..i],
+        None => fqbn,
+    }
+}
+
 /// Board options with defaults filled in: on native-USB chips `Serial` must go to USB
-/// (`CDCOnBoot=cdc`), otherwise the board is silent on its only port. An option set in
-/// the project wins.
+/// (`CDCOnBoot=cdc`), otherwise the board is silent on its only port. Options written into
+/// the FQBN itself are taken too (arduino-cli rejects an FQBN with options together with
+/// `--board-options`); `[board.options]` wins over them, and both win over the defaults.
 fn board_options(board: &BoardConfig) -> BTreeMap<String, String> {
-    let mut options = board.options.clone();
-    if NATIVE_USB_CHIPS.contains(&board.fqbn.as_str()) {
+    let base = fqbn_base(&board.fqbn);
+    let mut options: BTreeMap<String, String> = board.fqbn[base.len()..]
+        .trim_start_matches(':')
+        .split(',')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .collect();
+    options.extend(board.options.clone());
+    if NATIVE_USB_CHIPS.contains(&base) {
         options
             .entry("CDCOnBoot".into())
             .or_insert_with(|| "cdc".into());
@@ -1028,7 +1044,7 @@ fn board_options(board: &BoardConfig) -> BTreeMap<String, String> {
 }
 
 fn board_args(board: &BoardConfig) -> Vec<OsString> {
-    let mut args = vec!["--fqbn".into(), board.fqbn.clone().into()];
+    let mut args = vec!["--fqbn".into(), fqbn_base(&board.fqbn).into()];
     let options = board_options(board);
     if !options.is_empty() {
         let opts: Vec<String> = options.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -1401,6 +1417,27 @@ version=1.4.7
         assert_eq!(board_options(&c3)["CDCOnBoot"], "default");
         // Boards with a UART bridge keep their defaults.
         assert!(!board_options(&board()).contains_key("CDCOnBoot"));
+    }
+
+    #[test]
+    fn options_inside_the_fqbn_move_to_board_options() {
+        let mut c3 = BoardConfig {
+            fqbn: "esp32:esp32:esp32c3:CDCOnBoot=default,FlashMode=qio".into(),
+            ..board()
+        };
+        c3.options.clear();
+        c3.options.insert("PartitionScheme".into(), "no_ota".into());
+        c3.options.insert("FlashMode".into(), "dio".into());
+        let args = strings(&board_args(&c3));
+        assert_eq!(
+            args,
+            [
+                "--fqbn",
+                "esp32:esp32:esp32c3",
+                "--board-options",
+                "CDCOnBoot=default,FlashMode=dio,PartitionScheme=no_ota"
+            ]
+        );
     }
 
     #[test]

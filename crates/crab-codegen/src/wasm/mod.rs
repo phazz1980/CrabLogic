@@ -89,13 +89,20 @@ const HW_NAMES: [&str; 16] = [
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
+/// Bits 9-10 of the pin number passed to `gpio_write` / `pwm_write`: what the master does with the
+/// pin when the module traps, hangs or is unloaded (`on_fault` of the block). 0 drives it low (PWM
+/// off), 1 high (PWM full), 2 leaves it as it is. The level is the physical one (after `inverted`).
+const PIN_FAULT_SHIFT: i32 = 9;
+const FAULT_LOW: i32 = 0;
+const FAULT_HIGH: i32 = 1;
+const FAULT_HOLD: i32 = 2;
 /// `f32` scratch locals are numbered from here until `finish` knows how many `i32` ones there are.
 const F_LOCAL_BASE: u32 = 1000;
 
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 8] = [
+pub const MASTER_CAPS: [&str; 9] = [
     "math",
     "retain",
     "tag_text",
@@ -104,6 +111,7 @@ pub const MASTER_CAPS: [&str; 8] = [
     "pcf_expander",
     "uart_console",
     "sparkplug",
+    "on_fault",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.

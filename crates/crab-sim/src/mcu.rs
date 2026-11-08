@@ -161,6 +161,9 @@ pub struct StubIo {
     pub adc_in: HashMap<i32, i32>,
     pub gpio_out: HashMap<i32, i32>,
     pub pwm_out: HashMap<i32, i32>,
+    /// What the master would do with an output pin when the module fails, by pin, from bits 9-10
+    /// of the pin number of `gpio_write` / `pwm_write`: 0 low (PWM off), 1 high (full), 2 hold.
+    pub on_fault: HashMap<i32, i32>,
     /// What the master reports for a sensor: `(key, field)` as the module passes them
     /// (`kind | index << 4 | pin << 8`; field 0 temperature, 1 humidity, 2 read ok).
     pub sensors: HashMap<(i32, i32), f32>,
@@ -600,7 +603,9 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
             "crab",
             "gpio_write",
             |mut c: Caller<'_, Host>, pin: i32, v: i32| {
-                c.data_mut().io.gpio_out.insert(pin, v);
+                let io = &mut c.data_mut().io;
+                io.on_fault.insert(pin & 0xFF, pin >> 9 & 3);
+                io.gpio_out.insert(pin & 0xFF, v);
             },
         )
         .map_err(bad)?
@@ -692,7 +697,9 @@ fn link_host(linker: &mut Linker<Host>) -> Result<(), String> {
             "crab",
             "pwm_write",
             |mut c: Caller<'_, Host>, pin: i32, v: i32| {
-                c.data_mut().io.pwm_out.insert(pin, v);
+                let io = &mut c.data_mut().io;
+                io.on_fault.insert(pin & 0xFF, pin >> 9 & 3);
+                io.pwm_out.insert(pin & 0xFF, v);
             },
         )
         .map_err(bad)?

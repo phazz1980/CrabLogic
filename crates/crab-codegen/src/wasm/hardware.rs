@@ -199,6 +199,16 @@ impl<'a, 'p> Emitter<'a, 'p> {
         Ok(true)
     }
 
+    /// The pin number with the `on_fault` bits. The default (low) adds none, so such a module still
+    /// runs on a master without the `on_fault` capability.
+    fn fault_pin(&mut self, pin: i32, fault: i32) -> i32 {
+        if fault == FAULT_LOW {
+            return pin;
+        }
+        self.extras.insert("on_fault");
+        pin | fault << PIN_FAULT_SHIFT
+    }
+
     /// Digital/analog/PWM pins of the board: calls into the master.
     pub(super) fn hardware_block(&mut self, inst: &Instance) -> Result<bool, WasmError> {
         if self.sensor_block(inst)?
@@ -258,6 +268,17 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     e.flag(inst, 0);
                     e.op(I::GlobalSet(logic));
                 });
+                let fault = match self.const_param(inst, 3)? as i32 {
+                    2 => FAULT_HOLD,
+                    on => {
+                        if (on != 0) != inverted {
+                            FAULT_HIGH
+                        } else {
+                            FAULT_LOW
+                        }
+                    }
+                };
+                let pin = self.fault_pin(pin, fault);
                 self.c_i(pin);
                 self.op(I::GlobalGet(logic));
                 if inverted {
@@ -288,7 +309,13 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     e.op(I::Select);
                     e.op(I::GlobalSet(duty));
                 });
+                let fault = match self.const_param(inst, 2)? as i32 {
+                    1 => FAULT_HIGH,
+                    2 => FAULT_HOLD,
+                    _ => FAULT_LOW,
+                };
                 // The master passes the value to `analogWrite`: 8 bits, 0..255, rounded half up.
+                let pin = self.fault_pin(pin, fault);
                 self.c_i(pin);
                 self.op(I::GlobalGet(duty));
                 self.c_f(2.55);

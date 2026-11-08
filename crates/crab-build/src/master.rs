@@ -4,7 +4,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::{board_args, build_dir, check_status, plain_path, ArduinoCli, BuildError};
+use crate::{
+    board_args, board_options, build_dir, check_status, plain_path, ArduinoCli, BuildError,
+};
 use crab_core::BoardConfig;
 
 use crate::native::NativeBlock;
@@ -160,7 +162,7 @@ impl MasterFeatures {
 fn master_board(board: &BoardConfig) -> Result<BoardConfig, BuildError> {
     let mut board = board.clone();
     if board.fqbn.starts_with("esp32:esp32:") {
-        if let Some(scheme) = board.options.get("PartitionScheme") {
+        if let Some(scheme) = board_options(&board).get("PartitionScheme") {
             if scheme != MASTER_PARTITIONS {
                 return Err(BuildError::MasterPartitions(scheme.clone()));
             }
@@ -620,6 +622,13 @@ CRAB_STEP(State& s, In in, Out& out) {}
             .options
             .insert("PartitionScheme".into(), "no_ota".into());
         assert_eq!(scheme(&board), "no_ota");
+        // A scheme written into the FQBN counts too.
+        board.options.clear();
+        board.fqbn = "esp32:esp32:esp32c3:CDCOnBoot=cdc,PartitionScheme=huge_app".into();
+        assert!(matches!(
+            master_board(&board),
+            Err(BuildError::MasterPartitions(s)) if s == "huge_app"
+        ));
     }
 
     /// The table keeps the 2 MB app of "No OTA" and holds the module areas of the master

@@ -35,3 +35,24 @@ name = "write_enable"
 type = "bool"
 default = false
 description = "Добавить вход «Разрешение записи» (en)"
+
+[[param]]
+name = "on_fault"
+label = "при аварии"
+type = "int"
+default = 0
+min = 0
+max = 2
+description = "Что делает мастер с выводом, когда модуль упал (ошибка, зависание) или выгружен: выключить, включить или оставить как есть"
+
+[[param.choice]]
+value = 0
+label = "выключить"
+
+[[param.choice]]
+value = 1
+label = "включить"
+
+[[param.choice]]
+value = 2
+label = "держать"

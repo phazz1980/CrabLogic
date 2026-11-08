@@ -116,6 +116,64 @@ fn pins_match_the_simulation() {
 }
 
 #[test]
+fn on_fault_goes_to_the_master_with_the_pin() {
+    let lib = library();
+    let mut project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_hw")).unwrap();
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    // Off by default: the inverted lamp goes high, the others low (no bits, any master runs them).
+    let faults = |m: &McuModule| [2, 5, 18].map(|p| m.io().on_fault.get(&p).copied());
+    assert_eq!(faults(&module), [Some(1), Some(0), Some(0)]);
+    assert_eq!(built.needs, ["on_fault"]);
+
+    let set = |project: &mut Project, id: &str, v: i64| {
+        let block = project
+            .logic
+            .blocks
+            .iter_mut()
+            .find(|b| b.id == id)
+            .unwrap();
+        block
+            .params
+            .insert("on_fault".into(), crab_core::ParamValue::Int(v));
+    };
+    set(&mut project, "lamp", 1);
+    set(&mut project, "fan", 2);
+    set(&mut project, "dim", 1);
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    assert_eq!(faults(&module), [Some(0), Some(2), Some(1)]);
+
+    // Every output off by default and not inverted: the module needs no new master.
+    set(&mut project, "lamp", 0);
+    let lamp = project
+        .logic
+        .blocks
+        .iter_mut()
+        .find(|b| b.id == "lamp")
+        .unwrap();
+    lamp.params
+        .insert("inverted".into(), crab_core::ParamValue::Bool(false));
+    set(&mut project, "fan", 0);
+    set(&mut project, "dim", 0);
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert!(built.needs.is_empty(), "{:?}", built.needs);
+}
+
+#[test]
 fn blink_example_drives_the_led_like_the_simulation() {
     let lib = library();
     let project = Project::load(repo_path("examples/blink")).unwrap();
