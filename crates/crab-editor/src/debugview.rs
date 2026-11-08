@@ -705,7 +705,21 @@ pub fn diagnostics_window(
                         ui.monospace(crate::i18n::fmt("{0} КБ", &[&(s.free_heap / 1024)]));
                         ui.end_row();
                     }
+                    if let Some(m) = &s.memory {
+                        let kb = |v: u32| {
+                            crate::i18n::fmt("{0} КБ", &[&format!("{:.1}", f64::from(v) / 1024.0)])
+                        };
+                        ui.label(crate::i18n::tr("Наибольший свободный блок"));
+                        ui.monospace(kb(m.largest));
+                        ui.end_row();
+                        ui.label(crate::i18n::tr("Минимум памяти с запуска"));
+                        ui.monospace(kb(m.min_free));
+                        ui.end_row();
+                    }
                 });
+            if let Some(m) = &s.memory {
+                debug_memory(ui, m);
+            }
             if !s.sheets.is_empty() {
                 ui.separator();
                 egui::Grid::new("diag_sheets")
@@ -800,6 +814,56 @@ const PLOT_H: f32 = 80.0;
 const AXIS_H: f32 = 13.0;
 
 /// A step of the time grid (seconds) that gives about one label per `want` seconds.
+/// Heap each module of the master takes and stack left in each task (`specs/mcu-memory`).
+fn debug_memory(ui: &mut Ui, m: &crab_debug::protocol::MasterMemory) {
+    let kb = |v: u32| format!("{:.1}", f64::from(v) / 1024.0);
+    if !m.modules.is_empty() {
+        ui.separator();
+        egui::Grid::new("diag_mem_modules")
+            .num_columns(4)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong(crate::i18n::tr("Модуль"));
+                ui.strong(crate::i18n::tr("Память, КБ"))
+                    .on_hover_text(crate::i18n::tr("Память WASM модуля (строки и буферы)"));
+                ui.strong(crate::i18n::tr("Код, КБ"))
+                    .on_hover_text(crate::i18n::tr("Код, скомпилированный wasm3"));
+                ui.strong(crate::i18n::tr("Файл, КБ"));
+                ui.end_row();
+                for module in &m.modules {
+                    ui.label(&module.name);
+                    ui.monospace(kb(module.mem));
+                    ui.monospace(kb(module.code));
+                    ui.monospace(kb(module.wasm));
+                    ui.end_row();
+                }
+            });
+    }
+    if !m.stacks.is_empty() {
+        ui.separator();
+        egui::Grid::new("diag_mem_stacks")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.strong(crate::i18n::tr("Задача"));
+                ui.strong(crate::i18n::tr("Стек не тронут, байт"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Сколько стека задачи ни разу не использовалось с запуска",
+                    ));
+                ui.end_row();
+                for (task, left) in &m.stacks {
+                    ui.label(task);
+                    if *left < 512 {
+                        ui.colored_label(ui.visuals().warn_fg_color, left.to_string());
+                    } else {
+                        ui.monospace(left.to_string());
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+}
+
 fn time_step(want: f64) -> f64 {
     const STEPS: [f64; 18] = [
         0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0,

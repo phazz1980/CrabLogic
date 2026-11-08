@@ -33,6 +33,11 @@ mod uart;
 mod web;
 use block_emit::BlockEmit;
 use text::{Buf, A, MEM_START, STR_CAP};
+
+/// Custom section with the bytes of memory a module needs (u32, little-endian); 0 without memory.
+pub const MEM_SECTION: &str = "crab.mem";
+/// Bytes above the last buffer, for the master's own reads past the end of a buffer.
+const MEM_SPARE: u32 = 64;
 use types::*;
 
 const TAG_GET_I: u32 = 0;
@@ -916,10 +921,17 @@ impl<'a, 'p> Emitter<'a, 'p> {
             funcs.function(5);
         }
 
+        // A page (64 KB) is declared only by modules with strings; the master gives such a module only
+        // the bytes it uses (`crab.mem`, `specs/mcu-memory`), not the whole page.
+        let has_memory = self.mem_top > MEM_START || self.hw.contains(&HW_TEXT);
+        let mem_need = if has_memory {
+            ((self.mem_top + 15) & !15) + MEM_SPARE
+        } else {
+            0
+        };
         let mut memory = MemorySection::new();
         memory.memory(MemoryType {
-            // A page (64 KB) is taken from the board's heap, so only modules with strings ask for it.
-            minimum: u64::from(self.mem_top > MEM_START || self.hw.contains(&HW_TEXT)),
+            minimum: u64::from(has_memory),
             maximum: None,
             memory64: false,
             shared: false,
@@ -1106,6 +1118,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
             }
             module.section(&data);
         }
+        module.section(&wasm_encoder::CustomSection {
+            name: MEM_SECTION.into(),
+            data: mem_need.to_le_bytes().as_slice().into(),
+        });
 
         let mut manifest = format!(
             "name = \"{}\"\nabi = 3\nallow = [{}]\n",

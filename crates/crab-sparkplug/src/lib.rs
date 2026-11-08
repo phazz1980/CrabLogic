@@ -238,6 +238,41 @@ mod tests {
         assert_eq!(m[1].name.as_deref(), Some("t.value"));
     }
 
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The master firmware (`spdump 1000` on a board with `examples/sparkplug`) wrote these bytes
+    /// in C++; the encoder here must give the same ones.
+    #[test]
+    fn matches_the_bytes_of_the_master_firmware() {
+        let mut node = Node::new("CrabLogic", "Esp1");
+        assert_eq!(hex(&node.will().payload), "120b0a05626453657120045800");
+        let birth = node.birth(
+            1000,
+            vec![
+                Metric::birth("Temperature", 1, Value::Float(21.5)),
+                Metric::birth("Hot", 2, Value::Bool(false)),
+            ],
+        );
+        assert_eq!(
+            hex(&birth.payload),
+            "08e807120b0a05626453657120045800121a0a144e6f646520436f6e74726f6c2f5265626972746820\
+             0b700012160a0b54656d706572617475726510012009650000ac41120b0a03486f741002200b70001800"
+        );
+        let data = node.data(
+            1000,
+            vec![
+                Metric::alias(1, Value::Float(21.5)),
+                Metric::alias(2, Value::Bool(false)),
+            ],
+        );
+        assert_eq!(
+            hex(&data.payload),
+            "08e807120910012009650000ac4112061002200b70001801"
+        );
+    }
+
     #[test]
     fn bdseq_wraps_at_256() {
         let mut node = Node::new("G", "N");

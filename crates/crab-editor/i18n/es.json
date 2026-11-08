@@ -1179,7 +1179,6 @@
  "Скопировать только конфиг": "Copiar solo la configuración",
  "Промпт...": "Prompt...",
  "Сервер MCP для внешнего ИИ (Claude Code и др.): он работает с проектом, открытым здесь": "Servidor MCP para IA externa (Claude Code y otros): trabaja con el proyecto abierto aquí",
- "Из проекта .crab...": "Desde un proyecto .crab...",
  "Ключ": "Clave",
  "Модель": "Modelo",
  "Адрес API": "Dirección de la API",
@@ -1224,6 +1223,16 @@
  "Нужен блокам на Rust/WASM без шаблона C++: переводит block.wasm в C для прошивки": "Lo necesitan los bloques Rust/WASM sin plantilla C++: traduce block.wasm a C para el firmware",
  "Проверить w2c2": "Comprobar w2c2",
  "w2c2 найден": "w2c2 encontrado",
- "На весь экран": "Pantalla completa",
- "Свернуть окно": "Restaurar ventana"
+ "Свернуть окно": "Restaurar ventana",
+ "Наибольший свободный блок": "Bloque libre más grande",
+ "Минимум памяти с запуска": "Memoria libre mínima desde el arranque",
+ "Память, КБ": "Memoria, KB",
+ "Память WASM модуля (строки и буферы)": "Memoria WASM del módulo (cadenas y búferes)",
+ "Код, КБ": "Código, KB",
+ "Код, скомпилированный wasm3": "Código compilado por wasm3",
+ "Файл, КБ": "Archivo, KB",
+ "Задача": "Tarea",
+ "Стек не тронут, байт": "Pila sin usar, bytes",
+ "Сколько стека задачи ни разу не использовалось с запуска": "Cuánta pila de la tarea no se ha usado nunca desde el arranque",
+ "Мастер на плате старой версии: держит модули в ОЗУ, и памяти на Wi-Fi и MQTT остаётся мало. Перезалейте мастер («Залить мастер-прошивку»); после этого модули заливаются заново": "El maestro de la placa es una versión antigua: guarda los módulos en la RAM y queda poca memoria para Wi-Fi y MQTT. Vuelva a cargar el maestro («Cargar firmware maestro»); después hay que volver a cargar los módulos"
 }

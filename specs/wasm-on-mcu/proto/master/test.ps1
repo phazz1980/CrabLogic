@@ -1,5 +1,6 @@
 # Drives the prototype master over Serial: uploads blink and hang, checks the watchdog,
-# then does 1000 hot swaps and compares the heap. Usage: test.ps1 -Port COM10 -Dir <folder with blink.wasm, hang.wasm>
+# then does 1000 hot swaps and compares the heap (a master of specs/mcu-memory: `put` in chunks).
+# Usage: test.ps1 -Port COM10 -Dir <folder with blink.wasm, hang.wasm>
 param([string]$Port = 'COM10', [string]$Dir = $env:TEMP + '\mods', [int]$Swaps = 1000)
 
 $table = for ($i = 0; $i -lt 256; $i++) {
@@ -27,9 +28,18 @@ function Put([string]$name, [string]$allow) {
     $b = [IO.File]::ReadAllBytes("$Dir\$name.wasm")
     $p.WriteLine(("put {0} {1} {2:x8} {3}" -f $name, $b.Length, (Crc32 $b), $allow))
     $first = $p.ReadLine().Trim()
-    if ($first -ne 'ready') { return $first }
-    $p.Write($b, 0, $b.Length)
-    $out = @(); try { while ($true) { $l = $p.ReadLine().Trim(); $out += $l; if ($l -eq 'ok' -or $l.StartsWith('err')) { break } } } catch { $out += 'TIMEOUT' }
+    if (-not $first.StartsWith('ready ')) { return $first }
+    # In chunks, each acknowledged once the master has written it into the flash.
+    $chunk = [int]$first.Substring(6)
+    $out = @()
+    try {
+        for ($i = 0; $i -lt $b.Length; $i += $chunk) {
+            $p.Write($b, $i, [Math]::Min($chunk, $b.Length - $i))
+            $l = $p.ReadLine().Trim()
+            if (-not $l.StartsWith('ack ')) { return @($l) }
+        }
+        while ($true) { $l = $p.ReadLine().Trim(); $out += $l; if ($l -eq 'ok' -or $l.StartsWith('err')) { break } }
+    } catch { $out += 'TIMEOUT' }
     return $out
 }
 

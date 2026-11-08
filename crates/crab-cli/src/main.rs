@@ -555,6 +555,12 @@ fn push_module(
     if !missing.is_empty() {
         return failed(crab_build::mcu_module::missing_caps_message(name, &missing));
     }
+    if info.keeps_modules_in_ram() {
+        eprintln!(
+            "предупреждение: {}",
+            crab_build::mcu_module::OLD_STORAGE_MESSAGE
+        );
+    }
     println!("Модуль «{name}» ({} байт) -> {port}...", wasm.len());
     match crab_build::mcu_module::upload_module(&mut serial, name, wasm, allow) {
         Ok(done) => {

@@ -1,0 +1,30 @@
+# RAM/speed measurement of wasmi (no_std) on ESP32-C3, to compare with wasm3 in the master.
+# Not part of the CrabLogic workspace. See README.md.
+[package]
+name = "wasmi-c3"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+esp-hal = { version = "1.2", features = ["esp32c3"] }
+esp-alloc = { version = "0.11", features = ["esp32c3"] }
+esp-println = { version = "0.18", default-features = false, features = ["esp32c3", "jtag-serial", "critical-section"] }
+esp-bootloader-esp-idf = { version = "0.6", features = ["esp32c3"] }
+wasmi = { version = "2.0.0", default-features = false, features = ["validate", "libm", "portable-dispatch"] }
+
+[build-dependencies]
+wat = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 2
+panic = "abort"
+
+[profile.dev]
+opt-level = "s"
+panic = "abort"

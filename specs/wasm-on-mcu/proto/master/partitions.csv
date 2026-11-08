@@ -1,0 +1,9 @@
+# Partitions of the CrabLogic master (specs/mcu-memory): the "No OTA" app and, instead of a
+# file system, the "crabmod" partition where modules are stored: 16 areas of 68 KB (a 256-byte
+# header, then the module, up to 64 KB). A module runs straight from the flash, mapped into memory.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x200000,
+crabmod,  data, 0x40,    0x210000,0x110000,
+coredump, data, coredump,0x3F0000,0x10000,

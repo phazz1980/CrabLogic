@@ -1,8 +1,9 @@
-// Prototype master firmware: wasm3 modules from LittleFS, one FreeRTOS task per module,
+// Prototype master firmware: wasm3 modules from the "crabmod" flash partition, one FreeRTOS task per module,
 // watchdog, journal and hot swap over Serial. See specs/wasm-on-mcu/plan.md.
 //
 // Serial protocol (115200, lines end with \n):
-//   put <name> <len> <crc32 hex> <allow,list|->   then <len> raw bytes -> stores and (re)starts the module
+//   put <name> <len> <crc32 hex> <allow,list|->   -> `ready <chunk>`; then up to <chunk> raw bytes at a time,
+//                                    each answered `ack <bytes so far>` -> stores and (re)starts the module
 //   in|param <name> <i> <i|f> <value>  set an input / parameter; the letter is the type (i = int/bool, f = float)
 //   reset <name>                     restart the module paused, inputs and outputs zero
 //   tick <name> <n> <dt_ms>          pause the module and run n steps now
@@ -10,14 +11,15 @@
 //   unforce <name> <idx|all>         release forced outputs
 //   out <name> <n>                   first n (<=128) outputs as 32-bit words in hex (8 digits each)
 // Values are 4-byte words (ABI 3): the bits of an i32 (bool, int) or of an f32 (float).
-//   swap <name>      reload the module from LittleFS      list      stats      log      del <name>
+//   swap <name>      reload the module from the flash      list      stats      log      del <name>
 //   ev <name>        changes of 0/1 outputs since the last `ev`: `ev <name> <now_ms> <lost> <idx>:<val>:<ms> ...`
 //   rmax             forget the longest step / period of all modules
 //   topic <name> <state|event> <maxlen>   bus topic: last value or queue, longest message (<= 64)
 //   queue <module> <n>                    event queue of a module (1..16, default 8)
 //   bus                                   queue size and lost events per module; per topic kind, refused, last value
-// `list` gives per module `us=<last>/<max>/<period max>/<sum>` (step time, us) and the line `caps=ev,us`.
-#include <LittleFS.h>
+// `list` gives per module `us=<last>/<max>/<period max>/<sum>` (step time, us), `mem=` (wasm memory), `code=`
+// (compiled code), `wasm=` (module bytes); then `caps=ev,us`, `free= largest= min=` (heap), `stack=<task>:<bytes left>,...`.
+#include <esp_partition.h>
 #include <esp_crc.h>
 #include <Preferences.h>  // retain() always needs it, not only the web page
 // Drivers are compiled in only when the project needs them (CRAB_SENSORS, CRAB_PCF defined by the editor).
@@ -56,12 +58,16 @@ static const int kMaxOutputs = 128;  // watched signals per module
 // Modules and the watchdog share one core: core 1 where there are two, core 0 on single-core chips (C3).
 static const int kCore = portNUM_PROCESSORS > 1 ? 1 : 0;
 static const int kStackWords = 2048;
-// The wasm3 compiler recurses deeply on a big module (300 blocks overflowed 6 KB), so the task needs room.
-static const int kTaskStackBytes = 16384;
-static const int kTaskStackMin = 8192;
+// A module is loaded and compiled whole in a temporary task with this stack, freed right after
+// (`specs/mcu-memory`). Measured on a C3: 1.8 KB at most (300 blocks, MQTT).
+static const int kLoadStackBytes = 8192;
+// A compiled module only runs in its own task: the stack holds the chain of wasm calls and host functions.
+// Measured on a C3: 2.1 KB at most (300 blocks, MQTT, math); the rest is room for the heavier host
+// functions (text formatting, Sparkplug).
+static const int kTaskStackBytes = 5120;
 static const uint32_t kStepPeriodMs = 10;
 static const uint32_t kStepLimitMs = 100;  // watchdog: a longer step means a hang
-static const int kJournal = 24;
+static const int kJournal = 16;  // 16 × 100 bytes; a line keeps a whole Russian message
 
 enum { P_GPIO_READ = 1, P_GPIO_WRITE = 2, P_ADC = 4, P_PWM = 8, P_MILLIS = 16, P_SENSOR = 32,
        P_PCF_READ = 64, P_PCF_WRITE = 128, P_MODBUS = 256, P_UART = 512, P_TEXT = 1024, P_NET = 2048,
@@ -120,6 +126,8 @@ static bool g_wireStarted = false;
 #endif
 
 struct Topic;
+struct SpW;  // Arduino's generated prototypes come before the struct itself
+struct AreaHeader;
 struct Msg { char topic[24]; uint8_t data[64]; uint8_t len; };
 // Bus limits (specs/pubsub-bus): a queue of up to kQueueMax messages per module (kQueueDefault unless `queue` says more).
 static const int kQueueMax = 16, kQueueDefault = 8, kMaxTopics = 16;
@@ -128,13 +136,19 @@ struct Slot {
   bool used = false;
   char name[16] = "";
   uint32_t perms = 0;
-  uint8_t *wasm = nullptr;  // wasm3 keeps pointing into these bytes
+  int area = -1;                  // flash area holding the module (`specs/mcu-memory`)
+  const uint8_t *wasm = nullptr;  // the module mapped from the flash; wasm3 keeps pointing into these bytes
+  esp_partition_mmap_handle_t map = 0;
   size_t wasmLen = 0;
   IM3Environment env = nullptr;
   IM3Runtime rt = nullptr;
   IM3Function step = nullptr, alloc = nullptr, onMessage = nullptr;
   TaskHandle_t task = nullptr;
   volatile bool inStep = false, needRestart = false, paused = false;
+  // `test tick`: the loop asks the module task for `tickN` steps of `tickDt` ms and waits for its answer.
+  volatile bool tickReq = false, tickOk = false;
+  volatile uint32_t tickN = 0, tickDt = 0;
+  TaskHandle_t tickWaiter = nullptr;
   volatile uint32_t stepStart = 0, steps = 0, restarts = 0;
   // Step time in us: last, longest, longest gap between two step starts, running sum (wraps).
   volatile uint32_t lastUs = 0, maxUs = 0, periodMaxUs = 0, sumUs = 0, startUs = 0;
@@ -143,29 +157,38 @@ struct Slot {
     uint32_t ms;
     uint8_t idx, val;
   };
-  static const int kEvents = 128;
-  Ev events[kEvents];
+  // The editor takes the events every 100-200 ms, so 32 cover 160 changes a second.
+  static const int kEvents = 32;
+  // The arrays below live in a `SlotData` taken from the heap while the slot is used (`slotTake`), so
+  // free slots cost nothing (`specs/mcu-memory`); they are null for a free slot.
+  struct SlotData *data = nullptr;
+  Ev *events = nullptr;
   volatile int evHead = 0, evTail = 0;
   volatile uint32_t evLost = 0;
-  char subs[4][24];
+  char (*subs)[24] = nullptr;
   int nSubs = 0;
-  Msg queue[kQueueMax];
+  Msg *queue = nullptr;
   volatile int qHead = 0, qCount = 0;
   volatile int qCap = kQueueDefault;
   volatile uint32_t qLost = 0;  // event messages dropped because the queue was full
-  uint32_t outputs[kMaxOutputs], inputs[8], params[8];  // bits of i32 / f32
-  uint32_t forceVal[kMaxOutputs];                         // value shown instead of the module's own
+  uint32_t *outputs = nullptr, *inputs = nullptr, *params = nullptr;  // bits of i32 / f32
+  uint32_t *forceVal = nullptr;                                         // value shown instead of the module's own
+  bool *forced = nullptr;
+};
+
+struct SlotData {
+  Slot::Ev events[Slot::kEvents];
+  char subs[4][24];
+  Msg queue[kQueueMax];
+  uint32_t outputs[kMaxOutputs], inputs[8], params[8];
+  uint32_t forceVal[kMaxOutputs];
   bool forced[kMaxOutputs];
 };
 
 static Slot g_slots[kMaxSlots];
-// A small module compiles with a shallow recursion, so its task gets a smaller stack: the free
-// heap is fragmented, and a 16 KB block is often not there when a module is swapped at run time.
-static inline int taskStackFor(size_t wasmLen) {
-  size_t n = 6144 + wasmLen;
-  return n < (size_t)kTaskStackMin ? kTaskStackMin : n > (size_t)kTaskStackBytes ? kTaskStackBytes : (int)n;
-}
 static SemaphoreHandle_t g_mgmt;
+static TaskHandle_t g_hwTask = nullptr, g_wdtTask = nullptr;  // for the stack figures of `stats`
+static uint32_t g_loadStackLeft = UINT32_MAX;                    // least stack left in a loader task
 static uint32_t g_tags[64];  // bits of i32 / f32
 
 static inline uint32_t bitsOf(float v) { uint32_t u; memcpy(&u, &v, 4); return u; }
@@ -1124,6 +1147,11 @@ m3ApiRawFunction(h_uart) {
 //   op 14 subscribe: a, b filter (pointer, length); returns the slot (the same for equal filters of any module), -1 when full
 //   op 15 slot text: a = slot, b = pointer, c = capacity; returns the length
 //   op 16 slot counter: a = slot; grows with every message that matched the filter
+//   Sparkplug B (CRAB_MQTT, ops 30..33; the master writes the payloads, the module gives names and values):
+//   op 30 setup: a = code (1 group, 2 node id: b pointer, c length; 4 enable: b; 63 setup complete)
+//   op 31 declare a metric: a, b name (pointer, length), c type (0 bool, 1 int, 2 float); returns the slot, -1 when full (12)
+//   op 32 metric value: a = slot, b = value (a float as its bits)
+//   op 33 read: a = field (0 node is born, 1 number of births sent)
 //   Web page (CRAB_WEB, ops 17..22; the page and its server are the master's, the module gives layout and values):
 //   op 17 setup: a = 1 layout JSON (b, c pointer, length), 2 widget table (b pointer, c count; 16 bytes each: kind 0 number / 1 text shown /
 //         2 text input / 3 secret text input, rw, dec, reserved, lo, hi, initial as f32), 3 interfaces (b: 1 Wi-Fi, 2 Ethernet, 3 both),
@@ -1435,6 +1463,9 @@ static void mqttApply() {
   g_mqtt.setKeepAlive((uint16_t)g_mqttNum[2]);
 }
 
+static void spPoll();
+static void spSettingsChanged();
+
 static void mqttPoll() {
   if (!g_mqttComplete) return;
   if (!g_mqttBegun) {
@@ -1461,6 +1492,7 @@ static void mqttPoll() {
       g_mqttApplied = h;
       g_mqtt.disconnect();
       mqttApply();
+      spSettingsChanged();
       g_mqtt.connect();
     }
   }
@@ -1475,6 +1507,7 @@ static void mqttPoll() {
       g_mqttTail = (g_mqttTail + 1) % kMqttQueue;
     }
   }
+  spPoll();
 }
 
 // Slot of a filter (the same one for every module); -1 when there is no room.
@@ -1496,6 +1529,237 @@ static int32_t mqttSubscribe(const char *filter) {
   strcpy(g_mqttSlots[free].filter, filter);
   portEXIT_CRITICAL(&g_mqttMux);
   return free;
+}
+
+// ---- Sparkplug B edge node (ops 30..33 of net) ----
+// A module names the node (group, node id) and declares metrics; the master owns the MQTT session:
+// the will is NDEATH, after every (re)connect NBIRTH goes out with all metrics, then NDATA with the changed
+// ones by alias. The protobuf bytes are the same as `crab-sparkplug` writes (`spdump` prints them to compare).
+static const int kSpMax = 12;
+static const size_t kSpBuf = 600;
+struct SpMetric {
+  char name[33];
+  uint8_t type;      // 0 bool, 1 int, 2 float
+  int32_t bits;      // value (float as its bits)
+  int32_t sent;      // bits in the last message
+};
+static SpMetric g_spMetric[kSpMax];
+static int g_spCount = 0;
+static char g_spGroup[33], g_spNode[33];
+static char g_spArmedGroup[33], g_spArmedNode[33];
+static volatile bool g_spComplete = false, g_spEnable = false, g_spDirty = true;
+static bool g_spWillSet = false, g_spWasUp = false, g_spOnline = false;
+static uint8_t g_spBd = 0, g_spSeq = 0;
+static uint32_t g_spDirtyAt = 0, g_spLastData = 0, g_spBirths = 0, g_spTooBig = 0;
+
+struct SpW {
+  uint8_t *p;
+  size_t cap, n;
+  bool over;
+  void b(uint8_t v) {
+    if (n < cap) p[n++] = v;
+    else over = true;
+  }
+  void varint(uint64_t v) {
+    while (v >= 0x80) {
+      b((uint8_t)v | 0x80);
+      v >>= 7;
+    }
+    b((uint8_t)v);
+  }
+  void key(uint32_t f, uint8_t w) { varint(((uint64_t)f << 3) | w); }
+  void field(uint32_t f, uint64_t v) {
+    key(f, 0);
+    varint(v);
+  }
+  void bytes(uint32_t f, const uint8_t *s, size_t len) {
+    key(f, 2);
+    varint(len);
+    for (size_t i = 0; i < len; i++) b(s[i]);
+  }
+};
+
+// One `Metric` message, wrapped as field 2 of the payload. `name` may be null (data by alias), alias 0 = none.
+static void spMetric(SpW &w, const char *name, uint32_t alias, uint8_t datatype, int32_t bits, int kind) {
+  uint8_t tmp[64];
+  SpW m = {tmp, sizeof(tmp), 0, false};
+  if (name) m.bytes(1, (const uint8_t *)name, strlen(name));
+  if (alias) m.field(2, alias);
+  m.field(4, datatype);
+  if (kind == 3) m.field(11, (uint64_t)(uint32_t)bits);                  // Int64 bdSeq
+  else if (kind == 0) m.field(14, bits != 0);                            // Boolean
+  else if (kind == 1) m.field(10, (uint32_t)bits);                       // Int32 as uint32
+  else {                                                                 // Float, fixed32 little endian
+    m.key(12, 5);
+    for (int i = 0; i < 4; i++) m.b((uint8_t)((uint32_t)bits >> (8 * i)));
+  }
+  if (m.over) w.over = true;
+  w.bytes(2, tmp, m.n);
+}
+
+// what: 0 NBIRTH, 1 NDATA (changed only unless `all`), 2 NDEATH (the will). Returns the length, 0 when it does not fit.
+static size_t spBuild(uint8_t *buf, int what, uint64_t ts, bool hasTs, uint8_t seq, bool all) {
+  SpW w = {buf, kSpBuf, 0, false};
+  if (what != 2 && hasTs) w.field(1, ts);
+  if (what == 0 || what == 2) spMetric(w, "bdSeq", 0, 4, g_spBd, 3);
+  if (what == 0) spMetric(w, "Node Control/Rebirth", 0, 11, 0, 0);
+  static const uint8_t kType[3] = {11, 3, 9};
+  if (what != 2) {
+    for (int i = 0; i < g_spCount; i++) {
+      SpMetric &m = g_spMetric[i];
+      if (what == 0) spMetric(w, m.name, i + 1, kType[m.type], m.bits, m.type);
+      else if (all || m.bits != m.sent) spMetric(w, nullptr, i + 1, kType[m.type], m.bits, m.type);
+    }
+    w.field(3, seq);
+  }
+  return w.over ? 0 : w.n;
+}
+
+static void spTopic(char *out, size_t cap, const char *kind) {
+  snprintf(out, cap, "spBv1.0/%s/%s/%s", g_spGroup, kind, g_spNode);
+}
+
+// Registers NDEATH with the current bdSeq as the will of the next connection.
+static void spArmWill(bool bump) {
+  if (bump) g_spBd++;
+  uint8_t buf[kSpBuf];
+  char topic[100];
+  size_t n = spBuild(buf, 2, 0, false, 0, false);
+  spTopic(topic, sizeof(topic), "NDEATH");
+  g_mqtt.setWill(topic, buf, n, false);
+  strcpy(g_spArmedGroup, g_spGroup);
+  strcpy(g_spArmedNode, g_spNode);
+  g_spWillSet = true;
+}
+
+static void spPoll() {
+  if (!g_spComplete || !g_spEnable || !g_mqttBegun) {
+    g_spOnline = false;
+    return;
+  }
+  bool up = g_mqtt.connected();
+  if (g_spWillSet && (strcmp(g_spArmedGroup, g_spGroup) || strcmp(g_spArmedNode, g_spNode))) g_spWillSet = false;  // names changed
+  if (!g_spWillSet) {
+    // The will can only be given before connecting: reconnect once so the broker knows it.
+    if (up) g_mqtt.disconnect();
+    spArmWill(false);
+    g_mqtt.connect();
+    g_spWasUp = false;
+    g_spOnline = false;
+    return;
+  }
+  if (!up) {
+    if (g_spWasUp) {
+      g_spWasUp = false;
+      g_spOnline = false;
+      spArmWill(true);  // the next session has a new bdSeq
+    }
+    return;
+  }
+  g_spWasUp = true;
+  uint32_t now = millis();
+  bool hasTs = g_net.hasTime;
+  uint64_t ts = (uint64_t)g_net.unixTime * 1000ULL;
+  uint8_t buf[kSpBuf];
+  char topic[100];
+  if (g_spDirty) {
+    // The metric table changed: announce everything again once it has settled.
+    if (g_spOnline) g_spOnline = false;
+    if ((uint32_t)(now - g_spDirtyAt) < 500) return;
+  }
+  if (!g_spOnline) {
+    size_t n = spBuild(buf, 0, ts, hasTs, 0, true);
+    if (!n) {
+      g_spTooBig++;
+      g_spDirty = false;
+      return;
+    }
+    spTopic(topic, sizeof(topic), "NBIRTH");
+    if (!g_mqtt.publish(topic, buf, n, false)) return;
+    g_spSeq = 1;
+    g_spOnline = true;
+    g_spDirty = false;
+    g_spBirths++;
+    g_spLastData = now;
+    for (int i = 0; i < g_spCount; i++) g_spMetric[i].sent = g_spMetric[i].bits;
+    return;
+  }
+  if ((uint32_t)(now - g_spLastData) < 250) return;
+  bool changed = false;
+  for (int i = 0; i < g_spCount; i++) changed |= g_spMetric[i].bits != g_spMetric[i].sent;
+  if (!changed) return;
+  size_t n = spBuild(buf, 1, ts, hasTs, g_spSeq, false);
+  if (!n) {
+    g_spTooBig++;
+    return;
+  }
+  spTopic(topic, sizeof(topic), "NDATA");
+  // Values read before publishing: a change that happens during the publish goes in the next message.
+  int32_t snap[kSpMax];
+  for (int i = 0; i < g_spCount; i++) snap[i] = g_spMetric[i].bits;
+  if (!g_mqtt.publish(topic, buf, n, false)) return;
+  g_spSeq++;
+  g_spLastData = now;
+  for (int i = 0; i < g_spCount; i++) g_spMetric[i].sent = snap[i];
+}
+
+// The connection was dropped by the master itself (new broker settings): a new session starts.
+static void spSettingsChanged() {
+  g_spOnline = false;
+  g_spWasUp = false;
+  if (g_spWillSet) spArmWill(true);
+}
+
+// Slot of a metric (the same name gives the same slot); -1 when the table is full.
+static int32_t spDeclare(const char *name, uint8_t type) {
+  int32_t r = -1;
+  portENTER_CRITICAL(&g_mqttMux);
+  for (int i = 0; i < g_spCount; i++)
+    if (!strcmp(g_spMetric[i].name, name)) {
+      if (g_spMetric[i].type != type) {
+        g_spMetric[i].type = type;
+        g_spDirty = true;
+        g_spDirtyAt = millis();
+      }
+      r = i;
+      break;
+    }
+  if (r < 0 && g_spCount < kSpMax) {
+    SpMetric &m = g_spMetric[g_spCount];
+    strcpy(m.name, name);
+    m.type = type;
+    m.bits = 0;
+    m.sent = 0;
+    r = g_spCount++;
+    g_spDirty = true;
+    g_spDirtyAt = millis();
+  }
+  portEXIT_CRITICAL(&g_mqttMux);
+  return r;
+}
+
+// spdump <timestamp>   the NDEATH, NBIRTH and NDATA (all metrics) as hex, without sending anything
+static void cmdSpDump(const String &line) {
+  unsigned long long ts = 0;
+  if (sscanf(line.c_str(), "spdump %llu", &ts) != 1) {
+    Serial.println("err spdump <ms>");
+    return;
+  }
+  uint8_t buf[kSpBuf];
+  char topic[100];
+  static const char *kName[3] = {"NBIRTH", "NDATA", "NDEATH"};
+  static const int kOrder[3] = {2, 0, 1};
+  for (int k = 0; k < 3; k++) {
+    int what = kOrder[k];
+    size_t n = spBuild(buf, what, ts, true, what == 0 ? 0 : 1, true);
+    spTopic(topic, sizeof(topic), kName[what]);
+    Serial.printf("sp %s ", topic);
+    if (!n) Serial.print("too-big");
+    for (size_t i = 0; i < n; i++) Serial.printf("%02x", buf[i]);
+    Serial.println();
+  }
+  Serial.printf("sp state online=%d births=%u bdseq=%u metrics=%d toobig=%u\n", g_spOnline, (unsigned)g_spBirths, (unsigned)g_spBd, g_spCount, (unsigned)g_spTooBig);
+  Serial.println("ok");
 }
 #endif
 
@@ -1995,6 +2259,28 @@ m3ApiRawFunction(h_net) {
     }
   } else if (op == 16) {
     r = (a >= 0 && a < g_mqttSlotCount) ? (int32_t)g_mqttSlots[a].seq : 0;
+  } else if (op == 30) {
+    // Sparkplug setup: a = 1 group, 2 node id (b pointer, c length), 4 enable (b), 63 complete.
+    if ((a == 1 || a == 2) && c >= 0 && inMem(runtime, b, c)) {
+      char *t = a == 1 ? g_spGroup : g_spNode;
+      int32_t k = c < 32 ? c : 32;
+      memcpy(t, (const uint8_t *)_mem + b, k);
+      t[k] = 0;
+    } else if (a == 4) g_spEnable = b != 0;
+    else if (a == 63) g_spComplete = true;
+  } else if (op == 31) {
+    // Declares a metric: a, b name (pointer, length), c type (0 bool, 1 int, 2 float); the slot, -1 when full.
+    r = -1;
+    if (b > 0 && b <= 32 && c >= 0 && c <= 2 && inMem(runtime, a, b)) {
+      char name[33];
+      memcpy(name, (const uint8_t *)_mem + a, b);
+      name[b] = 0;
+      r = spDeclare(name, (uint8_t)c);
+    }
+  } else if (op == 32) {
+    if (a >= 0 && a < g_spCount) g_spMetric[a].bits = b;
+  } else if (op == 33) {
+    r = a == 0 ? (g_spOnline ? 1 : 0) : a == 1 ? (int32_t)g_spBirths : 0;
 #endif
 #ifdef CRAB_WEB
   } else if (op == 17) {
@@ -2204,6 +2490,19 @@ static uint32_t parsePerms(const String &a) {
 
 static void slotTask(void *arg);
 
+// Bytes of compiled code a wasm3 runtime holds (its code pages), for `list`.
+static uint32_t codeBytes(IM3Runtime rt) {
+  uint32_t n = 0;
+  if (!rt) return 0;
+  M3CodePage *lists[2] = {rt->pagesOpen, rt->pagesFull};
+  for (M3CodePage *p : lists)
+    for (; p; p = p->info.next) n += sizeof(M3CodePageHeader) + p->info.numLines * sizeof(code_t);
+  return n;
+}
+static uint32_t memBytes(IM3Runtime rt) {
+  return rt && rt->memory.mallocated ? (uint32_t)rt->memory.mallocated->length : 0;
+}
+
 static void stopSlot(Slot &s) {
   if (s.task) {
     vTaskDelete(s.task);
@@ -2214,35 +2513,59 @@ static void stopSlot(Slot &s) {
   s.rt = nullptr;
   s.env = nullptr;
   s.step = s.alloc = s.onMessage = nullptr;
-  free(s.wasm);
+  if (s.wasm) esp_partition_munmap(s.map);
   s.wasm = nullptr;
+  s.map = 0;
   s.inStep = false;
   s.needRestart = false;
+  s.tickReq = false;
   s.nSubs = 0;
   s.qHead = s.qCount = 0;
 }
 
-static bool startSlot(Slot &s, bool paused = false) {
-  String base = String("/modules/") + s.name;
-  File f = LittleFS.open(base + ".wasm", "r");
-  if (!f) {
-    jlog(s.name, "нет файла модуля");
+// LEB128 u32 at `*p` (below `end`); false past the end.
+static bool readLeb(const uint8_t *&p, const uint8_t *end, uint32_t &v) {
+  v = 0;
+  for (int shift = 0; shift < 35 && p < end; shift += 7) {
+    uint8_t b = *p++;
+    v |= (uint32_t)(b & 0x7f) << shift;
+    if (!(b & 0x80)) return true;
+  }
+  return false;
+}
+
+// Bytes of memory the module needs: its custom section `crab.mem` (u32 LE, `specs/mcu-memory`).
+// False for a module built before the section existed: such a module is not started.
+static bool moduleMemory(const uint8_t *w, size_t n, uint32_t &mem) {
+  const uint8_t *p = w + 8, *end = w + n;
+  while (p < end) {
+    uint8_t id = *p++;
+    uint32_t size;
+    if (!readLeb(p, end, size) || size > (uint32_t)(end - p)) return false;
+    const uint8_t *next = p + size;
+    uint32_t nameLen;
+    if (id == 0 && readLeb(p, next, nameLen) && nameLen == 8 && next - p == 12 && !memcmp(p, "crab.mem", 8)) {
+      memcpy(&mem, p + 8, 4);
+      return true;
+    }
+    p = next;
+  }
+  return false;
+}
+
+// Makes the runtime of a module whose bytes are in `s.wasm`: parse, link, compile every function, `init`.
+// Runs in a temporary task (`loadOnBigStack`), so the callers (loop, watchdog) keep small stacks.
+static bool loadRuntime(Slot &s) {
+  uint32_t mem = 0;
+  if (!moduleMemory(s.wasm, s.wasmLen, mem)) {
+    jlog(s.name, "собран старой версией CrabLogic: пересоберите и залейте модуль заново");
     return false;
   }
-  s.wasmLen = f.size();
-  s.wasm = (uint8_t *)malloc(s.wasmLen);
-  if (!s.wasm || f.read(s.wasm, s.wasmLen) != s.wasmLen) {
-    f.close();
-    jlog(s.name, "нет памяти под модуль");
-    stopSlot(s);
-    return false;
-  }
-  f.close();
-  File a = LittleFS.open(base + ".allow", "r");
-  s.perms = a ? parsePerms(a.readString()) : 0;
-  if (a) a.close();
   s.env = m3_NewEnvironment();
   s.rt = s.env ? m3_NewRuntime(s.env, kStackWords, nullptr) : nullptr;
+  // Only the bytes the module uses are taken from the heap, not the whole 64 KB page; wasm3 checks
+  // every access against this length, so a module cannot write past it.
+  if (s.rt && mem) s.rt->memoryLimit = (mem + 15) & ~15u;
   IM3Module mod;
   M3Result r = s.rt ? m3_ParseModule(s.env, &mod, s.wasm, s.wasmLen) : "нет памяти";
   if (!r) r = m3_LoadModule(s.rt, mod);
@@ -2252,30 +2575,172 @@ static bool startSlot(Slot &s, bool paused = false) {
   }
   if (r) {
     jlog(s.name, "не загружен: %s", r);
-    stopSlot(s);
     return false;
   }
   IM3Function av;
   int32_t ver = -1;
   if (m3_FindFunction(&av, s.rt, "abi_version") || m3_CallV(av) || m3_GetResultsV(av, &ver) || ver != 3) {
     jlog(s.name, "нужен abi_version() = 3 (получено %d)", (int)ver);
-    stopSlot(s);
+    return false;
+  }
+  // Everything is compiled now: the module task never runs the compiler, so its stack stays small.
+  M3Result c = m3_CompileModule(mod);
+  if (c) {
+    jlog(s.name, "не скомпилирован: %s", c);
     return false;
   }
   IM3Function init;
   if (!m3_FindFunction(&init, s.rt, "init")) m3_CallV(init);
   m3_FindFunction(&s.alloc, s.rt, "alloc");
   m3_FindFunction(&s.onMessage, s.rt, "on_message");
+  return true;
+}
+
+struct LoadJob {
+  Slot *slot;
+  bool ok;
+  TaskHandle_t waiter;
+};
+
+static void loaderTask(void *arg) {
+  LoadJob &j = *(LoadJob *)arg;
+  j.ok = loadRuntime(*j.slot);
+  uint32_t left = uxTaskGetStackHighWaterMark(nullptr);
+  if (left < g_loadStackLeft) g_loadStackLeft = left;
+  xTaskNotifyGive(j.waiter);
+  // The caller deletes this task: a task deleting itself leaves its stack to the idle task, which a
+  // hung module (busy in wasm) starves, so every watchdog restart would lose 16 KB.
+  vTaskSuspend(nullptr);
+}
+
+static bool loadOnBigStack(Slot &s) {
+  LoadJob j{&s, false, xTaskGetCurrentTaskHandle()};
+  TaskHandle_t t;
+  if (xTaskCreatePinnedToCore(loaderTask, "load", kLoadStackBytes, &j, uxTaskPriorityGet(nullptr), &t, kCore) != pdPASS) {
+    jlog(s.name, "нет памяти под загрузку (свободно %u, крупнейший блок %u)", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+    return false;
+  }
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  // Same core, same priority: the loader has suspended itself (or is about to; deleting it then is
+  // safe too), and deleting another task frees its stack at once.
+  vTaskDelete(t);
+  return j.ok;
+}
+
+// ---- module storage (`specs/mcu-memory`) ----
+// The "crabmod" partition (partitions.csv) is cut into areas: a header, then the module bytes. A module
+// runs mapped straight from its area, with no copy in RAM. A new version goes into a free area while the
+// old one keeps running; only a complete, checked upload gets a header, so a broken one leaves nothing.
+// Of the areas with the same name the highest generation wins.
+static const uint32_t kAreaBytes = 0x11000, kAreaHeader = 256, kModuleMax = 65536;
+static const uint32_t kAreaMagic = 0x4D425243;  // "CRBM"
+static const uint32_t kSector = 4096;  // flash erase unit; kAreaBytes is a whole number of them
+static const int kChunk = 512;                  // bytes per `put` chunk: fits the 1 KB Serial buffer
+struct AreaHeader {
+  uint32_t magic;
+  uint16_t version, size;
+  char name[16];
+  uint32_t len, crc, gen;
+  char allow[96];
+  uint32_t hcrc;  // CRC32 of the fields above
+};
+static_assert(sizeof(AreaHeader) <= kAreaHeader, "area header");
+static const esp_partition_t *g_modPart = nullptr;
+static int g_areas = 0;
+static uint32_t g_nextGen = 1;
+
+static bool areaHeader(int i, AreaHeader &h) {
+  if (!g_modPart || i < 0 || i >= g_areas || esp_partition_read(g_modPart, i * kAreaBytes, &h, sizeof h) != ESP_OK) return false;
+  return h.magic == kAreaMagic && h.version == 1 && h.size == sizeof h && h.len > 0 && h.len <= kModuleMax && !h.name[15] && !h.allow[95] && esp_crc32_le(0, (const uint8_t *)&h, offsetof(AreaHeader, hcrc)) == h.hcrc;
+}
+
+// CRC32 of the module bytes as they are in the flash.
+static uint32_t areaCrc(int i, uint32_t len) {
+  uint8_t buf[256];
+  uint32_t crc = 0;
+  for (uint32_t off = 0; off < len; off += sizeof buf) {
+    uint32_t n = len - off < sizeof buf ? len - off : sizeof buf;
+    if (esp_partition_read(g_modPart, i * kAreaBytes + kAreaHeader + off, buf, n) != ESP_OK) return ~crc;
+    crc = esp_crc32_le(crc, buf, n);
+  }
+  return crc;
+}
+
+// Forgets an area: zero bits need no erase.
+static void areaDrop(int i) {
+  uint32_t zero = 0;
+  esp_partition_write(g_modPart, i * kAreaBytes, &zero, sizeof zero);
+}
+
+// Area of the module with this name (highest generation), -1 when there is none.
+static int areaOf(const char *name) {
+  int best = -1;
+  uint32_t bestGen = 0;
+  AreaHeader h;
+  for (int i = 0; i < g_areas; i++)
+    if (areaHeader(i, h) && !strcmp(h.name, name) && (best < 0 || h.gen > bestGen)) {
+      best = i;
+      bestGen = h.gen;
+    }
+  return best;
+}
+
+// Forgets every area of the name but `keep`.
+static void areaDropName(const char *name, int keep) {
+  AreaHeader h;
+  for (int i = 0; i < g_areas; i++)
+    if (i != keep && areaHeader(i, h) && !strcmp(h.name, name)) areaDrop(i);
+}
+
+// An area with no module, the search starting after the newest one so that the writes go round.
+static int areaFree() {
+  AreaHeader h;
+  for (int k = 0; k < g_areas; k++) {
+    int i = (int)((g_nextGen + k) % g_areas);
+    if (!areaHeader(i, h)) return i;
+  }
+  return -1;
+}
+
+// Flash writes stop the caches, and with them the modules, for a while: the watchdog must not take a
+// step cut by them for a hang. Held across the write, then the steps under way start their clock anew.
+static void flashBegin() {
+  xSemaphoreTake(g_mgmt, portMAX_DELAY);
+}
+static void flashEnd() {
+  for (auto &s : g_slots)
+    if (s.used && s.inStep) s.stepStart = millis();
+  xSemaphoreGive(g_mgmt);
+}
+
+static bool startSlot(Slot &s, bool paused = false) {
+  AreaHeader h;
+  if (!areaHeader(s.area, h)) {
+    jlog(s.name, "нет модуля во флеше");
+    return false;
+  }
+  const void *p = nullptr;
+  if (esp_partition_mmap(g_modPart, s.area * kAreaBytes + kAreaHeader, h.len, ESP_PARTITION_MMAP_DATA, &p, &s.map) != ESP_OK) {
+    jlog(s.name, "модуль не отображается из флеша");
+    return false;
+  }
+  s.wasm = (const uint8_t *)p;
+  s.wasmLen = h.len;
+  s.perms = parsePerms(String(h.allow));
+  if (!loadOnBigStack(s)) {
+    stopSlot(s);
+    return false;
+  }
   s.steps = 0;
   s.lastUs = s.maxUs = s.periodMaxUs = s.sumUs = s.startUs = 0;
   s.evHead = s.evTail = 0;
   s.evLost = 0;
   s.paused = paused;
-  memset((void *)s.inputs, 0, sizeof s.inputs);
-  memset((void *)s.params, 0, sizeof s.params);
-  memset((void *)s.outputs, 0, sizeof s.outputs);
-  memset((void *)s.forced, 0, sizeof s.forced);
-  if (xTaskCreatePinnedToCore(slotTask, s.name, taskStackFor(s.wasmLen), &s, 1, &s.task, kCore) != pdPASS) {
+  memset((void *)s.inputs, 0, sizeof SlotData::inputs);
+  memset((void *)s.params, 0, sizeof SlotData::params);
+  memset((void *)s.outputs, 0, sizeof SlotData::outputs);
+  memset((void *)s.forced, 0, sizeof SlotData::forced);
+  if (xTaskCreatePinnedToCore(slotTask, s.name, kTaskStackBytes, &s, 1, &s.task, kCore) != pdPASS) {
     s.task = nullptr;
     jlog(s.name, "нет памяти под задачу (свободно %u, крупнейший блок %u)", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
     stopSlot(s);
@@ -2312,10 +2777,33 @@ static void deliver(Slot &s) {
   }
 }
 
+// `test tick`: exact steps for the loop, run here so wasm3 never runs on the loop's stack.
+static void runTick(Slot &s) {
+  bool ok = true;
+  for (uint32_t i = 0; ok && i < s.tickN; i++) {
+    s.stepStart = millis();
+    s.inStep = true;
+    ok = !m3_CallV(s.step, (int32_t)s.tickDt);
+    s.inStep = false;
+    s.steps++;
+    deliver(s);
+  }
+  s.tickOk = ok;
+  s.tickReq = false;
+  if (s.tickWaiter) xTaskNotifyGive(s.tickWaiter);
+}
+
 static void slotTask(void *arg) {
   Slot &s = *(Slot *)arg;
   for (;;) {
-    while (s.paused) vTaskDelay(pdMS_TO_TICKS(5));
+    if (s.tickReq) {
+      runTick(s);
+      continue;
+    }
+    if (s.paused) {
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+      continue;
+    }
     s.stepStart = millis();
     uint32_t t0 = micros();
     if (s.startUs && t0 - s.startUs > s.periodMaxUs) s.periodMaxUs = t0 - s.startUs;
@@ -2334,7 +2822,7 @@ static void slotTask(void *arg) {
     }
     s.steps++;
     deliver(s);
-    vTaskDelay(pdMS_TO_TICKS(kStepPeriodMs));
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kStepPeriodMs));  // a tick request wakes it early
   }
 }
 
@@ -2357,17 +2845,49 @@ static void watchdogTask(void *) {
 }
 
 // ---- serial protocol ----
+// Takes a free slot: its arrays come from the heap. False when there is no memory for them.
+static bool slotTake(Slot &s, const char *name) {
+  SlotData *d = (SlotData *)calloc(1, sizeof(SlotData));
+  if (!d) {
+    jlog(name, "нет памяти под слот (%u байт, свободно %u)", (unsigned)sizeof(SlotData), (unsigned)ESP.getFreeHeap());
+    return false;
+  }
+  s.data = d;
+  s.events = d->events;
+  s.subs = d->subs;
+  s.queue = d->queue;
+  s.outputs = d->outputs;
+  s.inputs = d->inputs;
+  s.params = d->params;
+  s.forceVal = d->forceVal;
+  s.forced = d->forced;
+  strlcpy(s.name, name, sizeof s.name);
+  s.restarts = 0;
+  s.used = true;
+  return true;
+}
+
+// Gives a stopped slot back. Under g_mux: the bus walks the slots from other tasks.
+static void slotRelease(Slot &s) {
+  portENTER_CRITICAL(&g_mux);
+  s.used = false;
+  SlotData *d = s.data;
+  s.data = nullptr;
+  s.events = nullptr;
+  s.subs = nullptr;
+  s.queue = nullptr;
+  s.outputs = s.inputs = s.params = s.forceVal = nullptr;
+  s.forced = nullptr;
+  portEXIT_CRITICAL(&g_mux);
+  free(d);
+}
+
 static Slot *findSlot(const char *name, bool create) {
   for (auto &s : g_slots)
     if (s.used && !strcmp(s.name, name)) return &s;
   if (!create) return nullptr;
   for (auto &s : g_slots)
-    if (!s.used) {
-      s.used = true;
-      strlcpy(s.name, name, sizeof s.name);
-      s.restarts = 0;
-      return &s;
-    }
+    if (!s.used) return slotTake(s, name) ? &s : nullptr;
   return nullptr;
 }
 
@@ -2378,51 +2898,108 @@ static bool validName(const String &n) {
   return true;
 }
 
+// Takes a module in chunks into a free area while the old version keeps running, then swaps them.
+// A new version that does not start is forgotten and the old one runs again.
 static void cmdPut(const String &line) {
   char name[32], allow[96], crcs[16];
   unsigned len;
-  if (sscanf(line.c_str(), "put %31s %u %15s %95s", name, &len, crcs, allow) != 4 || !validName(name) || len == 0 || len > 65536) {
+  if (sscanf(line.c_str(), "put %31s %u %15s %95s", name, &len, crcs, allow) != 4 || !validName(name) || len == 0 || len > kModuleMax) {
     Serial.println("err bad put");
     return;
   }
-  uint8_t *buf = (uint8_t *)malloc(len);
-  if (!buf) {
-    Serial.println("err no memory");
+  int a = areaFree();
+  if (a < 0) {
+    Serial.println("err no space");
     return;
   }
-  Serial.println("ready");
-  size_t got = 0;
-  uint32_t t = millis();
-  while (got < len && millis() - t < 5000) {
-    int n = Serial.readBytes(buf + got, len - got);
-    got += n;
-    if (n) t = millis();
+  // Only the sectors the module takes, one at a time: the cache is off while a sector is erased
+  // (~45 ms) and the modules stand still, and a 64 KB block erased at once stops them for longer.
+  bool erased = true;
+  for (uint32_t at = 0; erased && at < kAreaHeader + len; at += kSector) {
+    flashBegin();
+    erased = esp_partition_erase_range(g_modPart, a * kAreaBytes + at, kSector) == ESP_OK;
+    flashEnd();
+    vTaskDelay(1);
+  }
+  if (!erased) {
+    Serial.println("err flash");
+    return;
+  }
+  Serial.printf("ready %d\n", kChunk);
+  static uint8_t buf[kChunk];
+  uint32_t crc = 0;
+  for (unsigned off = 0; off < len;) {
+    unsigned n = len - off < (unsigned)kChunk ? len - off : (unsigned)kChunk;
+    unsigned got = 0;
+    uint32_t t = millis();
+    while (got < n && millis() - t < 5000) {
+      int k = Serial.readBytes(buf + got, n - got);
+      got += k;
+      if (k) t = millis();
+    }
+    if (got != n) {
+      Serial.println("err timeout");  // no header written: the area stays free
+      return;
+    }
+    flashBegin();
+    bool written = esp_partition_write(g_modPart, a * kAreaBytes + kAreaHeader + off, buf, n) == ESP_OK;
+    flashEnd();
+    if (!written) {
+      Serial.println("err flash");
+      return;
+    }
+    crc = esp_crc32_le(crc, buf, n);
+    off += n;
+    Serial.printf("ack %u\n", off);
   }
   uint32_t want = strtoul(crcs, nullptr, 16);
-  if (got != len || esp_crc32_le(0, buf, len) != want) {
-    free(buf);
+  if (crc != want) {
     Serial.println("err crc/len");
     return;
   }
-  String base = String("/modules/") + name;
-  File f = LittleFS.open(base + ".wasm", "w");
-  f.write(buf, len);
-  f.close();
-  free(buf);
-  File a = LittleFS.open(base + ".allow", "w");
-  a.print(strcmp(allow, "-") ? allow : "");
-  a.close();
+  if (areaCrc(a, len) != want) {
+    Serial.println("err flash");
+    return;
+  }
+  AreaHeader h;
+  memset(&h, 0, sizeof h);
+  h.magic = kAreaMagic;
+  h.version = 1;
+  h.size = sizeof h;
+  strlcpy(h.name, name, sizeof h.name);
+  h.len = len;
+  h.crc = want;
+  h.gen = g_nextGen++;
+  strlcpy(h.allow, strcmp(allow, "-") ? allow : "", sizeof h.allow);
+  h.hcrc = esp_crc32_le(0, (const uint8_t *)&h, offsetof(AreaHeader, hcrc));
+  flashBegin();
+  bool committed = esp_partition_write(g_modPart, a * kAreaBytes, &h, sizeof h) == ESP_OK;
+  flashEnd();
+  if (!committed) {
+    Serial.println("err flash");
+    return;
+  }
   xSemaphoreTake(g_mgmt, portMAX_DELAY);
   Slot *s = findSlot(name, true);
-  bool ok = false;
+  bool ok = false, restored = false;
   if (s) {
+    int old = s->area;  // -1 for a new module
     uint32_t t0 = micros();
     stopSlot(*s);
+    s->area = a;
     ok = startSlot(*s);
     Serial.printf("swap_us=%u\n", (unsigned)(micros() - t0));
+    if (ok) {
+      areaDropName(name, a);
+    } else if (old >= 0) {
+      jlog(name, "новая версия не запустилась, работает прежняя");
+      areaDrop(a);
+      s->area = old;
+      restored = startSlot(*s);
+    }
   }
   xSemaphoreGive(g_mgmt);
-  Serial.println(ok ? "ok" : "err not started (see log)");
+  Serial.println(ok ? "ok" : restored ? "err not started, old version runs (see log)" : "err not started (see log)");
 }
 
 // Module tests: set inputs, run exact steps, read outputs bit for bit.
@@ -2471,7 +3048,7 @@ static void cmdTest(const String &line) {
       return;
     }
     if (!strcmp(vs, "all")) {
-      memset((void *)s->forced, 0, sizeof s->forced);
+      memset((void *)s->forced, 0, sizeof SlotData::forced);
     } else {
       idx = atoi(vs);
       if (idx < 0 || idx >= kMaxOutputs) {
@@ -2486,19 +3063,25 @@ static void cmdTest(const String &line) {
       Serial.println("err bad tick");
       return;
     }
-    xSemaphoreTake(g_mgmt, portMAX_DELAY);
+    // The module task runs the steps; the mutex is not held, so the watchdog can still restart a hung module.
+    TaskHandle_t task = s->task;
     s->paused = true;
-    for (int i = 0; i < 100 && s->inStep; i++) delay(2);
-    bool ok = !s->inStep;
-    for (unsigned i = 0; ok && i < n; i++) {
-      s->stepStart = millis();
-      s->inStep = true;
-      ok = !m3_CallV(s->step, (int32_t)dt);
-      s->inStep = false;
-      s->steps++;
-      deliver(*s);
+    s->tickN = n;
+    s->tickDt = dt;
+    s->tickOk = false;
+    s->tickWaiter = xTaskGetCurrentTaskHandle();
+    ulTaskNotifyTake(pdTRUE, 0);
+    s->tickReq = true;
+    xTaskNotifyGive(task);
+    bool done = false;
+    for (uint32_t t0 = millis(); !done && millis() - t0 < 60000;) {
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+      done = !s->tickReq;
+      if (s->task != task) break;  // restarted by the watchdog: the request is gone
     }
-    xSemaphoreGive(g_mgmt);
+    bool ok = done && s->tickOk && s->task == task;
+    s->tickReq = false;
+    s->tickWaiter = nullptr;
     Serial.println(ok ? "ok" : "err step failed");
   } else if (!strcmp(cmd, "ev")) {
     Serial.printf("ev %s %u %u", s->name, (unsigned)millis(), (unsigned)s->evLost);
@@ -2571,6 +3154,10 @@ static void cmdLine(String line) {
   line.trim();
   if (line.startsWith("topic ") || line.startsWith("queue ") || line == "bus") {
     cmdBus(line);
+#ifdef CRAB_MQTT
+  } else if (line.startsWith("spdump")) {
+    cmdSpDump(line);
+#endif
   } else if (line.startsWith("in ") || line.startsWith("param ") || line.startsWith("tick ") || line.startsWith("out ") || line.startsWith("ev ") || line.startsWith("reset ") || line.startsWith("force ") || line.startsWith("unforce ")) {
     cmdTest(line);
   } else if (line.startsWith("put ")) {
@@ -2589,7 +3176,7 @@ static void cmdLine(String line) {
   } else if (line == "list" || line == "stats") {
     for (auto &s : g_slots)
       if (s.used)
-        Serial.printf("%s %s steps=%u restarts=%u out0=%08x us=%u/%u/%u/%u qlost=%u crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)s.lastUs, (unsigned)s.maxUs, (unsigned)s.periodMaxUs, (unsigned)s.sumUs, (unsigned)s.qLost, (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
+        Serial.printf("%s %s steps=%u restarts=%u out0=%08x us=%u/%u/%u/%u qlost=%u mem=%u code=%u wasm=%u crc=%08x\n", s.name, s.task ? "run" : "stop", (unsigned)s.steps, (unsigned)s.restarts, (unsigned)s.outputs[0], (unsigned)s.lastUs, (unsigned)s.maxUs, (unsigned)s.periodMaxUs, (unsigned)s.sumUs, (unsigned)s.qLost, (unsigned)memBytes(s.rt), (unsigned)codeBytes(s.rt), (unsigned)s.wasmLen, (unsigned)(s.wasm ? esp_crc32_le(0, s.wasm, s.wasmLen) : 0));
     Serial.println("caps=ev,us,bus");
     uint32_t ip = 0;
 #ifdef CRAB_WIFI
@@ -2605,11 +3192,23 @@ static void cmdLine(String line) {
     Serial.printf("id=%s\n", CRAB_MASTER_ID);
 #endif
     // What this master can do for modules beyond its first version (crab-codegen MASTER_CAPS).
-    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console");
+    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console,flashmod"
+#ifdef CRAB_MQTT
+      ",sparkplug"
+#endif
+    );
 #ifdef CRAB_NATIVE_KINDS
     Serial.printf("native=%s\n", CRAB_NATIVE_KINDS);  // block type:instances, comma separated
 #endif
-    Serial.printf("free=%u largest=%u\n", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    Serial.printf("free=%u largest=%u min=%u\n", (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), (unsigned)esp_get_minimum_free_heap_size());
+    // Stack left (bytes, the least since start) per task; loop runs this command.
+    Serial.printf("stack=loop:%u", (unsigned)uxTaskGetStackHighWaterMark(nullptr));
+    if (g_hwTask) Serial.printf(",hardware:%u", (unsigned)uxTaskGetStackHighWaterMark(g_hwTask));
+    if (g_wdtTask) Serial.printf(",wdt:%u", (unsigned)uxTaskGetStackHighWaterMark(g_wdtTask));
+    if (g_loadStackLeft != UINT32_MAX) Serial.printf(",load:%u", (unsigned)g_loadStackLeft);
+    for (auto &s : g_slots)
+      if (s.used && s.task) Serial.printf(",%s:%u", s.name, (unsigned)uxTaskGetStackHighWaterMark(s.task));
+    Serial.println();
     Serial.println("end");
   } else if (line.startsWith("swap ") || line.startsWith("del ")) {
     String n = line.substring(line.indexOf(' ') + 1);
@@ -2619,17 +3218,16 @@ static void cmdLine(String line) {
     if (s) {
       stopSlot(*s);
       if (line.startsWith("del ")) {
-        LittleFS.remove("/modules/" + n + ".wasm");
-        LittleFS.remove("/modules/" + n + ".allow");
-        s->used = false;
+        areaDropName(n.c_str(), -1);
+        s->area = -1;
+        slotRelease(*s);
         ok = true;
       } else {
         ok = startSlot(*s);
       }
-    } else if (line.startsWith("del ") && LittleFS.exists("/modules/" + n + ".wasm")) {
-      // Not running (safe mode after a boot loop): the files still go.
-      LittleFS.remove("/modules/" + n + ".wasm");
-      LittleFS.remove("/modules/" + n + ".allow");
+    } else if (line.startsWith("del ") && areaOf(n.c_str()) >= 0) {
+      // Not running (safe mode after a boot loop): the module still goes.
+      areaDropName(n.c_str(), -1);
       ok = true;
     }
     xSemaphoreGive(g_mgmt);
@@ -2639,20 +3237,22 @@ static void cmdLine(String line) {
   }
 }
 
-SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // `tick` and `put` run wasm3 on the loop task
+// wasm3 never runs on the loop task: loading is in a temporary task, `tick` in the module task.
+SET_LOOP_TASK_STACK_SIZE(6 * 1024);  // measured: 2.9 KB at most
 
 void setup() {
-  Serial.setRxBufferSize(4096);  // native USB (C3) has only 256 bytes: a module sent at once would be cut
+  Serial.setRxBufferSize(1024);  // native USB (C3) has only 256 bytes; a `put` chunk is 512
   Serial.begin(115200);
   Serial.setTimeout(200);
   g_mgmt = xSemaphoreCreateMutex();
 #ifdef CRAB_HWTASK
   g_sensorLock = xSemaphoreCreateMutex();
-  xTaskCreate(hwTask, "hardware", 4096, nullptr, 1, nullptr);
+  xTaskCreate(hwTask, "hardware", 4096, nullptr, 1, &g_hwTask);
 #endif
   g_retOpen = g_retPrefs.begin("crab_mod", false);
-  if (!LittleFS.begin(true)) Serial.println("LittleFS failed");
-  LittleFS.mkdir("/modules");
+  g_modPart = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "crabmod");
+  g_areas = g_modPart ? (int)(g_modPart->size / kAreaBytes) : 0;
+  if (!g_modPart) jlog("master", "нет раздела crabmod: мастер прошит со старой таблицей разделов");
   // Boot loop guard: a stored module that hangs or crashes the board right at the start would
   // reset it again and again before any command could remove it. After three resets in a row
   // by a watchdog or a panic the modules are not started; `del` and `put` still work.
@@ -2670,16 +3270,27 @@ void setup() {
   // task (a stored module starts here, before loop) crashed in ieee80211_hostap_attach.
   WiFi.persistent(false);  // settings come from the modules; nothing stored in the flash
 #endif
-  File dir = LittleFS.open("/modules");
-  for (File f = dir.openNextFile(); f && !safe; f = dir.openNextFile()) {
-    String n = f.name();
-    if (n.endsWith(".wasm")) {
-      n.remove(n.length() - 5);
-      Slot *s = findSlot(n.c_str(), true);
-      if (s) startSlot(*s);
+  // The stored modules: of the areas of one name the newest whole one; the older ones (a swap cut by
+  // a reset) are forgotten.
+  AreaHeader h;
+  for (int i = 0; i < g_areas; i++) {
+    if (!areaHeader(i, h)) continue;
+    if (h.gen >= g_nextGen) g_nextGen = h.gen + 1;
+    if (areaCrc(i, h.len) != h.crc) {
+      jlog(h.name, "модуль во флеше испорчен, пропущен");
+      areaDrop(i);
     }
   }
-  xTaskCreatePinnedToCore(watchdogTask, "wdt", 4096, nullptr, 3, nullptr, kCore);  // same core + higher priority than modules: deleting a hung task never crosses cores
+  for (int i = 0; i < g_areas; i++) {
+    if (!areaHeader(i, h) || areaOf(h.name) != i) continue;
+    areaDropName(h.name, i);
+    Slot *s = safe ? nullptr : findSlot(h.name, true);
+    if (s) {
+      s->area = i;
+      startSlot(*s);
+    }
+  }
+  xTaskCreatePinnedToCore(watchdogTask, "wdt", 4096, nullptr, 3, &g_wdtTask, kCore);  // same core + higher priority than modules: deleting a hung task never crosses cores
   Serial.println("master ready");
 }
 

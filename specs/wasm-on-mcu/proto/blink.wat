@@ -1,5 +1,7 @@
 ;; Prototype module: toggles a pin every 500 ms (ABI v3 subset: gpio_write, millis)
 (module
+  ;; No memory: the master needs this section to start the module (`specs/mcu-memory`).
+  (@custom "crab.mem" "\00\00\00\00")
   (import "crab" "gpio_write" (func $gpio_write (param i32 i32)))
   (import "crab" "millis" (func $millis (result i32)))
   (global $last (mut i32) (i32.const 0))

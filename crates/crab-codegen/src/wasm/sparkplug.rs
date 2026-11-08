@@ -13,6 +13,12 @@ use super::*;
 
 impl Emitter<'_, '_> {
     pub(super) fn sparkplug_block(&mut self, inst: &Instance) -> Result<bool, WasmError> {
+        if matches!(
+            inst.block.kind.as_str(),
+            "sparkplug_node" | "sparkplug_metric"
+        ) {
+            self.extras.insert("sparkplug");
+        }
         match inst.block.kind.as_str() {
             "sparkplug_node" => self.sparkplug_node(inst)?,
             "sparkplug_metric" => self.sparkplug_metric(inst)?,

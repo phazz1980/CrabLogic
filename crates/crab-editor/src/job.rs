@@ -625,6 +625,13 @@ fn upload_modules(
             ));
         }
     }
+    // An old master still runs the modules, but out of RAM: the memory left is small.
+    if info.keeps_modules_in_ram() {
+        out(
+            LogLevel::Warning,
+            crate::i18n::tr(crab_build::mcu_module::OLD_STORAGE_MESSAGE),
+        );
+    }
     // A module that calls a native part the master does not have would only fail on the board.
     match crab_build::master_state(&info, &master_features(project, lib)) {
         crab_build::MasterState::MissingNative(missing) => {

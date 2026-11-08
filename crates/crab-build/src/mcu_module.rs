@@ -1,8 +1,10 @@
 //! Uploading one `.wasm` module to the master firmware over a serial link.
 //!
-//! Protocol (lines end with `\n`): `put <name> <len> <crc32 hex> <allow,list|->`, the master
-//! answers `ready`, then `<len>` raw bytes follow; the master answers `swap_us=…` and `ok`,
-//! or `err …`. The module is stored on the board and (re)started without a reset.
+//! Protocol (lines end with `\n`): `put <name> <len> <crc32 hex> <allow,list|-> mem=<bytes>`, the
+//! master answers `ready <chunk>`, then the bytes follow in chunks of up to `<chunk>`, each answered
+//! `ack <bytes so far>`; at the end the master answers `swap_us=…` and `ok`, or `err …`. The module
+//! is stored in the flash of the board and (re)started without a reset (`specs/mcu-memory`).
+//! A master before that answers a bare `ready` and takes all the bytes at once.
 
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
@@ -29,6 +31,8 @@ pub enum ModuleUploadError {
     NoMaster,
     #[error("плата отклонила модуль: {0}")]
     Rejected(String),
+    #[error("модуль собран старой версией CrabLogic (нет сведений о памяти): пересоберите его")]
+    OldModule,
 }
 
 /// What the master reported about a stored module.
@@ -54,9 +58,24 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// Bytes of a module sent at once, and the pause after each piece.
+/// For a master that takes a module at once (bare `ready`): bytes sent at once, and the pause after
+/// each piece.
 const UPLOAD_PIECE: usize = 1024;
 const PIECE_PAUSE: Duration = Duration::from_millis(15);
+
+/// Bytes of memory the module needs, from its `crab.mem` section (`specs/mcu-memory`); `None` for a
+/// module built before the section existed.
+pub fn module_memory(wasm: &[u8]) -> Option<u32> {
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let Ok(wasmparser::Payload::CustomSection(section)) = payload {
+            if section.name() == crab_codegen::wasm::MEM_SECTION {
+                let bytes: [u8; 4] = section.data().try_into().ok()?;
+                return Some(u32::from_le_bytes(bytes));
+            }
+        }
+    }
+    None
+}
 
 /// Sends `wasm` to the master as module `name` with the hardware rights in `allow`.
 pub fn upload_module<P: Read + Write>(
@@ -80,6 +99,7 @@ pub fn upload_module<P: Read + Write>(
     if !wasm.starts_with(b"\0asm") {
         return Err(ModuleUploadError::NotWasm);
     }
+    let mem = module_memory(wasm).ok_or(ModuleUploadError::OldModule)?;
     let rights = if allow.is_empty() {
         "-".to_owned()
     } else {
@@ -87,24 +107,66 @@ pub fn upload_module<P: Read + Write>(
     };
     // The board may have printed boot messages or answers to earlier commands.
     drain(port)?;
-    let header = format!("put {name} {} {:08x} {rights}\n", wasm.len(), crc32(wasm));
+    let header = format!(
+        "put {name} {} {:08x} {rights} mem={mem}\n",
+        wasm.len(),
+        crc32(wasm)
+    );
     port.write_all(header.as_bytes())?;
     port.flush()?;
-    loop {
+    // `None` for a master that takes the module at once.
+    let chunk = loop {
         let line = read_line(port)?;
         if line == "ready" {
-            break;
+            break None;
+        }
+        if let Some(n) = line.strip_prefix("ready ") {
+            match n.trim().parse::<usize>() {
+                Ok(n) if n > 0 => break Some(n),
+                _ => {
+                    return Err(ModuleUploadError::Rejected(format!(
+                        "непонятный ответ «{line}»"
+                    )))
+                }
+            }
         }
         if let Some(reason) = line.strip_prefix("err") {
             return Err(ModuleUploadError::Rejected(reason.trim().to_owned()));
         }
-    }
-    // In pieces: the native USB of an ESP32-C3 has a receive buffer of a few KB and drops what does
-    // not fit when the master has not read yet (a module of 8 KB came out with a wrong CRC).
-    for piece in wasm.chunks(UPLOAD_PIECE) {
-        port.write_all(piece)?;
-        port.flush()?;
-        std::thread::sleep(PIECE_PAUSE);
+    };
+    match chunk {
+        // Each chunk waits for the master to write the one before into the flash.
+        Some(chunk) => {
+            let mut sent = 0;
+            for piece in wasm.chunks(chunk) {
+                port.write_all(piece)?;
+                port.flush()?;
+                sent += piece.len();
+                loop {
+                    let line = read_line(port)?;
+                    if let Some(at) = line.strip_prefix("ack ") {
+                        if at.trim().parse::<usize>().ok() != Some(sent) {
+                            return Err(ModuleUploadError::Rejected(format!(
+                                "плата приняла не столько байт: «{line}», отправлено {sent}"
+                            )));
+                        }
+                        break;
+                    }
+                    if let Some(reason) = line.strip_prefix("err") {
+                        return Err(ModuleUploadError::Rejected(reason.trim().to_owned()));
+                    }
+                }
+            }
+        }
+        // In pieces: the native USB of an ESP32-C3 has a receive buffer of a few KB and drops what
+        // does not fit when the master has not read yet (a module of 8 KB came out with a wrong CRC).
+        None => {
+            for piece in wasm.chunks(UPLOAD_PIECE) {
+                port.write_all(piece)?;
+                port.flush()?;
+                std::thread::sleep(PIECE_PAUSE);
+            }
+        }
     }
     let mut swap_us = None;
     loop {
@@ -133,6 +195,12 @@ pub struct MasterInfo {
 
 impl MasterInfo {
     /// What of `needs` this master does not have, in the order of `needs`.
+    /// A master before `specs/mcu-memory` keeps the modules in RAM (no `flashmod` in `modcaps=`): it
+    /// still runs them, but has much less memory left; flashing the master again fixes it.
+    pub fn keeps_modules_in_ram(&self) -> bool {
+        !self.caps.iter().any(|c| c == "flashmod")
+    }
+
     pub fn missing_caps(&self, needs: &[String]) -> Vec<String> {
         needs
             .iter()
@@ -175,6 +243,11 @@ pub fn missing_caps_message(module: &str, missing: &[String]) -> String {
     )
 }
 
+/// Shown when the master on the board keeps the modules in RAM ([`MasterInfo::keeps_modules_in_ram`]).
+pub const OLD_STORAGE_MESSAGE: &str = "Мастер на плате старой версии: держит модули в ОЗУ, и памяти \
+     на Wi-Fi и MQTT остаётся мало. Перезалейте мастер («Залить мастер-прошивку»); после этого модули \
+     заливаются заново";
+
 /// What a master feature of `modcaps=` is for, in words.
 fn cap_title(cap: &str) -> &str {
     match cap {
@@ -185,6 +258,7 @@ fn cap_title(cap: &str) -> &str {
         "uart_format" => "смена формата UART",
         "pcf_expander" => "расширители PCF8574/PCF8575",
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
+        "sparkplug" => "Sparkplug B (MQTT-узел)",
         other => other,
     }
 }
@@ -326,7 +400,88 @@ mod tests {
         }
     }
 
-    const WASM: &[u8] = b"\0asm\x01\0\0\0";
+    /// A master that takes the module in chunks: answers `ack` to each one, or what `script` says
+    /// for the chunk with that number (0 = the answer to the header, instead of `ready`).
+    struct ChunkMaster {
+        chunk: usize,
+        len: usize,
+        written: Vec<u8>,
+        header_len: Option<usize>,
+        chunks: usize,
+        out: VecDeque<u8>,
+        script: Vec<(usize, &'static str)>,
+        done: &'static str,
+    }
+
+    impl ChunkMaster {
+        fn new(chunk: usize, len: usize, done: &'static str) -> Self {
+            ChunkMaster {
+                chunk,
+                len,
+                written: Vec::new(),
+                header_len: None,
+                chunks: 0,
+                out: VecDeque::new(),
+                script: Vec::new(),
+                done,
+            }
+        }
+
+        fn data(&self) -> &[u8] {
+            &self.written[self.header_len.unwrap_or(self.written.len())..]
+        }
+    }
+
+    impl Read for ChunkMaster {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            match self.out.pop_front() {
+                Some(b) => {
+                    buf[0] = b;
+                    Ok(1)
+                }
+                None => Err(io::ErrorKind::TimedOut.into()),
+            }
+        }
+    }
+
+    impl Write for ChunkMaster {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(data);
+            let scripted =
+                |m: &Self, n: usize| m.script.iter().find(|(i, _)| *i == n).map(|(_, t)| *t);
+            match self.header_len {
+                None if self.written.ends_with(b"\n") => {
+                    self.header_len = Some(self.written.len());
+                    let answer = scripted(self, 0)
+                        .map(str::to_owned)
+                        .unwrap_or(format!("ready {}\n", self.chunk));
+                    self.out.extend(answer.into_bytes());
+                }
+                None => {}
+                Some(_) => {
+                    assert!(
+                        data.len() <= self.chunk,
+                        "a chunk longer than the master takes"
+                    );
+                    self.chunks += 1;
+                    let got = self.data().len();
+                    let answer = match scripted(self, self.chunks) {
+                        Some(t) => t.to_owned(),
+                        None if got == self.len => format!("ack {got}\n{}", self.done),
+                        None => format!("ack {got}\n"),
+                    };
+                    self.out.extend(answer.into_bytes());
+                }
+            }
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An empty module with a `crab.mem` section of 4096 bytes.
+    const WASM: &[u8] = b"\0asm\x01\0\0\0\0\x0d\x08crab.mem\0\x10\0\0";
 
     /// A master that answers `stats` with the given text.
     struct StatsMaster {
@@ -418,6 +573,78 @@ end
         );
     }
 
+    /// A module of `n` bytes with a `crab.mem` section.
+    fn big_module(n: usize) -> Vec<u8> {
+        let mut wasm = WASM.to_vec();
+        let pad = n - wasm.len() - 6;
+        // A custom section "x" with padding (section id 0, LEB128 size).
+        wasm.push(0);
+        let size = (pad + 2) as u32;
+        wasm.extend([
+            (size & 0x7f) as u8 | 0x80,
+            ((size >> 7) & 0x7f) as u8 | 0x80,
+            (size >> 14) as u8,
+        ]);
+        wasm.extend([1, b'x']);
+        wasm.resize(n, 0xAB);
+        wasm
+    }
+
+    #[test]
+    fn uploads_in_chunks_answered_by_ack() {
+        let wasm = big_module(1300);
+        let mut port = ChunkMaster::new(512, wasm.len(), "swap_us=120\nok\n");
+        let done = upload_module(&mut port, "big", &wasm, &[]).unwrap();
+        assert_eq!(done.swap_us, Some(120));
+        assert_eq!(port.chunks, 3);
+        assert_eq!(port.data(), wasm.as_slice());
+    }
+
+    #[test]
+    fn chunk_upload_stops_on_board_error() {
+        let wasm = big_module(1300);
+        // The cable is pulled: the master gives up waiting for the second chunk.
+        let mut port = ChunkMaster::new(512, wasm.len(), "ok\n");
+        port.script.push((2, "err timeout\n"));
+        let e = upload_module(&mut port, "big", &wasm, &[]).unwrap_err();
+        assert!(matches!(e, ModuleUploadError::Rejected(r) if r == "timeout"));
+        assert_eq!(port.chunks, 2, "nothing is sent after the error");
+        // A wrong CRC at the end.
+        let mut port = ChunkMaster::new(512, wasm.len(), "err crc/len\n");
+        let e = upload_module(&mut port, "big", &wasm, &[]).unwrap_err();
+        assert!(matches!(e, ModuleUploadError::Rejected(r) if r == "crc/len"));
+        // No free area.
+        let mut port = ChunkMaster::new(512, wasm.len(), "ok\n");
+        port.script.push((0, "err no space\n"));
+        let e = upload_module(&mut port, "big", &wasm, &[]).unwrap_err();
+        assert!(matches!(e, ModuleUploadError::Rejected(r) if r == "no space"));
+        assert!(port.data().is_empty());
+    }
+
+    #[test]
+    fn chunk_upload_checks_the_ack_offset() {
+        let wasm = big_module(1300);
+        let mut port = ChunkMaster::new(512, wasm.len(), "ok\n");
+        port.script.push((1, "ack 100\n"));
+        let e = upload_module(&mut port, "big", &wasm, &[]).unwrap_err();
+        assert!(matches!(e, ModuleUploadError::Rejected(r) if r.contains("ack 100")));
+    }
+
+    #[test]
+    fn master_without_flashmod_keeps_modules_in_ram() {
+        let info = |caps: &str| {
+            let mut port = StatsMaster {
+                answer: format!("modcaps={caps}\nend\n").into_bytes(),
+                out: Default::default(),
+            };
+            wait_for_master_info(&mut port, Duration::from_secs(2)).unwrap()
+        };
+        assert!(info("math,retain").keeps_modules_in_ram());
+        assert!(!info("math,flashmod,retain").keeps_modules_in_ram());
+        assert!(MasterInfo::default().keeps_modules_in_ram());
+        assert!(OLD_STORAGE_MESSAGE.contains("Перезалейте мастер"));
+    }
+
     #[test]
     fn crc32_check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
@@ -429,7 +656,11 @@ end
         let allow = vec!["gpio_write".to_owned(), "millis".to_owned()];
         let done = upload_module(&mut port, "blink", WASM, &allow).unwrap();
         assert_eq!(done.swap_us, Some(9274));
-        let header = format!("put blink 8 {:08x} gpio_write,millis\n", crc32(WASM));
+        let header = format!(
+            "put blink {} {:08x} gpio_write,millis mem=4096\n",
+            WASM.len(),
+            crc32(WASM)
+        );
         assert!(port.written.starts_with(header.as_bytes()));
         assert!(port.written.ends_with(WASM));
     }
@@ -438,7 +669,7 @@ end
     fn no_rights_are_sent_as_dash() {
         let mut port = Fake::new("ready\n", "ok\n");
         upload_module(&mut port, "hang", WASM, &[]).unwrap();
-        assert!(String::from_utf8_lossy(&port.written).contains(" -\n"));
+        assert!(String::from_utf8_lossy(&port.written).contains(" - mem=4096\n"));
     }
 
     #[test]
@@ -470,6 +701,10 @@ end
         assert!(matches!(
             upload_module(&mut port, "m", WASM, &["a b".to_owned()]),
             Err(ModuleUploadError::BadAllow(_))
+        ));
+        assert!(matches!(
+            upload_module(&mut port, "m", b"\0asm\x01\0\0\0", &[]),
+            Err(ModuleUploadError::OldModule)
         ));
         assert!(port.written.is_empty());
     }

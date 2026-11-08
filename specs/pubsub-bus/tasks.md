@@ -18,7 +18,10 @@
 - [ ] 10. Подключение к mqtt-модулю, will = `NDEATH` (решения в `plan.md`):
   - [x] 10a. `setWill` в клиенте FLProg_Network (`examples/mqtt` собирается; на брокере не проверено).
   - [x] 10b. Блоки `sparkplug_node`, `sparkplug_metric` (библиотека, пример `examples/sparkplug`, снимок), WASM-вывод через операции `net` 30..33 (setup, объявление метрики, значение, чтение), заглушка в `crab-sim` и тест; в обычном скетче блоки ничего не делают. Ops 24 занята веб-виджетами, поэтому 30..33.
-  - [ ] 10c. `master.ino`: protobuf, `NBIRTH`/`NDATA`/`NDEATH`, will перед connect, birth после переподключения.
+  - [x] 10c. `master.ino`: protobuf, `NBIRTH`/`NDATA`/`NDEATH`, will перед connect, birth после переподключения.
+    Проверено на плате (C3): команда `spdump <мс>` печатает NDEATH/NBIRTH/NDATA, байты совпадают с `crab-sparkplug`
+    (тест `matches_the_bytes_of_the_master_firmware`). Отправка брокеру ещё не проверена — это 10d.
+    Модули с Sparkplug требуют от мастера `modcaps=sparkplug`.
   - [ ] 10d. Проверка на плате и на брокере; пример в `examples/`.
 - [ ] 11. Справка.
 

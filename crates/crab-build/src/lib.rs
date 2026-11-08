@@ -72,6 +72,12 @@ pub enum BuildError {
         .0.join(", ")
     )]
     AmbiguousPort(Vec<String>),
+
+    #[error(
+        "у мастер-прошивки своя таблица разделов (модули хранятся в разделе crabmod): \
+         уберите PartitionScheme={0} из настроек платы"
+    )]
+    MasterPartitions(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

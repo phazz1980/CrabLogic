@@ -11,6 +11,9 @@ use crate::native::NativeBlock;
 
 /// The master sketch (wasm3, LittleFS, serial protocol).
 const SKETCH: &str = include_str!("../../../specs/wasm-on-mcu/proto/master/master.ino");
+/// Partition table of the master: the app and the "crabmod" partition with the modules
+/// (`specs/mcu-memory`). The ESP32 core takes `partitions.csv` from the sketch folder.
+const PARTITIONS: &str = include_str!("../../../specs/wasm-on-mcu/proto/master/partitions.csv");
 /// Hardware drivers the master carries. Each one costs flash and RAM, so the master is built
 /// with only those the project's blocks need (`#define CRAB_<NAME>` in front of the sketch).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -33,6 +36,9 @@ pub struct MasterFeatures {
     pub eth: bool,
     /// The MQTT client (`mqtt`).
     pub mqtt: bool,
+    /// Sparkplug B on top of MQTT (`sparkplug_node`, `sparkplug_metric`): its NBIRTH needs MQTT
+    /// packets of up to 768 bytes; without it the master takes 384 (`specs/mcu-memory`).
+    pub sparkplug: bool,
     /// The web page (`web_ui` and widgets): the master serves the page and the module fills it.
     pub web: bool,
     /// Native parts of blocks (`native.cpp`, `specs/drivers`), sorted by block type: the position
@@ -70,10 +76,15 @@ impl MasterFeatures {
                     f.net = true;
                     f.text = true;
                 }
-                "mqtt" | "mqtt_publish" | "mqtt_subscribe" | "sparkplug_node"
-                | "sparkplug_metric" => {
+                "mqtt" | "mqtt_publish" | "mqtt_subscribe" => {
                     f.net = true;
                     f.mqtt = true;
+                    f.text = true;
+                }
+                "sparkplug_node" | "sparkplug_metric" => {
+                    f.net = true;
+                    f.mqtt = true;
+                    f.sparkplug = true;
                     f.text = true;
                 }
                 "web_ui" | "web_net" | "web_button" | "web_switch" | "web_label" | "web_clock"
@@ -105,6 +116,7 @@ impl MasterFeatures {
             (self.wifi, "CRAB_WIFI"),
             (self.eth, "CRAB_ETH"),
             (self.mqtt, "CRAB_MQTT"),
+            (self.sparkplug, "CRAB_SPARKPLUG"),
             (self.web, "CRAB_WEB"),
             (!self.natives.is_empty(), "CRAB_NATIVE"),
         ] {
@@ -141,21 +153,42 @@ impl MasterFeatures {
 }
 
 /// The board as the master is built for. The master is flashed over USB and never updates itself
-/// over the air, so it takes the "No OTA" partitions (2 MB app, 2 MB for modules) instead of the
-/// default 1.2 MB app, in which the network stack alone does not fit. Always so by default,
-/// whatever the flash size; only a scheme set in the project wins.
-fn master_board(board: &BoardConfig) -> BoardConfig {
+/// over the air: its own table (`partitions.csv`) has the 2 MB app of the "No OTA" scheme, in
+/// which the network stack fits, and the "crabmod" partition for the modules. The scheme option
+/// stays "No OTA" so that arduino-cli checks the app against the same 2 MB. A scheme set in the
+/// project would not match the table: an error.
+fn master_board(board: &BoardConfig) -> Result<BoardConfig, BuildError> {
     let mut board = board.clone();
     if board.fqbn.starts_with("esp32:esp32:") {
+        if let Some(scheme) = board.options.get("PartitionScheme") {
+            if scheme != MASTER_PARTITIONS {
+                return Err(BuildError::MasterPartitions(scheme.clone()));
+            }
+        }
         board
             .options
-            .entry("PartitionScheme".into())
-            .or_insert_with(|| MASTER_PARTITIONS.into());
+            .insert("PartitionScheme".into(), MASTER_PARTITIONS.into());
     }
-    board
+    Ok(board)
 }
 
-/// Partition scheme of the master (see `master_board`).
+/// Defines for the libraries too (`compiler.cpp.extra_flags`), not only for the sketch.
+fn extra_flags(features: &MasterFeatures) -> Option<String> {
+    if !features.net {
+        return None;
+    }
+    // The master never updates over the air: leave ArduinoOTA and Update out of the network
+    // library (they also pull in AES/bignum from mbedcrypto).
+    let mut flags = String::from("-DFLPROG_NETWORK_COMPILE_OTA=0");
+    // Two MQTT buffers of this size: the texts of modules are up to 128 bytes, a topic up to 127,
+    // so 384 is enough; the library's 768 stays for the NBIRTH of Sparkplug (up to 600 bytes).
+    if features.mqtt && !features.sparkplug {
+        flags.push_str(" -DFLPROG_MQTT_MAX_PACKET_SIZE=384");
+    }
+    Some(flags)
+}
+
+/// Partition scheme whose app size the master's own table keeps (see `master_board`).
 const MASTER_PARTITIONS: &str = "no_ota";
 
 /// Where the sketch takes the native parts of blocks: after its includes, so that the
@@ -291,15 +324,19 @@ impl ArduinoCli {
         low_priority: bool,
         on_line: &mut dyn FnMut(&str),
     ) -> Result<MasterBuild, BuildError> {
-        let board = &master_board(board);
+        let board = &master_board(board)?;
         let root = plain_path(work_dir).join("master");
         let sketch_dir = root.join("master");
-        let sketch = sketch_dir.join("master.ino");
         std::fs::create_dir_all(&sketch_dir).map_err(|e| BuildError::BadOutput(e.to_string()))?;
         // Untouched sources keep arduino-cli's cache valid.
-        let text = sketch_text(features);
-        if std::fs::read_to_string(&sketch).ok().as_deref() != Some(text.as_str()) {
-            std::fs::write(&sketch, &text).map_err(|e| BuildError::BadOutput(e.to_string()))?;
+        for (file, text) in [
+            ("master.ino", sketch_text(features)),
+            ("partitions.csv", PARTITIONS.to_owned()),
+        ] {
+            let path = sketch_dir.join(file);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                std::fs::write(&path, &text).map_err(|e| BuildError::BadOutput(e.to_string()))?;
+            }
         }
         if let Some(core) = self.ensure_core(&board.fqbn, on_line)? {
             on_line(&format!("Установлено ядро {core}"));
@@ -316,11 +353,9 @@ impl ArduinoCli {
         args.extend(board_args(board));
         args.push("--build-path".into());
         args.push(out.clone().into());
-        if features.net {
-            // The master never updates over the air: leave ArduinoOTA and Update out of
-            // the network library (they also pull in AES/bignum from mbedcrypto).
+        if let Some(flags) = extra_flags(features) {
             args.push("--build-property".into());
-            args.push("compiler.cpp.extra_flags=-DFLPROG_NETWORK_COMPILE_OTA=0".into());
+            args.push(format!("compiler.cpp.extra_flags={flags}").into());
         }
         // Always: Wasm3 and the sensor libraries are shipped there too.
         for dir in crate::bundled_libraries(work_dir) {
@@ -341,7 +376,7 @@ impl ArduinoCli {
         port: &str,
         on_line: &mut dyn FnMut(&str),
     ) -> Result<(), BuildError> {
-        let board = &master_board(board);
+        let board = &master_board(board)?;
         let mut args: Vec<OsString> = vec!["upload".into()];
         args.extend(board_args(board));
         args.push("--port".into());
@@ -546,20 +581,73 @@ CRAB_STEP(State& s, In in, Out& out) {}
     }
 
     #[test]
-    fn master_takes_the_no_ota_partitions() {
+    fn mqtt_packets_are_small_unless_sparkplug() {
+        let flags = |kinds: &[&str]| extra_flags(&MasterFeatures::of_blocks(kinds.iter().copied()));
+        assert_eq!(flags(&["ds18b20"]), None);
+        assert_eq!(flags(&["wifi"]).unwrap(), "-DFLPROG_NETWORK_COMPILE_OTA=0");
+        assert!(flags(&["wifi", "mqtt"])
+            .unwrap()
+            .ends_with(" -DFLPROG_MQTT_MAX_PACKET_SIZE=384"));
+        let spark = flags(&["wifi", "mqtt", "sparkplug_node"]).unwrap();
+        assert!(!spark.contains("MQTT_MAX_PACKET_SIZE"));
+        // Another master build: a master without Sparkplug is not the one a Sparkplug project needs.
+        let id =
+            |kinds: &[&str]| master_sketch_id(&MasterFeatures::of_blocks(kinds.iter().copied()));
+        assert_ne!(id(&["mqtt"]), id(&["mqtt", "sparkplug_metric"]));
+    }
+
+    #[test]
+    fn master_takes_its_own_partitions() {
         let mut board = BoardConfig {
             fqbn: "esp32:esp32:esp32c3".into(),
             model: None,
             port: None,
             options: Default::default(),
         };
-        assert_eq!(master_board(&board).options["PartitionScheme"], "no_ota");
+        let scheme = |b: &BoardConfig| master_board(b).unwrap().options["PartitionScheme"].clone();
+        assert_eq!(scheme(&board), "no_ota");
+        board.options.insert("FlashSize".into(), "4M".into());
+        assert_eq!(scheme(&board), "no_ota");
+        // A scheme of the project does not match the master's table.
         board
             .options
             .insert("PartitionScheme".into(), "huge_app".into());
-        assert_eq!(master_board(&board).options["PartitionScheme"], "huge_app");
-        board.options.clear();
-        board.options.insert("FlashSize".into(), "2M".into());
-        assert_eq!(master_board(&board).options["PartitionScheme"], "no_ota");
+        assert!(matches!(
+            master_board(&board),
+            Err(BuildError::MasterPartitions(s)) if s == "huge_app"
+        ));
+        board
+            .options
+            .insert("PartitionScheme".into(), "no_ota".into());
+        assert_eq!(scheme(&board), "no_ota");
+    }
+
+    /// The table keeps the 2 MB app of "No OTA" and holds the module areas of the master
+    /// (`kAreaBytes` × whole areas), within 4 MB of flash.
+    #[test]
+    fn partition_table_has_the_module_areas() {
+        let num = |s: &str| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap();
+        let rows: Vec<Vec<&str>> = PARTITIONS
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(|l| l.split(',').map(str::trim).collect())
+            .collect();
+        let row = |name: &str| rows.iter().find(|r| r[0] == name).unwrap();
+        assert_eq!(num(row("app0")[4]), 0x20_0000);
+        let modules = row("crabmod");
+        assert_eq!((modules[1], modules[2]), ("data", "0x40"));
+        let area = 0x11000;
+        assert!(SKETCH.contains("kAreaBytes = 0x11000"));
+        assert_eq!(num(modules[4]) % area, 0);
+        assert!(num(modules[4]) / area >= 8);
+        let mut end = 0;
+        for r in &rows {
+            let (at, size) = (num(r[3]), num(r[4]));
+            assert!(at >= end, "{} overlaps", r[0]);
+            assert_eq!(at % 0x1000, 0);
+            end = at + size;
+        }
+        assert!(end <= 0x40_0000);
+        assert!(SKETCH.contains("\"crabmod\""));
     }
 }

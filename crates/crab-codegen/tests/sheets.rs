@@ -147,3 +147,31 @@ fn unsupported_block_is_refused_with_its_name() {
         "{err}"
     );
 }
+
+/// The `crab.mem` section of a module: bytes of memory it needs (`specs/mcu-memory`).
+fn mem_section(wasm: &[u8]) -> u32 {
+    let name = crab_codegen::wasm::MEM_SECTION.as_bytes();
+    let at = wasm
+        .windows(name.len())
+        .position(|w| w == name)
+        .expect("no crab.mem section")
+        + name.len();
+    u32::from_le_bytes(wasm[at..at + 4].try_into().unwrap())
+}
+
+#[test]
+fn module_tells_the_memory_it_needs() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    let program = Program::build(&project, &lib).unwrap();
+    // No strings: no memory at all.
+    assert_eq!(mem_section(&program.wasm_module(1).unwrap().wasm), 0);
+
+    // MQTT topics are text: the module needs a few hundred bytes, far below the 64 KB page.
+    let project = Project::load(repo_path("examples/mqtt_wasm")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let mem = mem_section(&program.wasm_module(1).unwrap().wasm);
+    assert!(mem > 64 && mem < 4096, "{mem}");
+    assert_eq!(mem % 16, 0);
+}

@@ -15,6 +15,8 @@
   (import "crab" "publish" (func $publish (param i32 i32 i32 i32)))
   (import "crab" "subscribe" (func $subscribe (param i32 i32)))
   (memory (export "memory") 1)
+  ;; The master gives a module only the memory it asks for (`specs/mcu-memory`): 4096 bytes.
+  (@custom "crab.mem" "\00\10\00\00")
   (data (i32.const 0) "tick")
   (global $acc (mut f32) (f32.const 0))
   (global $steps (mut i32) (i32.const 0))
@@ -24,7 +26,7 @@
   (func (export "init") (call $subscribe (i32.const 0) (i32.const 4)))
   (func (export "alloc") (param $n i32) (result i32)
     (local $p i32)
-    (if (i32.gt_u (global.get $heap) (i32.const 60000))
+    (if (i32.gt_u (global.get $heap) (i32.const 3584))
       (then (global.set $heap (i32.const 1024))))
     (local.set $p (global.get $heap))
     (global.set $heap (i32.add (local.get $p) (local.get $n)))

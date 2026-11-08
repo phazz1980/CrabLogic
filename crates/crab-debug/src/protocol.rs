@@ -106,6 +106,32 @@ pub struct Stats {
     pub sheets: Vec<SheetStats>,
     /// Last and longest pass of the background task (core 0), µs; none without one.
     pub background: Option<BackgroundStats>,
+    /// Heap and stacks of the master firmware (its `stats` answer); none for USB debugging.
+    pub memory: Option<MasterMemory>,
+}
+
+/// Memory figures the master reports in `stats`: what is left of the heap and of each stack.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MasterMemory {
+    /// Largest free block of the heap, bytes.
+    pub largest: u32,
+    /// Least free heap since the start, bytes.
+    pub min_free: u32,
+    /// Stack never used since the start, bytes, per task (`loop`, `hardware`, `wdt`, modules).
+    pub stacks: Vec<(String, u32)>,
+    pub modules: Vec<ModuleMemory>,
+}
+
+/// What one module of the master takes from the heap.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModuleMemory {
+    pub name: String,
+    /// WASM memory of the module, bytes.
+    pub mem: u32,
+    /// Code compiled by wasm3, bytes.
+    pub code: u32,
+    /// The module itself, bytes.
+    pub wasm: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -153,6 +179,7 @@ impl Stats {
             bus_lost: 0,
             sheets,
             background,
+            memory: None,
         })
     }
 }

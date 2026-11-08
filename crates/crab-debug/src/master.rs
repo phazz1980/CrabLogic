@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crab_core::SignalType;
 
-use crate::protocol::{SheetStats, Stats};
+use crate::protocol::{MasterMemory, ModuleMemory, SheetStats, Stats};
 use crate::session::{Command, Live};
 use crate::table::{DebugTable, Value};
 use crate::transport::{Connector, Transport};
@@ -48,6 +48,8 @@ struct ModStat {
     us: Option<[u32; 4]>,
     /// `qlost=<n>`: event messages dropped from the module queue; 0 for an older master.
     qlost: u32,
+    /// `mem=`, `code=`, `wasm=`: heap the module takes; `None` for an older master.
+    memory: Option<ModuleMemory>,
 }
 
 /// What the polling thread remembers between lines of the board.
@@ -58,6 +60,10 @@ struct Aux {
     /// Modules of the running `list` answer.
     mods: Vec<ModStat>,
     free_heap: u32,
+    /// `largest=` and `min=` of the `free=` line, `stack=` line; zero / empty for an older master.
+    largest: u32,
+    min_free: u32,
+    stacks: Vec<(String, u32)>,
     /// Per module: steps and summed step time at the previous report.
     prev: BTreeMap<String, (u32, u32)>,
     prev_at: Option<Instant>,
@@ -270,13 +276,28 @@ fn handle_line(
         l.events = aux.events;
         return false;
     }
-    // `list` answer: `free=<bytes> largest=<bytes>`.
+    // `list` answer: `free=<bytes> largest=<bytes> min=<bytes>`.
     if let Some(rest) = text.strip_prefix("free=") {
-        aux.free_heap = rest
-            .split_whitespace()
-            .next()
-            .and_then(|w| w.parse().ok())
-            .unwrap_or(0);
+        let mut words = rest.split_whitespace();
+        aux.free_heap = words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
+        for word in words {
+            if let Some(v) = word.strip_prefix("largest=") {
+                aux.largest = v.parse().unwrap_or(0);
+            } else if let Some(v) = word.strip_prefix("min=") {
+                aux.min_free = v.parse().unwrap_or(0);
+            }
+        }
+        return false;
+    }
+    // `list` answer: `stack=<task>:<bytes never used>,...`.
+    if let Some(rest) = text.strip_prefix("stack=") {
+        aux.stacks = rest
+            .split(',')
+            .filter_map(|item| {
+                let (task, left) = item.trim().split_once(':')?;
+                Some((task.to_owned(), left.parse().ok()?))
+            })
+            .collect();
         return false;
     }
     if text == "end" {
@@ -391,8 +412,16 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
         name: name.to_owned(),
         ..ModStat::default()
     };
+    let num = |v: &str| v.parse::<u32>().ok();
+    let (mut mem, mut code, mut wasm) = (None, None, None);
     for word in head.split_whitespace().skip(1) {
-        if let Some(v) = word.strip_prefix("steps=") {
+        if let Some(v) = word.strip_prefix("mem=") {
+            mem = num(v);
+        } else if let Some(v) = word.strip_prefix("code=") {
+            code = num(v);
+        } else if let Some(v) = word.strip_prefix("wasm=") {
+            wasm = num(v);
+        } else if let Some(v) = word.strip_prefix("steps=") {
             m.steps = v.parse().unwrap_or(0);
         } else if let Some(v) = word.strip_prefix("qlost=") {
             m.qlost = v.parse().unwrap_or(0);
@@ -402,6 +431,14 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
                 m.us = Some(us);
             }
         }
+    }
+    if let (Some(mem), Some(code), Some(wasm)) = (mem, code, wasm) {
+        m.memory = Some(ModuleMemory {
+            name: name.to_owned(),
+            mem,
+            code,
+            wasm,
+        });
     }
     m
 }
@@ -421,8 +458,19 @@ fn make_stats(aux: &mut Aux, modules: &[ModuleMap]) -> Option<Stats> {
         .max(0.1);
     aux.prev_at = Some(now);
     let (mut d_max, mut d_all, mut d_sum) = (0u32, 0u64, 0u64);
+    let modules_memory: Vec<ModuleMemory> = mods.iter().filter_map(|m| m.memory.clone()).collect();
+    let memory =
+        (aux.min_free > 0 || !aux.stacks.is_empty() || !modules_memory.is_empty()).then(|| {
+            MasterMemory {
+                largest: aux.largest,
+                min_free: aux.min_free,
+                stacks: std::mem::take(&mut aux.stacks),
+                modules: modules_memory,
+            }
+        });
     let mut stats = Stats {
         free_heap: aux.free_heap,
+        memory,
         ..Stats::default()
     };
     for m in &mods {
@@ -893,10 +941,50 @@ mod tests {
             &format!("sheet1 run steps=150 restarts=0 out0=0 us=200/900/12000/40000 crc={crc}"),
             "end",
         ]);
+        assert_eq!(first.memory, None);
         let second = live.lock().unwrap().stats.clone().unwrap();
         // 50 steps took 10000 us: 200 us each.
         assert_eq!(second.avg_us, 200);
         assert!(second.cycles > 0);
+    }
+
+    #[test]
+    fn list_gives_heap_stacks_and_module_memory() {
+        let (table, modules, live) = (bool_table(), bool_module(), bool_live());
+        let mut aux = Aux::default();
+        let crc = format!("{:08x}", 5);
+        for text in [
+            format!("sheet1 run steps=1 restarts=0 out0=0 qlost=0 mem=4096 code=9216 wasm=5120 crc={crc}"),
+            "free=50000 largest=31000 min=42000".to_owned(),
+            "stack=loop:5000,hardware:1200,sheet1:2300".to_owned(),
+            "end".to_owned(),
+        ] {
+            handle_line(
+                &text,
+                &table,
+                &modules,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        let stats = live.lock().unwrap().stats.clone().unwrap();
+        assert_eq!(stats.free_heap, 50_000);
+        let m = stats.memory.unwrap();
+        assert_eq!((m.largest, m.min_free), (31_000, 42_000));
+        assert_eq!(m.stacks[1], ("hardware".to_owned(), 1200));
+        assert_eq!(m.stacks.len(), 3);
+        assert_eq!(
+            m.modules,
+            vec![ModuleMemory {
+                name: "sheet1".into(),
+                mem: 4096,
+                code: 9216,
+                wasm: 5120
+            }]
+        );
     }
 
     #[test]

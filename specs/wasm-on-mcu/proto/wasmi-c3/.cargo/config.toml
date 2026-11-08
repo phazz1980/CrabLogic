@@ -1,0 +1,13 @@
+# ESP32-C3 has no atomic instructions; wasmi needs `alloc::sync::Arc`. The target spec next to this
+# folder is the built-in riscv32imc one with `atomic-cas = true`: LLVM's `forced-atomics` turns
+# read-modify-write atomics into `__sync_*` calls, implemented in src/atomics.rs (single core).
+[build]
+target = "riscv32imc-unknown-none-elf.json"
+
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --chip esp32c3 --port COM5 --flash-mode qio --flash-freq 80mhz"
+rustflags = ["-C", "link-arg=-Tlinkall.x", "-C", "force-frame-pointers"]
+
+[unstable]
+build-std = ["core", "alloc"]
+json-target-spec = true

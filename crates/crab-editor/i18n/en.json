@@ -1179,7 +1179,6 @@
  "Скопировать только конфиг": "Copy config only",
  "Промпт...": "Prompt...",
  "Сервер MCP для внешнего ИИ (Claude Code и др.): он работает с проектом, открытым здесь": "MCP server for external AI (Claude Code etc.): it works with the project open here",
- "Из проекта .crab...": "From a .crab project...",
  "Ключ": "Key",
  "Модель": "Model",
  "Адрес API": "API address",
@@ -1268,5 +1267,16 @@
  "При замене сохранить копию из проекта рядом как новый блок «<тип>_project»": "When replacing, keep the project's copy next to it as a new block \"<type>_project\"",
  "Чтобы сравнить две версии и перенести нужное вручную; копия появится в библиотеке": "To compare the two versions and move what you need by hand; the copy appears in the library",
  "Для блоков с независимыми правками выберите вариант: без этого применить нельзя.": "Choose an option for the blocks changed independently: without it, nothing can be applied.",
- "Копии из проекта сохранены как новые блоки: {0}": "The project's copies were saved as new blocks: {0}"
+ "Копии из проекта сохранены как новые блоки: {0}": "The project's copies were saved as new blocks: {0}",
+ "Наибольший свободный блок": "Largest free block",
+ "Минимум памяти с запуска": "Least free memory since start",
+ "Память, КБ": "Memory, KB",
+ "Память WASM модуля (строки и буферы)": "WASM memory of the module (strings and buffers)",
+ "Код, КБ": "Code, KB",
+ "Код, скомпилированный wasm3": "Code compiled by wasm3",
+ "Файл, КБ": "File, KB",
+ "Задача": "Task",
+ "Стек не тронут, байт": "Stack never used, bytes",
+ "Сколько стека задачи ни разу не использовалось с запуска": "How much of the task's stack has never been used since start",
+ "Мастер на плате старой версии: держит модули в ОЗУ, и памяти на Wi-Fi и MQTT остаётся мало. Перезалейте мастер («Залить мастер-прошивку»); после этого модули заливаются заново": "The master on the board is an old version: it keeps modules in RAM, leaving little memory for Wi-Fi and MQTT. Upload the master again (“Upload master firmware”); the modules then have to be uploaded again"
 }
