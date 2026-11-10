@@ -89,6 +89,7 @@ pub struct SheetDialog {
     background: bool,
     period: u32,
     disabled: bool,
+    speed: crab_core::SheetSpeed,
 }
 
 enum Outcome {
@@ -201,11 +202,17 @@ impl Dialog {
             .and_then(|d| d.project.layout.sheet(number))
             .cloned()
             .unwrap_or_default();
+        let speed = app
+            .doc
+            .as_ref()
+            .and_then(|d| d.project.logic.sheets.iter().find(|s| s.number == number))
+            .map_or(crab_core::SheetSpeed::Normal, |s| s.speed);
         Self::Sheet(SheetDialog {
             number,
             name: info.name,
             comment: info.comment,
             background: info.background,
+            speed,
             disabled: info.disabled,
             period: if info.period == 0 {
                 crab_core::layout::DEFAULT_BACKGROUND_PERIOD_MS
@@ -506,6 +513,14 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
             };
             doc.edit(&lib, None, |p| {
                 p.set_sheet_info(info);
+                if let Some(sheet) = p.logic.sheets.iter_mut().find(|s| s.number == d.number) {
+                    sheet.speed = d.speed;
+                } else {
+                    p.logic.sheets.push(crab_core::SheetExecution {
+                        number: d.number,
+                        speed: d.speed,
+                    });
+                }
                 Ok::<_, String>(())
             })?;
         }

@@ -69,6 +69,23 @@ pub(super) fn sheet_body(ui: &mut Ui, d: &mut SheetDialog) {
                     crate::i18n::tr("Блоки отключённой платы не входят в сборку, а ошибки в них не проверяются.                      Блоки других плат, которые брали от них значения, останутся без источника."),
                 );
             ui.end_row();
+            ui.label(crate::i18n::tr("Скорость WASM"));
+            egui::ComboBox::from_id_salt("sheet_speed")
+                .selected_text(match d.speed {
+                    crab_core::SheetSpeed::Fast => crate::i18n::tr("Быстрая"),
+                    crab_core::SheetSpeed::Normal => crate::i18n::tr("Обычная"),
+                    crab_core::SheetSpeed::Background => crate::i18n::tr("Фоновая"),
+                })
+                .show_ui(ui, |ui| {
+                    for (speed, label) in [
+                        (crab_core::SheetSpeed::Fast, "Быстрая"),
+                        (crab_core::SheetSpeed::Normal, "Обычная"),
+                        (crab_core::SheetSpeed::Background, "Фоновая"),
+                    ] {
+                        ui.selectable_value(&mut d.speed, speed, crate::i18n::tr(label));
+                    }
+                });
+            ui.end_row();
             ui.label(crate::i18n::tr("Фоновая задача"));
             ui.checkbox(&mut d.background, "")
                 .on_hover_text(

@@ -22,6 +22,29 @@ pub struct Logic {
     pub blocks: Vec<Block>,
     #[serde(rename = "link", default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<Link>,
+    /// Execution settings for logical sheets; coordinates remain in `layout.toml`.
+    #[serde(rename = "sheet", default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets: Vec<SheetExecution>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SheetExecution {
+    pub number: u32,
+    #[serde(default, skip_serializing_if = "is_normal_speed")]
+    pub speed: SheetSpeed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SheetSpeed {
+    Fast,
+    #[default]
+    Normal,
+    Background,
+}
+
+fn is_normal_speed(value: &SheetSpeed) -> bool {
+    *value == SheetSpeed::Normal
 }
 
 impl Logic {
@@ -136,6 +159,25 @@ impl fmt::Display for PortRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sheet_speed_roundtrip_and_default() {
+        let logic: Logic =
+            toml::from_str("[[sheet]]\nnumber = 1\nspeed = \"fast\"\n[[sheet]]\nnumber = 2\n")
+                .unwrap();
+        assert_eq!(logic.sheets[0].speed, SheetSpeed::Fast);
+        assert_eq!(logic.sheets[1].speed, SheetSpeed::Normal);
+        let encoded = toml::to_string(&logic).unwrap();
+        assert!(encoded.contains("speed = \"fast\""));
+        assert!(!encoded.contains("speed = \"normal\""));
+    }
+
+    #[test]
+    fn unknown_sheet_speed_is_rejected() {
+        let error =
+            toml::from_str::<Logic>("[[sheet]]\nnumber = 1\nspeed = \"turbo\"\n").unwrap_err();
+        assert!(error.to_string().contains("turbo"));
+    }
 
     #[test]
     fn port_ref_parse() {

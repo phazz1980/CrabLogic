@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+pub mod planner;
 pub mod protocol;
 pub mod restart;
 pub mod storage;

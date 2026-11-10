@@ -83,6 +83,7 @@ pub fn preview_block(def: &BlockDef, template: &str) -> Result<String, GenError>
                 ..Default::default()
             }],
             links: Vec::new(),
+            sheets: Vec::new(),
         },
         layout: Layout::default(),
     };

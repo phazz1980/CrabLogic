@@ -44,6 +44,7 @@ pub use library::{
 };
 pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
+pub use logic::{SheetExecution, SheetSpeed};
 pub use pins::PinFunction;
 pub use project::{hash_hex, BoardConfig, Project, ProjectConfig, ProjectInfo};
 pub use uart::{UartAccess, UartConfig, UartUse};
