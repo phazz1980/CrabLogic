@@ -259,6 +259,7 @@ fn cap_title(cap: &str) -> &str {
         "pcf_expander" => "расширители PCF8574/PCF8575",
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
+        "abi4" => "модули нового формата (ABI 4)",
         other => other,
     }
 }

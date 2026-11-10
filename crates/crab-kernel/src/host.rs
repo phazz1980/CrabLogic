@@ -139,6 +139,8 @@ pub struct ModuleHost<D: Devices> {
     pub log: Vec<String>,
     /// Outputs the module drives.
     pub leases: Leases<D::Hal>,
+    /// Time that passed while a `step` was suspended; the next `step` gets it on top of its own.
+    pub missed_ms: u32,
     pub devices: D,
 }
 
@@ -154,6 +156,7 @@ impl<D: Devices> ModuleHost<D> {
             published: Vec::new(),
             log: Vec::new(),
             leases: Leases::new(devices.hal()),
+            missed_ms: 0,
             devices,
         }
     }

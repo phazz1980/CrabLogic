@@ -22,7 +22,7 @@
   (global $steps (mut i32) (i32.const 0))
   (global $msgs (mut i32) (i32.const 0))
   (global $heap (mut i32) (i32.const 1024))
-  (func (export "abi_version") (result i32) i32.const 3)
+  (func (export "abi_version") (result i32) i32.const 4)
   (func (export "init") (call $subscribe (i32.const 0) (i32.const 4)))
   (func (export "alloc") (param $n i32) (result i32)
     (local $p i32)

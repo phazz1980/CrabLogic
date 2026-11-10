@@ -29,7 +29,7 @@ fn publisher(topic: &str, payloads: &[u8]) -> String {
             (memory (export "memory") 1)
             (data (i32.const 0) "{topic}")
             (data (i32.const 16) "{bytes}")
-            (func (export "abi_version") (result i32) i32.const 3)
+            (func (export "abi_version") (result i32) i32.const 4)
             (func (export "step") (param i32) {calls}))"#
     )
 }
@@ -44,7 +44,7 @@ fn subscriber(topic: &str) -> String {
             (memory (export "memory") 1)
             (data (i32.const 0) "{topic}")
             (global $heap (mut i32) (i32.const 1024))
-            (func (export "abi_version") (result i32) i32.const 3)
+            (func (export "abi_version") (result i32) i32.const 4)
             (func (export "init") (call $subscribe (i32.const 0) (i32.const {})))
             (func (export "alloc") (param $n i32) (result i32)
                 (global.get $heap)

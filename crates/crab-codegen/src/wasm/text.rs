@@ -855,6 +855,7 @@ impl Emitter<'_, '_> {
         self.op(I::LocalSet(ready));
         self.op(I::Block(BlockType::Empty));
         self.op(I::Loop(BlockType::Empty));
+        self.fuel_check();
         self.uart_call(2, port, |e| e.c_i(0), 0);
         self.c_i(0);
         self.op(I::I32LeS);

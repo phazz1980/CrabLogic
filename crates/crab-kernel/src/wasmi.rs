@@ -5,13 +5,17 @@ use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::String;
 
+use core::fmt;
+
+use wasmi::errors::HostError;
 use wasmi::{
     Caller, Config, Error, FuncType, Linker, Memory, Module, Store, StoreLimits,
-    StoreLimitsBuilder, TrapCode, TypedFunc, ValType, F32,
+    StoreLimitsBuilder, TrapCode, TypedFunc, TypedResumableCall, TypedResumableCallHostTrap,
+    ValType, F32,
 };
 
-use crate::abi::{self, Ty, ABI_VERSION, IMPORTS};
-use crate::engine::{self, Limits};
+use crate::abi::{self, id, Ty, ABI_VERSION, IMPORTS};
+use crate::engine::{self, Limits, Run};
 use crate::host::{self, Host, Mem};
 
 /// The wasmi engine with fuel metering on.
@@ -40,7 +44,23 @@ struct State<H> {
     host: H,
     limits: StoreLimits,
     memory: Option<Memory>,
+    /// What `crab.yield` gives back.
+    budget: i32,
+    /// `crab.yield` suspends only inside `step`; elsewhere it just returns the budget.
+    suspendable: bool,
 }
+
+/// The host error `crab.yield` raises to suspend a resumable `step`.
+#[derive(Debug)]
+struct Yield;
+
+impl fmt::Display for Yield {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("crab.yield")
+    }
+}
+
+impl HostError for Yield {}
 
 /// A module running in wasmi.
 pub struct WasmiInstance<H: 'static> {
@@ -48,6 +68,8 @@ pub struct WasmiInstance<H: 'static> {
     instance: wasmi::Instance,
     step: TypedFunc<i32, ()>,
     fuel: u64,
+    /// The `step` that yielded, waiting to be resumed.
+    pending: Option<TypedResumableCallHostTrap<()>>,
 }
 
 fn val_type(t: Ty) -> ValType {
@@ -77,6 +99,13 @@ fn link<H: Host + 'static>(linker: &mut Linker<State<H>>) -> Result<(), String> 
                 import.name,
                 ty,
                 move |mut c: Caller<'_, State<H>>, args: &[wasmi::Val], out: &mut [wasmi::Val]| {
+                    if id == id::YIELD {
+                        if c.data().suspendable {
+                            return Err(Error::host(Yield));
+                        }
+                        out[0] = wasmi::Val::I32(c.data().budget);
+                        return Ok(());
+                    }
                     let mut buf = [host::Val::I32(0); 8];
                     let n = args.len().min(buf.len());
                     for (b, a) in buf.iter_mut().zip(args) {
@@ -107,12 +136,14 @@ fn link<H: Host + 'static>(linker: &mut Linker<State<H>>) -> Result<(), String> 
     Ok(())
 }
 
+fn too_long() -> String {
+    "модуль выполняется слишком долго (возможно, бесконечный цикл)".to_owned()
+}
+
 /// A trap or error as a message for the user.
 pub fn describe(e: &Error) -> String {
     match e.as_trap_code() {
-        Some(TrapCode::OutOfFuel) => {
-            "модуль выполняется слишком долго (возможно, бесконечный цикл)".to_owned()
-        }
+        Some(TrapCode::OutOfFuel) => too_long(),
         Some(TrapCode::MemoryOutOfBounds) => "модуль обратился за пределы памяти".to_owned(),
         Some(code) => format!("модуль остановлен: {code}"),
         None => format!("ошибка модуля: {e}"),
@@ -141,6 +172,8 @@ impl engine::Engine for Wasmi {
                     .memory_size(limits.max_memory)
                     .build(),
                 memory: None,
+                budget: limits.yield_budget,
+                suspendable: false,
             },
         );
         store.limiter(|s| &mut s.limits);
@@ -154,7 +187,9 @@ impl engine::Engine for Wasmi {
 
         let abi_version = instance
             .get_typed_func::<(), i32>(&store, "abi_version")
-            .map_err(|_| "в модуле нет функции abi_version() (нужен ABI 3)".to_owned())?;
+            .map_err(|_| {
+                format!("в модуле нет функции abi_version() (нужен ABI {ABI_VERSION}): пересоберите модуль")
+            })?;
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|e| format!("ошибка лимита выполнения: {e}"))?;
@@ -163,7 +198,7 @@ impl engine::Engine for Wasmi {
             .map_err(|e| format!("abi_version не выполнена: {e}"))?;
         if version != ABI_VERSION {
             return Err(format!(
-                "модуль собран для ABI {version}, поддерживается {ABI_VERSION}"
+                "модуль собран для ABI {version}, поддерживается {ABI_VERSION}: пересоберите модуль"
             ));
         }
         let step = instance
@@ -174,6 +209,7 @@ impl engine::Engine for Wasmi {
             instance,
             step,
             fuel: limits.fuel_per_call,
+            pending: None,
         };
         if let Ok(init) = m.instance.get_typed_func::<(), ()>(&m.store, "init") {
             m.refuel()?;
@@ -189,6 +225,24 @@ impl<H: 'static> WasmiInstance<H> {
             .set_fuel(self.fuel)
             .map_err(|e| format!("ошибка лимита выполнения: {e}"))
     }
+
+    /// Where a resumable `step` stopped: returned, yielded or failed.
+    fn settle(&mut self, call: Result<TypedResumableCall<()>, Error>) -> Result<Run, String> {
+        let run = match call {
+            Ok(TypedResumableCall::Finished(())) => Ok(Run::Done),
+            Ok(TypedResumableCall::HostTrap(t))
+                if t.host_error().downcast_ref::<Yield>().is_some() =>
+            {
+                self.pending = Some(t);
+                return Ok(Run::Yielded);
+            }
+            Ok(TypedResumableCall::HostTrap(t)) => Err(describe(t.host_error())),
+            Ok(TypedResumableCall::OutOfFuel(_)) => Err(too_long()),
+            Err(e) => Err(describe(&e)),
+        };
+        self.store.data_mut().suspendable = false;
+        run
+    }
 }
 
 impl<H: 'static> engine::Instance<H> for WasmiInstance<H> {
@@ -200,11 +254,28 @@ impl<H: 'static> engine::Instance<H> for WasmiInstance<H> {
         &mut self.store.data_mut().host
     }
 
-    fn call_step(&mut self, dt_ms: u32) -> Result<(), String> {
+    fn call_step(&mut self, dt_ms: u32) -> Result<Run, String> {
+        if self.pending.is_some() {
+            return Err("модуль ещё не закончил прошлый шаг".to_owned());
+        }
         self.refuel()?;
-        self.step
-            .call(&mut self.store, dt_ms as i32)
-            .map_err(|e| describe(&e))
+        self.store.data_mut().suspendable = true;
+        let call = self.step.call_resumable(&mut self.store, dt_ms as i32);
+        self.settle(call)
+    }
+
+    fn resume(&mut self) -> Result<Run, String> {
+        let Some(t) = self.pending.take() else {
+            return Ok(Run::Done);
+        };
+        self.refuel()?;
+        let budget = wasmi::Val::I32(self.store.data().budget);
+        let call = t.resume(&mut self.store, &[budget]);
+        self.settle(call)
+    }
+
+    fn suspended(&self) -> bool {
+        self.pending.is_some()
     }
 
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {

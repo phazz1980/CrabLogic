@@ -38,6 +38,30 @@ fn examples_compile() {
 
 #[test]
 #[ignore = "needs arduino-cli with esp32:esp32"]
+fn master_for_c3_with_wifi_compiles() {
+    let cli = ArduinoCli::locate().unwrap();
+    let project = Project::load(repo_path("examples/esp32c3_wifi")).unwrap();
+    let features =
+        crab_build::MasterFeatures::of_blocks(project.logic.blocks.iter().map(|b| b.kind.as_str()));
+    let mut log = Vec::new();
+    let result = cli.compile_master(
+        &project.work_dir(),
+        &project.config.board,
+        &features,
+        true,
+        &mut |line| log.push(line.to_owned()),
+    );
+    let errors: Vec<&String> = log.iter().filter(|l| l.contains("error")).collect();
+    assert!(
+        result.is_ok(),
+        "{:?}
+{errors:?}",
+        result.as_ref().err()
+    );
+}
+
+#[test]
+#[ignore = "needs arduino-cli with esp32:esp32"]
 fn master_with_web_compiles() {
     let cli = ArduinoCli::locate().unwrap();
     let project = Project::load(repo_path("examples/web_wasm")).unwrap();

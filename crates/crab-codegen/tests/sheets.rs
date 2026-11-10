@@ -175,3 +175,34 @@ fn module_tells_the_memory_it_needs() {
     assert!(mem > 64 && mem < 4096, "{mem}");
     assert_eq!(mem % 16, 0);
 }
+
+/// ABI 4: `step` and the back edge of every loop spend fuel and call `crab.yield` when it runs
+/// out. The module of `examples/text_wasm` (reading a UART line loops) is kept as a WAT snapshot;
+/// to accept changes run `UPDATE_SNAPSHOTS=1 cargo test` and review the diff in git.
+#[test]
+fn module_with_a_loop_spends_fuel() {
+    let lib = library();
+    let project = Project::load(repo_path("examples/text_wasm")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    assert!(built.manifest.contains("abi = 4"), "{}", built.manifest);
+    let text = wasmprinter::print_bytes(&built.wasm).unwrap();
+    assert!(text.contains("(import \"crab\" \"yield\" (func"), "{text}");
+    let after_loop = text.split_once("loop").expect("a loop").1;
+    let yield_in_loop = after_loop.find("call 6").expect("yield in the loop");
+    assert!(yield_in_loop < after_loop.find("br_if").unwrap_or(usize::MAX));
+
+    let path = repo_path("crates/crab-codegen/tests/snapshots/text_wasm.module.wat");
+    let expected = std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.replace("\r\n", "\n"));
+    if expected.as_deref() == Some(text.as_str()) {
+        return;
+    }
+    if expected.is_none() || std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::write(&path, &text).unwrap();
+        eprintln!("снимок записан: {}", path.display());
+        return;
+    }
+    panic!("модуль отличается от снимка {}", path.display());
+}

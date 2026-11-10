@@ -129,7 +129,7 @@ fn on_fault_goes_to_the_master_with_the_pin() {
     // Off by default: the inverted lamp goes high, the others low (no bits, any master runs them).
     let faults = |m: &McuModule| [2, 5, 18].map(|p| m.io().on_fault.get(&p).copied());
     assert_eq!(faults(&module), [Some(1), Some(0), Some(0)]);
-    assert_eq!(built.needs, ["on_fault"]);
+    assert_eq!(built.needs, ["abi4", "on_fault"]);
 
     let set = |project: &mut Project, id: &str, v: i64| {
         let block = project
@@ -170,7 +170,7 @@ fn on_fault_goes_to_the_master_with_the_pin() {
         .unwrap()
         .wasm_module(1)
         .unwrap();
-    assert!(built.needs.is_empty(), "{:?}", built.needs);
+    assert_eq!(built.needs, ["abi4"], "no on_fault");
 }
 
 #[test]
@@ -1023,7 +1023,11 @@ fn modules_list_what_they_need_from_the_master() {
     let needs = |dir: &str| {
         let project = Project::load(repo_path(dir)).unwrap();
         let program = Program::build(&project, &lib).unwrap();
-        program.wasm_module(1).unwrap().needs
+        let mut needs = program.wasm_module(1).unwrap().needs;
+        // Every module needs a master of ABI 4.
+        let abi = needs.iter().position(|n| n == "abi4").expect("abi4");
+        needs.remove(abi);
+        needs
     };
     let fixtures = "crates/crab-sim/tests/fixtures";
     assert_eq!(needs(&format!("{fixtures}/wasm_trig")), ["math"]);

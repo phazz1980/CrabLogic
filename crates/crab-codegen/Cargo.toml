@@ -14,3 +14,4 @@ wasm-encoder = "0.263.0"
 
 [dev-dependencies]
 toml.workspace = true
+wasmprinter = "0.263.0"

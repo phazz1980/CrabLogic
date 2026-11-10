@@ -4,24 +4,55 @@
 //! [`Kernel::swap`] (the new instance is ready → the leases pass to it → the old one goes) →
 //! [`Kernel::unload`]. A trap ends every lease of the module (its outputs go to their safe
 //! state); the module stays and takes its outputs again when it next writes them.
+//!
+//! A module that runs out of work units calls `crab.yield`: its `step` is suspended and the
+//! next quantum resumes it instead of starting a new one, so the other modules keep running.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
 use crate::bus::{Bus, TopicDecl};
-use crate::engine::Instance;
+use crate::engine::{Instance, Run};
 use crate::handle::{Handle, SlotMap};
 use crate::host::{Devices, ModuleHost};
 
-/// One step of a module outside a kernel: time passes for its devices, then `step` runs.
-pub fn step_module<I, D>(inst: &mut I, dt_ms: u32) -> Result<(), String>
+/// One quantum of a module: time passes for its devices, then a suspended `step` resumes or a
+/// new one starts (with the time it missed while suspended).
+pub fn step_module<I, D>(inst: &mut I, dt_ms: u32) -> Result<Run, String>
 where
     I: Instance<ModuleHost<D>>,
     D: Devices,
 {
     inst.host_mut().devices.tick(dt_ms);
-    inst.call_step(dt_ms)
+    if inst.suspended() {
+        let host = inst.host_mut();
+        host.missed_ms = host.missed_ms.wrapping_add(dt_ms);
+        return inst.resume();
+    }
+    let dt = dt_ms.wrapping_add(core::mem::take(&mut inst.host_mut().missed_ms));
+    inst.call_step(dt)
+}
+
+/// One whole step of a module alone (the simulator of one sheet): yields are resumed at once,
+/// at most `max_yields` times, after which the module counts as hung.
+pub fn step_to_end<I, D>(inst: &mut I, dt_ms: u32, max_yields: u32) -> Result<(), String>
+where
+    I: Instance<ModuleHost<D>>,
+    D: Devices,
+{
+    let mut run = step_module(inst, dt_ms)?;
+    let mut yields = 0;
+    while run == Run::Yielded {
+        yields += 1;
+        if yields > max_yields {
+            return Err(String::from(
+                "модуль выполняется слишком долго (возможно, бесконечный цикл)",
+            ));
+        }
+        run = inst.resume()?;
+    }
+    Ok(())
 }
 
 /// Hands a message to a module if it subscribed to `topic`; returns whether it was delivered.
@@ -144,7 +175,13 @@ where
     }
 
     fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
-        let waiting = self.bus.take(h);
+        // A module still in its last step gets the waiting messages before its next one.
+        let suspended = self.modules.get(h).is_some_and(|m| m.suspended());
+        let waiting = if suspended {
+            Vec::new()
+        } else {
+            self.bus.take(h)
+        };
         let Some(m) = self.modules.get_mut(h) else {
             return Ok(());
         };

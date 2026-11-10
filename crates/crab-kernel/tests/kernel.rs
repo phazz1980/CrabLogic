@@ -63,7 +63,7 @@ fn wat(writes: &str) -> Vec<u8> {
   (memory (export "memory") 1)
   (data (i32.const 0) "e")
   (global $bump (mut i32) (i32.const 1024))
-  (func (export "abi_version") (result i32) i32.const 3)
+  (func (export "abi_version") (result i32) i32.const 4)
   (func (export "init") (call $sub (i32.const 0) (i32.const 1)))
   (func (export "alloc") (param i32) (result i32) (local i32)
     global.get $bump
@@ -187,4 +187,90 @@ fn module_without_permission_is_refused_at_load() {
         .err()
         .unwrap();
     assert!(err.contains("crab.pwm_write"), "{err}");
+}
+
+/// Fuel as the emitter spends it: one at the start of `step` and on every back edge.
+const SPEND: &str = r#"(func $spend
+    (global.set $fuel (i32.sub (global.get $fuel) (i32.const 1)))
+    (if (i32.lt_s (global.get $fuel) (i32.const 1))
+      (then (global.set $fuel (call $yield)))))"#;
+
+/// `step` never returns: it counts loop passes into output 0.
+fn endless() -> Vec<u8> {
+    wat::parse_str(format!(
+        r#"(module
+  (import "crab" "output_i" (func $out (param i32 i32) (result i32)))
+  (import "crab" "yield" (func $yield (result i32)))
+  (global $fuel (mut i32) (i32.const 10000))
+  (global $n (mut i32) (i32.const 0))
+  {SPEND}
+  (func (export "abi_version") (result i32) i32.const 4)
+  (func (export "step") (param i32)
+    call $spend
+    (loop $l
+      call $spend
+      (global.set $n (i32.add (global.get $n) (i32.const 1)))
+      (drop (call $out (i32.const 0) (global.get $n)))
+      br $l)))"#
+    ))
+    .unwrap()
+}
+
+/// Counts its steps into output 0.
+fn counter(abi: i32) -> Vec<u8> {
+    wat::parse_str(format!(
+        r#"(module
+  (import "crab" "output_i" (func $out (param i32 i32) (result i32)))
+  (import "crab" "yield" (func $yield (result i32)))
+  (global $fuel (mut i32) (i32.const 10000))
+  (global $n (mut i32) (i32.const 0))
+  {SPEND}
+  (func (export "abi_version") (result i32) i32.const {abi})
+  (func (export "step") (param i32)
+    call $spend
+    (global.set $n (i32.add (global.get $n) (i32.const 1)))
+    (drop (call $out (i32.const 0) (global.get $n)))))"#
+    ))
+    .unwrap()
+}
+
+fn load_wasm(wasm: &[u8], hal: &StubHal) -> Result<Module, String> {
+    let board = Board {
+        hal: hal.clone(),
+        writes: 0,
+    };
+    Wasmi::new().load(wasm, &[], Limits::default(), ModuleHost::new(board, 1))
+}
+
+#[test]
+fn endless_loop_yields_and_continues_where_it_stopped() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let hung = k.add(load_wasm(&endless(), &hal).unwrap(), &[], 0).unwrap();
+    let other = k
+        .add(load_wasm(&counter(4), &hal).unwrap(), &[], 0)
+        .unwrap();
+
+    let out = |k: &Kernel<Module, Board>, h| k.get(h).unwrap().host().outputs[0].0;
+    let mut passes = 0;
+    for quantum in 1..=5u32 {
+        k.run_quantum(10).unwrap();
+        let now = out(&k, hung);
+        assert!(k.get(hung).unwrap().suspended(), "still in its first step");
+        assert!(now > passes, "the loop went on from where it stopped");
+        passes = now;
+        assert_eq!(out(&k, other), quantum, "the other module got its quantum");
+    }
+    // 10000 fuel per quantum; the first one also spent one at the start of `step` and one on
+    // the pass that yields (it finishes after resuming).
+    assert_eq!(passes, 5 * 10_000 - 2);
+}
+
+#[test]
+fn old_abi_is_refused_with_rebuild_hint() {
+    let err = load_wasm(&counter(3), &StubHal::default()).err().unwrap();
+    assert!(
+        err.contains("ABI 3") && err.contains("пересоберите модуль"),
+        "{err}"
+    );
 }

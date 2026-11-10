@@ -1,7 +1,7 @@
-//! Host ABI v3: modules that run on the PC in wasmi and on the board in the master firmware.
+//! Host ABI v4: modules that run on the PC in wasmi and on the board in the master firmware.
 //!
 //! Values are 32 bit: `bool` and `int` travel as `i32`, `float` as `f32` (see `specs/numeric-model`).
-//! Exports of a module: `abi_version() -> i32` (must be 3), `step(dt_ms: i32)`; optional
+//! Exports of a module: `abi_version() -> i32` (must be 4), `step(dt_ms: i32)`; optional
 //! `init()`, `alloc(len: i32) -> i32` (where the host puts message bytes) and
 //! `on_message(topic_ptr, topic_len, ptr, len)`.
 //!
@@ -13,9 +13,9 @@
 use std::collections::HashMap;
 
 use crab_kernel::abi::{self, id};
-use crab_kernel::engine::{Engine, Instance, Limits};
+use crab_kernel::engine::{Engine, Instance, Limits, Run};
 use crab_kernel::host::{Devices, Mem, ModuleHost, Val};
-use crab_kernel::kernel::{deliver_message, step_module};
+use crab_kernel::kernel::{deliver_message, step_to_end};
 use crab_kernel::lease::NoHal;
 use crab_kernel::wasmi::{Wasmi, WasmiInstance};
 use serde::Deserialize;
@@ -55,7 +55,7 @@ impl Manifest {
             toml::from_str(text).map_err(|e| format!("манифест модуля не разобран: {e}"))?;
         if manifest.abi != ABI_VERSION {
             return Err(format!(
-                "манифест требует ABI {}, поддерживается {ABI_VERSION}",
+                "манифест требует ABI {}, поддерживается {ABI_VERSION}: пересоберите модуль",
                 manifest.abi
             ));
         }
@@ -174,7 +174,11 @@ pub struct StubIo {
 
 type Host = ModuleHost<StubIo>;
 
-/// A loaded ABI v3 module with its state: a kernel instance on the stub hardware.
+/// Yields one step of a module alone may make: with the default budget that is over a million
+/// loop passes, far beyond any real step.
+pub const MAX_YIELDS: u32 = 100;
+
+/// A loaded ABI v4 module with its state: a kernel instance on the stub hardware.
 pub struct McuModule {
     inner: WasmiInstance<Host>,
 }
@@ -188,8 +192,16 @@ impl Instance<Host> for McuModule {
         self.inner.host_mut()
     }
 
-    fn call_step(&mut self, dt_ms: u32) -> Result<(), String> {
+    fn call_step(&mut self, dt_ms: u32) -> Result<Run, String> {
         self.inner.call_step(dt_ms)
+    }
+
+    fn resume(&mut self) -> Result<Run, String> {
+        self.inner.resume()
+    }
+
+    fn suspended(&self) -> bool {
+        self.inner.suspended()
     }
 
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {
@@ -220,9 +232,10 @@ impl McuModule {
         Ok(Self { inner })
     }
 
-    /// One step of `dt_ms` milliseconds; the stub clock advances first.
+    /// One whole step of `dt_ms` milliseconds; the stub clock advances first. A module alone
+    /// is resumed at once when it yields; after [`MAX_YIELDS`] yields it counts as hung.
     pub fn step(&mut self, dt_ms: u32) -> Result<(), String> {
-        step_module(self, dt_ms)
+        step_to_end(self, dt_ms, MAX_YIELDS)
     }
 
     /// Hands a message to the module if it subscribed to `topic`; returns whether it was delivered.

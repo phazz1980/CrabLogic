@@ -10,7 +10,7 @@
 //   force <name> <idx> <i|f> <val>   show <val> as output idx of a module built with watch (idx < 128)
 //   unforce <name> <idx|all>         release forced outputs
 //   out <name> <n>                   first n (<=128) outputs as 32-bit words in hex (8 digits each)
-// Values are 4-byte words (ABI 3): the bits of an i32 (bool, int) or of an f32 (float).
+// Values are 4-byte words (ABI 4): the bits of an i32 (bool, int) or of an f32 (float).
 //   swap <name>      reload the module from the flash      list      stats      log      del <name>
 //   ev <name>        changes of 0/1 outputs since the last `ev`: `ev <name> <now_ms> <lost> <idx>:<val>:<ms> ...`
 //   rmax             forget the longest step / period of all modules
@@ -312,6 +312,13 @@ m3ApiRawFunction(h_output_f) {
     s->outputs[i] = bitsOf(v);
   }
   m3ApiReturn(v);
+}
+// ABI 4: the module calls this when its fuel counter runs out. wasm3 cannot suspend a call, so the
+// budget comes back at once; a hung step is still caught by the step watchdog.
+static constexpr int32_t kYieldBudget = 10000;
+m3ApiRawFunction(h_yield) {
+  m3ApiReturnType(int32_t);
+  m3ApiReturn(kYieldBudget);
 }
 m3ApiRawFunction(h_log) {
   m3ApiGetArg(int32_t, p);
@@ -2505,6 +2512,7 @@ static void linkAll(Slot &s, IM3Module m) {
   L("output_i", "i(ii)", h_output_i);
   L("output_f", "f(if)", h_output_f);
   L("log", "v(ii)", h_log);
+  L("yield", "i()", h_yield);
   L("tag_get_i", "i(i)", h_tag_get_i);
   L("tag_get_f", "f(i)", h_tag_get_f);
   L("tag_set_i", "v(ii)", h_tag_set_i);
@@ -2661,8 +2669,8 @@ static bool loadRuntime(Slot &s) {
   }
   IM3Function av;
   int32_t ver = -1;
-  if (m3_FindFunction(&av, s.rt, "abi_version") || m3_CallV(av) || m3_GetResultsV(av, &ver) || ver != 3) {
-    jlog(s.name, "нужен abi_version() = 3 (получено %d)", (int)ver);
+  if (m3_FindFunction(&av, s.rt, "abi_version") || m3_CallV(av) || m3_GetResultsV(av, &ver) || ver != 4) {
+    jlog(s.name, "модуль собран для ABI %d, нужен 4: пересоберите модуль", (int)ver);
     return false;
   }
   // Everything is compiled now: the module task never runs the compiler, so its stack stays small.
@@ -3289,7 +3297,7 @@ static void cmdLine(String line) {
     Serial.printf("id=%s\n", CRAB_MASTER_ID);
 #endif
     // What this master can do for modules beyond its first version (crab-codegen MASTER_CAPS).
-    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console,flashmod,on_fault"
+    Serial.println("modcaps=math,retain,tag_text,retain_text,uart_format,pcf_expander,uart_console,flashmod,on_fault,abi4"
 #ifdef CRAB_MQTT
       ",sparkplug"
 #endif

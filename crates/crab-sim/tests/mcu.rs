@@ -1,4 +1,4 @@
-//! ABI v3: tags, bus, permissions and the version check, on WAT modules.
+//! ABI v4: tags, bus, permissions and the version check, on WAT modules.
 
 use crab_sim::mcu::{Manifest, McuModule, Word};
 
@@ -34,7 +34,7 @@ fn tags_are_shared_with_the_host() {
         r#"(module
             (import "crab" "tag_get_f" (func $get (param i32) (result f32)))
             (import "crab" "tag_set_f" (func $set (param i32 f32)))
-            (func (export "abi_version") (result i32) i32.const 3)
+            (func (export "abi_version") (result i32) i32.const 4)
             (func (export "step") (param i32)
                 (call $set (i32.const 2) (f32.mul (call $get (i32.const 1)) (f32.const 2)))))"#,
         &[],
@@ -53,7 +53,7 @@ const BUS: &str = r#"(module
     (data (i32.const 0) "ping")
     (data (i32.const 4) "pong")
     (global $heap (mut i32) (i32.const 1024))
-    (func (export "abi_version") (result i32) i32.const 3)
+    (func (export "abi_version") (result i32) i32.const 4)
     (func (export "init") (call $subscribe (i32.const 0) (i32.const 4)))
     (func (export "alloc") (param $n i32) (result i32)
         (global.get $heap)
@@ -85,7 +85,7 @@ fn hardware_import_needs_permission() {
 #[test]
 fn unknown_import_is_named() {
     let err = load(
-        r#"(module (import "crab" "reboot" (func)) (func (export "abi_version") (result i32) i32.const 3)
+        r#"(module (import "crab" "reboot" (func)) (func (export "abi_version") (result i32) i32.const 4)
             (func (export "step") (param i32)))"#,
         &[],
     )
@@ -108,6 +108,40 @@ fn wrong_or_missing_abi_version_is_rejected() {
         .err()
         .unwrap();
     assert!(err.contains("abi_version"), "{err}");
+    // A module built before ABI 4 (no fuel counter) has to be rebuilt.
+    let err = load(
+        r#"(module (func (export "abi_version") (result i32) i32.const 3)
+            (func (export "step") (param i32)))"#,
+        &[],
+    )
+    .err()
+    .unwrap();
+    assert!(err.contains("пересоберите модуль"), "{err}");
+    assert!(Manifest::parse("abi = 3")
+        .unwrap_err()
+        .contains("пересоберите модуль"));
+}
+
+/// A step that never ends yields on its fuel; the simulator of one sheet resumes it a bounded
+/// number of times and then reports the module as hung.
+#[test]
+fn endless_loop_is_reported() {
+    let mut m = load(
+        r#"(module
+            (import "crab" "yield" (func $yield (result i32)))
+            (global $fuel (mut i32) (i32.const 10000))
+            (func (export "abi_version") (result i32) i32.const 4)
+            (func (export "step") (param i32)
+                (loop $l
+                    (global.set $fuel (i32.sub (global.get $fuel) (i32.const 1)))
+                    (if (i32.lt_s (global.get $fuel) (i32.const 1))
+                        (then (global.set $fuel (call $yield))))
+                    br $l)))"#,
+        &[],
+    )
+    .unwrap();
+    let err = m.step(10).unwrap_err();
+    assert!(err.contains("слишком долго"), "{err}");
 }
 
 #[test]

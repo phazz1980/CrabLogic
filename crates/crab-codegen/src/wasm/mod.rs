@@ -1,4 +1,4 @@
-//! A sheet of the schema as an ABI v3 WASM module, written straight with `wasm-encoder`.
+//! A sheet of the schema as an ABI v4 WASM module, written straight with `wasm-encoder`.
 //!
 //! Values are 32 bit, as in the numeric model (`specs/numeric-model`): `bool` and `int` are `i32`
 //! (wrapping), `float` is `f32`, `now` is an `i32` of milliseconds that wraps; so a module gives
@@ -46,9 +46,18 @@ const TAG_SET_I: u32 = 2;
 const TAG_SET_F: u32 = 3;
 const OUTPUT_I: u32 = 4;
 const OUTPUT_F: u32 = 5;
+/// `crab.yield() -> i32` (ABI 4): the work counter ran out; the host may suspend the module and
+/// returns the next budget.
+const YIELD: u32 = 6;
 /// Imports every module declares; the hardware ones follow.
-const FIXED_IMPORTS: u32 = 6;
+const FIXED_IMPORTS: u32 = 7;
 const GLOBAL_NOW: u32 = 0;
+/// The work counter: one unit per `step` and per loop pass; at zero the module calls `crab.yield`.
+const GLOBAL_FUEL: u32 = 1;
+/// The counter a module starts with, before the host gives the first budget.
+const FUEL_START: i32 = 10_000;
+/// The ABI the emitted modules speak (`abi_version`, `abi` in the manifest).
+const ABI_VERSION: i32 = 4;
 
 /// Hardware imports are numbered after the fixed ones once the used set is known; code is
 /// emitted with these placeholders (`HW_BASE + position in HW_NAMES`) and remapped in `finish`.
@@ -102,7 +111,7 @@ const F_LOCAL_BASE: u32 = 1000;
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 9] = [
+pub const MASTER_CAPS: [&str; 10] = [
     "math",
     "retain",
     "tag_text",
@@ -112,6 +121,8 @@ pub const MASTER_CAPS: [&str; 9] = [
     "uart_console",
     "sparkplug",
     "on_fault",
+    // ABI 4 (fuel counter and `crab.yield`): every module needs it.
+    "abi4",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
@@ -278,7 +289,13 @@ impl<'a, 'p> Emitter<'a, 'p> {
             module,
             table: program.tag_table(),
             code: Vec::new(),
-            globals: vec![Global { ty: Ty::I, bits: 0 }],
+            globals: vec![
+                Global { ty: Ty::I, bits: 0 },
+                Global {
+                    ty: Ty::I,
+                    bits: FUEL_START as u32,
+                },
+            ],
             signals: HashMap::new(),
             vars: HashMap::new(),
             str_vars: HashMap::new(),
@@ -758,6 +775,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
     }
 
     fn step_body(&mut self) -> Result<(), WasmError> {
+        self.fuel_check();
         self.op(I::GlobalGet(GLOBAL_NOW));
         self.op(I::LocalGet(0));
         self.op(I::I32Add);
@@ -793,6 +811,23 @@ impl<'a, 'p> Emitter<'a, 'p> {
         self.expander_flush();
         self.retain_save();
         Ok(())
+    }
+
+    /// One unit of work: the counter goes down and, when it runs out, `crab.yield` gives the next
+    /// budget (the host may suspend the module there). Emitted at the start of `step` and at the
+    /// top of every loop, so a loop that never ends still lets the other modules run.
+    fn fuel_check(&mut self) {
+        self.op(I::GlobalGet(GLOBAL_FUEL));
+        self.c_i(1);
+        self.op(I::I32Sub);
+        self.op(I::GlobalSet(GLOBAL_FUEL));
+        self.op(I::GlobalGet(GLOBAL_FUEL));
+        self.c_i(1);
+        self.op(I::I32LtS);
+        self.op(I::If(BlockType::Empty));
+        self.op(I::Call(YIELD));
+        self.op(I::GlobalSet(GLOBAL_FUEL));
+        self.op(I::End);
     }
 
     /// Writes an output block: `store` runs only when `en` allows.
@@ -883,6 +918,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         imports.import("crab", "tag_set_f", EntityType::Function(3));
         imports.import("crab", "output_i", EntityType::Function(7));
         imports.import("crab", "output_f", EntityType::Function(8));
+        imports.import("crab", "yield", EntityType::Function(4));
         // Hardware imports follow in placeholder order; defined functions come after them.
         let used: Vec<u32> = self.hw.iter().copied().collect();
         let mut allow = Vec::new();
@@ -969,7 +1005,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
         exports.export("init", ExportKind::Func, first + 2);
 
         let mut abi = Function::new([]);
-        abi.instruction(&I::I32Const(3)).instruction(&I::End);
+        abi.instruction(&I::I32Const(ABI_VERSION))
+            .instruction(&I::End);
 
         // `step` runs the first piece and calls the rest, each a function of its own with the same locals.
         let mut locals = vec![ValType::I32; self.peak_i as usize];
@@ -1132,7 +1169,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         });
 
         let mut manifest = format!(
-            "name = \"{}\"\nabi = 3\nallow = [{}]\n",
+            "name = \"{}\"\nabi = {ABI_VERSION}\nallow = [{}]\n",
             self.module.name,
             allow.join(", ")
         );
@@ -1154,6 +1191,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             .map(str::to_owned)
             .collect();
         needs.extend(self.extras.iter().map(|n| (*n).to_owned()));
+        needs.push("abi4".to_owned());
         needs.sort();
         WasmModule {
             name: self.module.name.clone(),
