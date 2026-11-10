@@ -274,3 +274,45 @@ fn old_abi_is_refused_with_rebuild_hint() {
         "{err}"
     );
 }
+
+const PIN_A: &str = "(call $gw (i32.const 2) (i32.const 1))";
+
+#[test]
+fn inherited_leases_the_new_version_does_not_drive_end_after_first_step() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let both = format!("{PIN_A}\n{B}");
+    let old = k.add(load(&hal, &both), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+
+    let new = k.swap(old, load(&hal, PIN_A), &[], 0).unwrap();
+    assert!(hal.take().is_empty(), "the swap itself changes no output");
+    assert!(k.get(new).unwrap().host().leases.holds(8));
+
+    k.run_quantum(10).unwrap();
+    assert_eq!(hal.take(), vec![(8, PinUse::Out, Fault::Low)]);
+    let leases = &k.get(new).unwrap().host().leases;
+    assert!(leases.holds(2) && !leases.holds(8) && leases.len() == 1);
+    k.run_quantum(10).unwrap();
+    assert!(hal.take().is_empty(), "released once");
+
+    // A version that drives both keeps both.
+    let new2 = k.swap(new, load(&hal, &both), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+    assert!(hal.take().is_empty());
+    assert_eq!(k.get(new2).unwrap().host().leases.len(), 2);
+}
+
+#[test]
+fn holder_of_finds_the_other_module() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let a = k.add(load(&hal, PIN_A), &[], 0).unwrap();
+    let b = k.add(load(&hal, &format!("{PIN_A}\n{B}")), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+    assert_eq!(k.holder_of(2, a), Some(b));
+    assert_eq!(k.holder_of(2, b), Some(a));
+    assert_eq!(k.holder_of(8, b), None, "only the module itself");
+    assert_eq!(k.holder_of(8, a), Some(b));
+    assert_eq!(k.holder_of(9, a), None);
+}

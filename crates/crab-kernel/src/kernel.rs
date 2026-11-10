@@ -3,7 +3,8 @@
 //! Life cycle: [`Kernel::add`] (a module the engine has loaded) → [`Kernel::run_quantum`] →
 //! [`Kernel::swap`] (the new instance is ready → the leases pass to it → the old one goes) →
 //! [`Kernel::unload`]. A trap ends every lease of the module (its outputs go to their safe
-//! state); the module stays and takes its outputs again when it next writes them.
+//! state); the module stays and takes its outputs again when it next writes them. Leases that
+//! passed to a new version at a swap end after its first full step unless it wrote those pins.
 //!
 //! A module that runs out of work units calls `crab.yield`: its `step` is suspended and the
 //! next quantum resumes it instead of starting a new one, so the other modules keep running.
@@ -172,15 +173,20 @@ where
     /// pauses, statistics). On an error the module's leases end.
     pub fn step(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
         let result = self.step_one(h, dt_ms);
-        if result.is_err() {
-            if let Some(m) = self.modules.get_mut(h) {
-                m.host_mut().leases.release();
+        if let Some(m) = self.modules.get_mut(h) {
+            match result {
+                Err(_) => m.host_mut().leases.release(),
+                // Only a step that ran to its end proves which pins the module drives.
+                Ok(Run::Done) if m.host().leases.has_inherited() => {
+                    m.host_mut().leases.release_inherited();
+                }
+                Ok(_) => {}
             }
         }
-        result
+        result.map(|_| ())
     }
 
-    fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
+    fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<Run, String> {
         // A module still in its last step gets the waiting messages before its next one.
         let suspended = self.modules.get(h).is_some_and(|m| m.suspended());
         let waiting = if suspended {
@@ -189,18 +195,18 @@ where
             self.bus.take(h)
         };
         let Some(m) = self.modules.get_mut(h) else {
-            return Ok(());
+            return Ok(Run::Done);
         };
         for (topic, data) in waiting {
             deliver_message(m, &topic, &data)?;
         }
-        step_module(m, dt_ms)?;
+        let run = step_module(m, dt_ms)?;
         let published = core::mem::take(&mut m.host_mut().published);
         self.note(h);
         for (topic, data) in published {
             self.bus.publish(&topic, data);
         }
-        Ok(())
+        Ok(run)
     }
 
     /// Delivers a message from the outside world as if a module had published it.
@@ -214,6 +220,17 @@ where
 
     pub fn get_mut(&mut self, h: Handle) -> Option<&mut I> {
         self.modules.get_mut(h)
+    }
+
+    /// Another module than `except` that holds a lease of `pin`, if any.
+    pub fn holder_of(&self, pin: u8, except: Handle) -> Option<Handle> {
+        self.order.iter().copied().find(|&h| {
+            h != except
+                && self
+                    .modules
+                    .get(h)
+                    .is_some_and(|m| m.host().leases.holds(pin))
+        })
     }
 
     /// Modules in scan order.

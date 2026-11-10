@@ -4,6 +4,10 @@
 //! The safe state comes from the block's `on_fault` (bits 9–10 of the pin number the emitter
 //! passes): 0 low, 1 high, 2 hold. Levels are physical (an inverted output already accounts
 //! for the inversion when the emitter computes the bits).
+//!
+//! At a module replacement the leases pass to the new version marked as inherited, so outputs do
+//! not glitch. The new module makes one its own by writing that pin; what it still has not
+//! written after its first full step is no longer driven and ends ([`Leases::release_inherited`]).
 
 use alloc::vec::Vec;
 
@@ -61,6 +65,8 @@ pub struct Lease<H: Hal> {
     pin: u8,
     use_: PinUse,
     fault: Fault,
+    /// Came from the previous version of the module and not written by this one yet.
+    inherited: bool,
     hal: H,
 }
 
@@ -105,12 +111,14 @@ impl<H: Hal> Leases<H> {
         if let Some(l) = self.held.iter_mut().find(|l| l.pin == pin) {
             l.use_ = use_;
             l.fault = fault;
+            l.inherited = false;
             return;
         }
         self.held.push(Lease {
             pin,
             use_,
             fault,
+            inherited: false,
             hal: self.hal.clone(),
         });
     }
@@ -137,9 +145,69 @@ impl<H: Hal> Leases<H> {
         self.held.clear();
     }
 
-    /// Hands every lease over to `other` (module replacement): no output changes.
+    /// Hands every lease over to `other` (module replacement): no output changes. The leases
+    /// stay inherited until `other` writes the pin.
     pub fn hand_over(&mut self, other: &mut Leases<H>) {
         other.release();
         other.held.append(&mut self.held);
+        for l in &mut other.held {
+            l.inherited = true;
+        }
+    }
+
+    /// Whether some lease is still only inherited (cheap check for the kernel's step).
+    pub fn has_inherited(&self) -> bool {
+        self.held.iter().any(|l| l.inherited)
+    }
+
+    /// Ends the leases still only inherited (the new version does not drive those pins);
+    /// returns how many. `Hold` ones just go, the pin stays as it is.
+    pub fn release_inherited(&mut self) -> usize {
+        let before = self.held.len();
+        self.held.retain(|l| !l.inherited);
+        before - self.held.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    #[derive(Clone, Default)]
+    struct Rec(Rc<RefCell<Vec<(u8, PinUse, Fault)>>>);
+
+    impl Hal for Rec {
+        fn safe(&self, pin: u8, use_: PinUse, fault: Fault) {
+            self.0.borrow_mut().push((pin, use_, fault));
+        }
+    }
+
+    #[test]
+    fn inherited_leases_end_unless_taken() {
+        let hal = Rec::default();
+        let mut old = Leases::new(hal.clone());
+        let mut new = Leases::new(hal.clone());
+        old.take(1, PinUse::Out, Fault::Low);
+        old.take(2, PinUse::Pwm, Fault::High);
+        old.take(3, PinUse::Out, Fault::Hold);
+        old.take(4, PinUse::Out, Fault::Low);
+        assert!(!old.has_inherited());
+
+        old.hand_over(&mut new);
+        assert!(old.is_empty() && new.has_inherited());
+        assert!(hal.0.borrow().is_empty());
+
+        new.take(4, PinUse::Out, Fault::Low);
+        assert_eq!(new.release_inherited(), 3);
+        assert!(!new.has_inherited());
+        assert_eq!(
+            *hal.0.borrow(),
+            [(1, PinUse::Out, Fault::Low), (2, PinUse::Pwm, Fault::High)],
+            "hold gives no safe call"
+        );
+        assert!(new.holds(4) && !new.holds(1) && !new.holds(3));
+        assert_eq!(new.release_inherited(), 0);
     }
 }

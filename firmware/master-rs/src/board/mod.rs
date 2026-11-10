@@ -5,6 +5,8 @@
 //! One thread does everything in turn: reads the port, moves an upload one step further (a
 //! flash sector erased or a chunk written), scans the modules. Nothing is printed on its own:
 //! every line is an answer to a command, module errors wait in the journal (`log`).
+//! A module whose step failed stops (its outputs are safe) and starts again from its stored
+//! image after a growing pause (`restart`).
 //!
 //! Commands: `put`, `list`, `info`, `tick`, `del`, `swap`, `reset`, `rmax`, `log`; live
 //! data of a module: `in`, `param`, `out`, `ev`, `force`, `unforce`, `pins`.
@@ -26,6 +28,7 @@ use crab_master_rs::protocol::{
     format_events, format_outputs, format_pin, parse_command, Command, Event, Input, ParseError,
     MAX_SLOTS,
 };
+use crab_master_rs::restart::Restart;
 use crab_master_rs::storage::{crc32_update, Area, Meta, Storage, SECTOR};
 use crab_master_rs::wamr::{crab_mem, ExecutionMode};
 use esp_idf_svc::sys;
@@ -80,7 +83,10 @@ struct Slot {
     last_step: Option<Instant>,
     /// Heap the instance took when it was loaded.
     heap: u32,
-    last_error: String,
+    /// When a failed module starts again.
+    restart: Restart,
+    /// Pins already reported as held by another module (once per pin).
+    shared_pins: Vec<u8>,
 }
 
 impl Slot {
@@ -98,7 +104,8 @@ impl Slot {
             sum_us: 0,
             last_step: None,
             heap,
-            last_error: String::new(),
+            restart: Restart::new(),
+            shared_pins: Vec::new(),
         }
     }
 }
@@ -162,7 +169,7 @@ impl Master {
             .map(|a| (a.meta.name.clone(), a.at))
             .collect();
         for (name, at) in stored {
-            if let Err(e) = master.start(at) {
+            if let Err(e) = master.start(at, true) {
                 master.log(&name, &e);
                 master.slots.push(Slot::new(name, at, None, 0));
             }
@@ -212,7 +219,9 @@ impl Master {
 
     /// Starts the module of the area at `at`. A running module with the same name is replaced
     /// without touching its outputs; if the new one does not start, the old one keeps running.
-    fn start(&mut self, at: usize) -> Result<(), String> {
+    /// `by_hand` (upload, `swap`, `reset`, boot) starts the restart policy afresh; a restart by
+    /// the policy keeps its pause growth, fault count, pause flag and reported pins.
+    fn start(&mut self, at: usize, by_hand: bool) -> Result<(), String> {
         let area = self
             .storage
             .area(at)
@@ -224,7 +233,21 @@ impl Master {
             Some(old) => self.kernel.swap(old, module, &[], 0)?,
             None => self.kernel.add(module, &[], 0)?,
         };
-        let slot = Slot::new(area.meta.name, at, Some(handle), heap);
+        let mut slot = Slot::new(area.meta.name, at, Some(handle), heap);
+        let now = devices::uptime_ms();
+        if let Some(old) = index.map(|i| &mut self.slots[i]) {
+            slot.restart = core::mem::take(&mut old.restart);
+            if !by_hand {
+                slot.faults = old.faults;
+                slot.paused = old.paused;
+                slot.shared_pins = core::mem::take(&mut old.shared_pins);
+            }
+        }
+        if by_hand {
+            slot.restart.started_by_hand(now);
+        } else {
+            slot.restart.started(now);
+        }
         match index {
             Some(i) => self.slots[i] = slot,
             None => self.slots.push(slot),
@@ -232,12 +255,14 @@ impl Master {
         Ok(())
     }
 
-    /// One step of a module with its statistics; an error goes to the journal once.
+    /// One step of a module with its statistics. An error stops the module until its restart,
+    /// so every error goes to the journal (at most one per pause).
     fn step(&mut self, index: usize, dt_ms: u32) -> bool {
         let Some(handle) = self.slots[index].handle else {
             return false;
         };
         let begin = Instant::now();
+        let leases_before = self.kernel.get(handle).map_or(0, |m| m.host().leases.len());
         if let Some(m) = self.kernel.get_mut(handle) {
             m.host_mut().now_ms = devices::millis() as u32;
         }
@@ -248,6 +273,29 @@ impl Master {
             .get_mut(handle)
             .map(|m| core::mem::take(&mut m.host_mut().log))
             .unwrap_or_default();
+        // Pins this step took: reported once when another module holds them too.
+        let mut taken = Vec::new();
+        if let Some(m) = self.kernel.get(handle) {
+            let leases = &m.host().leases;
+            if leases.len() > leases_before {
+                taken = leases.iter().map(|l| l.pin()).collect();
+            }
+        }
+        let shared: Vec<(u8, Handle)> = taken
+            .into_iter()
+            .filter(|p| !self.slots[index].shared_pins.contains(p))
+            .filter_map(|p| Some((p, self.kernel.holder_of(p, handle)?)))
+            .collect();
+        let mut news = Vec::new();
+        for (pin, other) in shared {
+            let owner = self
+                .slots
+                .iter()
+                .find(|s| s.handle == Some(other))
+                .map_or("?", |s| s.name.as_str());
+            news.push(format!("пин {pin} уже занят модулем «{owner}»"));
+            self.slots[index].shared_pins.push(pin);
+        }
         let slot = &mut self.slots[index];
         if let Some(last) = slot.last_step.replace(begin) {
             let period = begin.duration_since(last).as_micros() as u32;
@@ -257,27 +305,50 @@ impl Master {
         slot.last_us = us;
         slot.max_us = slot.max_us.max(us);
         slot.sum_us = slot.sum_us.wrapping_add(us);
-        let name = slot.name.clone();
-        let mut news = None;
         if let Err(e) = &result {
             slot.faults = slot.faults.wrapping_add(1);
-            if slot.last_error != *e {
-                slot.last_error = e.clone();
-                news = Some(e.clone());
-            }
+            let pause = slot.restart.failed(devices::uptime_ms());
+            news.push(format!(
+                "ошибка шага: {e}; перезапуск через {} с",
+                pause.div_ceil(1000)
+            ));
         }
-        for line in lines {
+        let name = slot.name.clone();
+        for line in lines.into_iter().chain(news) {
             self.log(&name, &line);
-        }
-        if let Some(e) = news {
-            self.log(&name, &e);
         }
         result.is_ok()
     }
 
+    /// A fresh instance of a module whose pause is over.
+    fn restart_failed(&mut self, index: usize, now: u64) {
+        let name = self.slots[index].name.clone();
+        match self.start(self.slots[index].at, false) {
+            Ok(()) => self.log(&name, "перезапущен после ошибки"),
+            Err(e) => {
+                // `started` ends the wait, `failed` begins the next one with a longer pause:
+                // a module that does not start is not retried every scan.
+                let restart = &mut self.slots[index].restart;
+                restart.started(now);
+                let pause = restart.failed(now);
+                let text = format!(
+                    "не удалось перезапустить: {e}; повтор через {} с",
+                    pause.div_ceil(1000)
+                );
+                self.log(&name, &text);
+            }
+        }
+    }
+
     fn scan(&mut self, dt_ms: u32) {
         for i in 0..self.slots.len() {
-            if !self.slots[i].paused {
+            let now = devices::uptime_ms();
+            let restart = &self.slots[i].restart;
+            if restart.waiting() {
+                if restart.due(now) {
+                    self.restart_failed(i, now);
+                }
+            } else if !self.slots[i].paused {
                 self.step(i, dt_ms);
             }
         }
@@ -380,7 +451,7 @@ impl Master {
             return;
         }
         let begin = Instant::now();
-        let result = self.start(u.at);
+        let result = self.start(u.at, true);
         println!("swap_us={}", begin.elapsed().as_micros());
         match result {
             Ok(()) => {
@@ -421,7 +492,7 @@ impl Master {
             println!("err");
             return;
         };
-        match self.start(self.slots[index].at) {
+        match self.start(self.slots[index].at, true) {
             Ok(()) => println!("ok"),
             Err(e) => {
                 self.log(name, &e);
@@ -513,7 +584,7 @@ impl Master {
             println!("err no such module");
             return;
         };
-        match self.start(self.slots[index].at) {
+        match self.start(self.slots[index].at, true) {
             Ok(()) => println!("ok"),
             Err(e) => {
                 self.log(name, &e);
@@ -558,7 +629,10 @@ impl Master {
             return;
         }
         self.slots[index].paused = true;
-        let ok = self.slots[index].handle.is_some() && (0..count).all(|_| self.step(index, dt_ms));
+        // A module waiting for its restart has a broken instance: not stepped.
+        let ok = self.slots[index].handle.is_some()
+            && !self.slots[index].restart.waiting()
+            && (0..count).all(|_| self.step(index, dt_ms));
         println!("{}", if ok { "ok" } else { "err step failed" });
     }
 
@@ -577,9 +651,13 @@ impl Master {
             println!(
                 "{} {} steps={} restarts={} out0={:08x} us={}/{}/{}/{} qlost={} mem={} code={} wasm={} mode={} crc={:08x}",
                 s.name,
-                if s.handle.is_some() { "run" } else { "stop" },
+                if s.handle.is_some() && !s.restart.waiting() {
+                    "run"
+                } else {
+                    "stop"
+                },
                 s.steps,
-                s.faults,
+                s.restart.restarts(),
                 out0,
                 s.last_us,
                 s.max_us,

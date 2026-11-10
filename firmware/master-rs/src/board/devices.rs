@@ -27,6 +27,12 @@ pub fn millis() -> i32 {
     (unsafe { sys::esp_timer_get_time() } / 1000) as i32
 }
 
+/// Time since boot that does not wrap (`millis` is the 32-bit clock modules see).
+pub fn uptime_ms() -> u64 {
+    // SAFETY: no arguments, no state.
+    (unsafe { sys::esp_timer_get_time() } / 1000) as u64
+}
+
 /// The levels the pins are driven to (GPIO_OUT_REG of the ESP32-C3), bit per pin: what an
 /// output is set to, whatever is connected to it.
 pub fn out_register() -> u32 {
