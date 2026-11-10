@@ -1,0 +1,4 @@
+# ESP-IDF and its tools (downloaded by esp-idf-sys), WAMR sources and wamrc (see README)
+/.embuild/
+/.deps/
+/target/

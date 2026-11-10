@@ -1,0 +1,23 @@
+# Read only when cargo runs from this folder (the board build). Desktop tests run from the
+# repository root with `--manifest-path` and do not see this file.
+[build]
+target = "riscv32imc-esp-espidf"
+# esp-idf-sys refuses long output paths on Windows, so the target folder sits at the root under a two-letter name (limit: 88 characters for the out dir).
+target-dir = "../../.m"
+
+[target.riscv32imc-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor --partition-table partitions.csv"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32c3"
+ESP_IDF_VERSION = "v5.3.3"
+# esp-idf-sys takes the folder above the target folder for the workspace; point it back here,
+# or `package.metadata.esp-idf-sys` of this crate (WAMR component, sdkconfig) is not read.
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+# ESP-IDF and its tools: at the repository root, again for short paths.
+ESP_IDF_TOOLS_INSTALL_DIR = "custom:../../.embuild/espressif"
