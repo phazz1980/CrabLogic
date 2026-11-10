@@ -284,6 +284,8 @@ struct Settings {
     /// Path to the zig compiler used for that.
     zig_path: Option<PathBuf>,
     w2c2_path: Option<PathBuf>,
+    /// Hand-installed `wamrc` (AOT compiler of modules); empty means "download on first use".
+    wamrc_path: Option<PathBuf>,
 }
 
 /// AI provider settings entered in the editor (see `aiconf`).
@@ -497,6 +499,19 @@ pub fn save_w2c2_path(path: &str) {
 /// The w2c2 that translates WASM firmware blocks: the setting, `CRAB_W2C2` or `PATH`.
 pub fn w2c2() -> Option<PathBuf> {
     crab_build::wasm_c::find_w2c2(load_settings().w2c2_path.as_deref())
+}
+
+/// Path to wamrc as entered in the settings; empty means "not set".
+pub fn wamrc_path() -> String {
+    load_settings()
+        .wamrc_path
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+pub fn save_wamrc_path(path: &str) {
+    let path = path.trim();
+    update_settings(|s| s.wamrc_path = (!path.is_empty()).then(|| PathBuf::from(path)));
 }
 
 pub fn auto_update() -> bool {

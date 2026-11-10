@@ -227,6 +227,7 @@ pub struct EditorApp {
     zig_status: String,
     w2c2_path: String,
     w2c2_status: String,
+    wamrc_path: String,
     /// Running release check; the flag tells whether the user asked for it.
     update_rx: Option<Receiver<(bool, Result<Check, String>)>>,
     /// When the last update check was started (periodic re-check while the editor stays open).
@@ -349,6 +350,7 @@ impl EditorApp {
             zig_status: String::new(),
             w2c2_path: theme::w2c2_path(),
             w2c2_status: String::new(),
+            wamrc_path: theme::wamrc_path(),
             auto_update: theme::auto_update(),
             update_rx: None,
             update_checked: Instant::now(),

@@ -116,14 +116,14 @@ enum Command {
         /// Модули сообщают значения всех выходов блоков (для отладки)
         #[arg(long)]
         watch: bool,
-        /// Залить модули на плату с мастер-прошивкой
+        /// Залить модули на плату с мастер-прошивкой (если мастер умеет AOT, модули компилируются в .aot)
         #[arg(long)]
         upload: bool,
         /// Порт платы, например COM3 (по умолчанию единственный найденный)
         #[arg(long, short)]
         port: Option<String>,
     },
-    /// Залить один WASM-модуль на плату с мастер-прошивкой (без сброса выходов и соседних модулей)
+    /// Залить один WASM-модуль на плату с мастер-прошивкой (без сброса выходов и соседних модулей); если мастер умеет AOT, модуль компилируется в .aot
     UploadWasm {
         /// Файл модуля .wasm; рядом может лежать module.toml с именем и правами
         file: PathBuf,
@@ -476,7 +476,7 @@ fn run_build(
     ExitCode::SUCCESS
 }
 
-/// Uploads one `.wasm` module to the master firmware over serial.
+/// Uploads one `.wasm` module to the master firmware over serial (as an AOT image if the master runs AOT).
 fn run_upload_wasm(
     file: &Path,
     name: Option<String>,
@@ -509,16 +509,20 @@ fn run_upload_wasm(
         .or_else(|| file.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .unwrap_or_default();
     let allow = allow.unwrap_or_else(|| manifest.map(|m| m.allow).unwrap_or_default());
-    push_module(&name, &wasm, &allow, &[], port)
+    let cache = file.parent().unwrap_or(Path::new("."));
+    push_module(&name, &wasm, &allow, &[], port, cache, None)
 }
 
-/// Sends one module to the master firmware over serial.
+/// Sends one module to the master firmware over serial: as an AOT image when the master runs AOT
+/// (built into `cache`, copied to `aot_copy` if given), otherwise as `.wasm` with a warning.
 fn push_module(
     name: &str,
     wasm: &[u8],
     allow: &[String],
     needs: &[String],
     port: Option<String>,
+    cache: &Path,
+    aot_copy: Option<&Path>,
 ) -> ExitCode {
     let failed = |message: String| {
         eprintln!("ошибка: {message}");
@@ -561,8 +565,51 @@ fn push_module(
             crab_build::mcu_module::OLD_STORAGE_MESSAGE
         );
     }
-    println!("Модуль «{name}» ({} байт) -> {port}...", wasm.len());
-    match crab_build::mcu_module::upload_module(&mut serial, name, wasm, allow) {
+    // No cancelling from the command line: Ctrl+C ends the process.
+    let never_cancelled = std::sync::atomic::AtomicBool::new(false);
+    let mut shown = 0;
+    let image = match crab_build::mcu_module::module_image(&info, wasm, cache, &mut || {
+        crab_build::wamrc::ensure(
+            None,
+            &never_cancelled,
+            &mut |line| println!("{line}"),
+            &mut |got, total| {
+                let percent = (got * 100).checked_div(total).unwrap_or(0);
+                if percent >= shown + 10 {
+                    shown = percent / 10 * 10;
+                    println!("  скачано {shown}%");
+                }
+            },
+        )
+    }) {
+        Ok(image) => image,
+        Err(e) => return failed(e.to_string()),
+    };
+    if let Some(warning) = &image.warning {
+        eprintln!("предупреждение: {warning}");
+    }
+    let uploaded = if image.aot {
+        println!(
+            "Модуль «{name}»: AOT {} байт (WASM {} байт) -> {port}...",
+            image.bytes.len(),
+            wasm.len()
+        );
+        if let Some(path) = aot_copy {
+            if let Err(e) = std::fs::write(path, &image.bytes) {
+                return failed(format!("не записан {}: {e}", path.display()));
+            }
+        }
+        match crab_build::mcu_module::module_memory(wasm) {
+            Some(mem) => {
+                crab_build::mcu_module::upload_image(&mut serial, name, &image.bytes, mem, allow)
+            }
+            None => Err(crab_build::mcu_module::ModuleUploadError::OldModule),
+        }
+    } else {
+        println!("Модуль «{name}» ({} байт) -> {port}...", wasm.len());
+        crab_build::mcu_module::upload_module(&mut serial, name, wasm, allow)
+    };
+    match uploaded {
         Ok(done) => {
             match done.swap_us {
                 Some(us) => println!("Модуль «{name}» залит и запущен (замена {} мс)", us / 1000),
@@ -575,7 +622,8 @@ fn push_module(
 }
 
 /// Builds the sheets of the project as WASM modules into `.crab/<project>/wasm/<name>/`
-/// (`<name>.wasm` + `module.toml`); with `upload` also sends them to the board.
+/// (`<name>.wasm` + `module.toml`); with `upload` also sends them to the board (AOT-compiled, with
+/// `<name>.aot` next to the `.wasm`, if the master runs AOT).
 fn run_gen_wasm(
     project_dir: &Path,
     library: Option<&Path>,
@@ -636,12 +684,15 @@ fn run_gen_wasm(
     }
     if upload {
         for (module, allow) in modules.iter().zip(&allows) {
+            let dir = project.work_dir().join("wasm").join(&module.name);
             let code = push_module(
                 &module.name,
                 &module.wasm,
                 allow,
                 &module.needs,
                 port.clone(),
+                &dir,
+                Some(&dir.join(format!("{}.aot", module.name))),
             );
             if code != ExitCode::SUCCESS {
                 return code;

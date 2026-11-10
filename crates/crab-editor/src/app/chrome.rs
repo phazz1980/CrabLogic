@@ -66,6 +66,21 @@ impl EditorApp {
         if !self.w2c2_status.is_empty() {
             ui.label(&self.w2c2_status);
         }
+        ui.horizontal(|ui| {
+            ui.label(crate::i18n::tr("Путь к wamrc (AOT-компилятор модулей):"))
+                .on_hover_text(crate::i18n::tr(
+                    "Пустое поле: wamrc скачается автоматически при первом использовании",
+                ));
+            if ui.text_edit_singleline(&mut self.wamrc_path).changed() {
+                theme::save_wamrc_path(&self.wamrc_path);
+            }
+            if ui.button(crate::i18n::tr("Обзор...")).clicked() {
+                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    self.wamrc_path = path.to_string_lossy().into_owned();
+                    theme::save_wamrc_path(&self.wamrc_path);
+                }
+            }
+        });
     }
 
     /// Opens the help window on `target` (`page` or `page#anchor`).

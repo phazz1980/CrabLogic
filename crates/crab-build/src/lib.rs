@@ -27,6 +27,7 @@ pub use master::{
 };
 pub mod mcu_module;
 mod output;
+pub mod wamrc;
 pub mod wasm;
 pub mod wasm_c;
 pub use output::{
@@ -339,6 +340,11 @@ impl BuildControl {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// The cancel flag itself, for code that polls a plain `AtomicBool` (the `wamrc` download).
+    pub fn cancel_flag(&self) -> &AtomicBool {
+        &self.cancel
     }
 
     fn raised(&self) -> bool {

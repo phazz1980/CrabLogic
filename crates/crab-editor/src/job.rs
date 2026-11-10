@@ -183,7 +183,7 @@ fn run(
         return precompile_master(project, lib, control, promotion, out);
     }
     if let JobKind::UploadModules { port } = &kind {
-        return upload_modules(port.as_deref(), project, lib, debug, out);
+        return upload_modules(port.as_deref(), project, lib, debug, &control, out);
     }
     // The upload puts the master on the board, with debugging on or off; the schema follows
     // as modules (debugging is a flag of the module build).
@@ -588,6 +588,7 @@ fn upload_modules(
     project: &Project,
     lib: &Library,
     watch: bool,
+    control: &BuildControl,
     out: &mut dyn FnMut(LogLevel, &str),
 ) -> Result<Done, String> {
     let project = &crab_codegen::prepare(project, lib);
@@ -647,14 +648,58 @@ fn upload_modules(
         let allow = crab_sim::mcu::Manifest::parse(&module.manifest)
             .map(|m| m.allow)
             .unwrap_or_default();
-        out(
-            LogLevel::Info,
-            &crate::i18n::fmt(
-                "Модуль «{0}» ({1} байт) -> {2}...",
-                &[&module.name, &module.wasm.len(), &port],
-            ),
-        );
-        crab_build::mcu_module::upload_module(&mut serial, &module.name, &module.wasm, &allow)
+        let image = crab_build::mcu_module::module_image(
+            &info,
+            &module.wasm,
+            &project.work_dir().join("aot"),
+            &mut || {
+                let wamrc = crate::theme::wamrc_path();
+                let manual = (!wamrc.is_empty()).then(|| std::path::PathBuf::from(wamrc));
+                let mut shown = 0;
+                // Both callbacks log; they never run at the same time.
+                let log = std::cell::RefCell::new(&mut *out);
+                crab_build::wamrc::ensure(
+                    manual.as_deref(),
+                    control.cancel_flag(),
+                    &mut |line| (log.borrow_mut())(LogLevel::Info, line),
+                    &mut |got, total| {
+                        let percent = (got * 100).checked_div(total).unwrap_or(0);
+                        if percent >= shown + 10 {
+                            shown = percent / 10 * 10;
+                            (log.borrow_mut())(
+                                LogLevel::Info,
+                                &crate::i18n::fmt("Скачано {0}%", &[&shown]),
+                            );
+                        }
+                    },
+                )
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(warning) = &image.warning {
+            out(LogLevel::Warning, warning);
+        }
+        if image.aot {
+            out(
+                LogLevel::Info,
+                &crate::i18n::fmt(
+                    "Модуль «{0}»: AOT {1} байт (WASM {2} байт) -> {3}...",
+                    &[&module.name, &image.bytes.len(), &module.wasm.len(), &port],
+                ),
+            );
+        } else {
+            out(
+                LogLevel::Info,
+                &crate::i18n::fmt(
+                    "Модуль «{0}» ({1} байт) -> {2}...",
+                    &[&module.name, &module.wasm.len(), &port],
+                ),
+            );
+        }
+        let mem = crab_build::mcu_module::module_memory(&module.wasm)
+            .ok_or(crab_build::mcu_module::ModuleUploadError::OldModule)
+            .map_err(|e| e.to_string())?;
+        crab_build::mcu_module::upload_image(&mut serial, &module.name, &image.bytes, mem, &allow)
             .map_err(|e| e.to_string())?;
     }
     Ok(Done {

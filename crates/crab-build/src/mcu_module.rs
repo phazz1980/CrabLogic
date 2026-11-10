@@ -1,4 +1,5 @@
-//! Uploading one `.wasm` module to the master firmware over a serial link.
+//! Uploading one module image (`.wasm`, or the `.aot` built from it) to the master firmware over a
+//! serial link. The master tells the kind by the magic of the image; the protocol is the same.
 //!
 //! Protocol (lines end with `\n`): `put <name> <len> <crc32 hex> <allow,list|-> mem=<bytes>`, the
 //! master answers `ready <chunk>`, then the bytes follow in chunks of up to `<chunk>`, each answered
@@ -7,7 +8,10 @@
 //! A master before that answers a bare `ready` and takes all the bytes at once.
 
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use crate::wamrc::{self, AotTarget, WamrcError};
 
 /// Longest module name the master accepts.
 pub const MAX_NAME: usize = 15;
@@ -21,7 +25,7 @@ pub enum ModuleUploadError {
     BadName(String),
     #[error("в списке прав недопустимое имя «{0}»")]
     BadAllow(String),
-    #[error("файл не похож на WASM-модуль (нет заголовка \\0asm)")]
+    #[error("файл не похож на модуль (нет заголовка \\0asm или \\0aot)")]
     NotWasm,
     #[error("ошибка связи с платой: {0}")]
     Io(#[from] io::Error),
@@ -77,13 +81,7 @@ pub fn module_memory(wasm: &[u8]) -> Option<u32> {
     None
 }
 
-/// Sends `wasm` to the master as module `name` with the hardware rights in `allow`.
-pub fn upload_module<P: Read + Write>(
-    port: &mut P,
-    name: &str,
-    wasm: &[u8],
-    allow: &[String],
-) -> Result<ModuleUploaded, ModuleUploadError> {
+fn check_name_and_allow(name: &str, allow: &[String]) -> Result<(), ModuleUploadError> {
     let valid_ident = |s: &str| {
         !s.is_empty()
             && s.len() <= MAX_NAME
@@ -96,10 +94,38 @@ pub fn upload_module<P: Read + Write>(
     if let Some(bad) = allow.iter().find(|a| !valid_ident(a)) {
         return Err(ModuleUploadError::BadAllow(bad.clone()));
     }
+    Ok(())
+}
+
+/// Sends `wasm` to the master as module `name` with the hardware rights in `allow`.
+pub fn upload_module<P: Read + Write>(
+    port: &mut P,
+    name: &str,
+    wasm: &[u8],
+    allow: &[String],
+) -> Result<ModuleUploaded, ModuleUploadError> {
+    // Same order of errors as before: name, rights, header, memory section.
+    check_name_and_allow(name, allow)?;
     if !wasm.starts_with(b"\0asm") {
         return Err(ModuleUploadError::NotWasm);
     }
     let mem = module_memory(wasm).ok_or(ModuleUploadError::OldModule)?;
+    upload_image(port, name, wasm, mem, allow)
+}
+
+/// Sends a ready image (`.wasm` or the `.aot` built from it) to the master as module `name`.
+/// `mem` is the memory the module needs (`module_memory` of its `.wasm`).
+pub fn upload_image<P: Read + Write>(
+    port: &mut P,
+    name: &str,
+    image: &[u8],
+    mem: u32,
+    allow: &[String],
+) -> Result<ModuleUploaded, ModuleUploadError> {
+    check_name_and_allow(name, allow)?;
+    if !(image.starts_with(b"\0asm") || image.starts_with(b"\0aot")) {
+        return Err(ModuleUploadError::NotWasm);
+    }
     let rights = if allow.is_empty() {
         "-".to_owned()
     } else {
@@ -109,8 +135,8 @@ pub fn upload_module<P: Read + Write>(
     drain(port)?;
     let header = format!(
         "put {name} {} {:08x} {rights} mem={mem}\n",
-        wasm.len(),
-        crc32(wasm)
+        image.len(),
+        crc32(image)
     );
     port.write_all(header.as_bytes())?;
     port.flush()?;
@@ -138,7 +164,7 @@ pub fn upload_module<P: Read + Write>(
         // Each chunk waits for the master to write the one before into the flash.
         Some(chunk) => {
             let mut sent = 0;
-            for piece in wasm.chunks(chunk) {
+            for piece in image.chunks(chunk) {
                 port.write_all(piece)?;
                 port.flush()?;
                 sent += piece.len();
@@ -161,7 +187,7 @@ pub fn upload_module<P: Read + Write>(
         // In pieces: the native USB of an ESP32-C3 has a receive buffer of a few KB and drops what
         // does not fit when the master has not read yet (a module of 8 KB came out with a wrong CRC).
         None => {
-            for piece in wasm.chunks(UPLOAD_PIECE) {
+            for piece in image.chunks(UPLOAD_PIECE) {
                 port.write_all(piece)?;
                 port.flush()?;
                 std::thread::sleep(PIECE_PAUSE);
@@ -181,6 +207,51 @@ pub fn upload_module<P: Read + Write>(
     }
 }
 
+/// What goes to the board for one module.
+pub struct ModuleImage {
+    pub bytes: Vec<u8>,
+    /// AOT image; otherwise the `.wasm` itself.
+    pub aot: bool,
+    /// Why the module goes as `.wasm` although the master takes AOT (shown to the user as a warning).
+    pub warning: Option<String>,
+}
+
+/// Picks the image for a master: AOT when it runs AOT and the compiler is at hand, else the `.wasm`.
+/// `wamrc` is asked for the compiler only when there is no cached image (it may download it).
+/// The only error is `Cancelled`; any other failure falls back to the `.wasm` with a warning, so
+/// work does not stop without internet.
+pub fn module_image(
+    info: &MasterInfo,
+    wasm: &[u8],
+    cache: &Path,
+    wamrc: &mut dyn FnMut() -> Result<PathBuf, WamrcError>,
+) -> Result<ModuleImage, WamrcError> {
+    let plain = |warning| ModuleImage {
+        bytes: wasm.to_vec(),
+        aot: false,
+        warning,
+    };
+    let Some(target) = info.aot_target() else {
+        return Ok(plain(None));
+    };
+    let aot = |bytes| ModuleImage {
+        bytes,
+        aot: true,
+        warning: None,
+    };
+    if let Some(bytes) = wamrc::cached(wasm, target, cache) {
+        return Ok(aot(bytes));
+    }
+    let built = wamrc().and_then(|exe| wamrc::compile(&exe, wasm, target, cache));
+    match built {
+        Ok(bytes) => Ok(aot(bytes)),
+        Err(WamrcError::Cancelled) => Err(WamrcError::Cancelled),
+        Err(e) => Ok(plain(Some(format!(
+            "Модуль залит без AOT-компиляции и будет работать медленнее (в интерпретаторе): {e}"
+        )))),
+    }
+}
+
 /// What a master says about itself in the answer to `stats`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MasterInfo {
@@ -194,13 +265,25 @@ pub struct MasterInfo {
 }
 
 impl MasterInfo {
-    /// What of `needs` this master does not have, in the order of `needs`.
     /// A master before `specs/mcu-memory` keeps the modules in RAM (no `flashmod` in `modcaps=`): it
     /// still runs them, but has much less memory left; flashing the master again fixes it.
     pub fn keeps_modules_in_ram(&self) -> bool {
         !self.caps.iter().any(|c| c == "flashmod")
     }
 
+    /// The master runs AOT images (`aot` in `modcaps=`).
+    pub fn takes_aot(&self) -> bool {
+        self.caps.iter().any(|c| c == "aot")
+    }
+
+    /// CPU to build AOT images for: only when the master runs AOT and names its CPU, so an image
+    /// for another architecture is never built.
+    pub fn aot_target(&self) -> Option<AotTarget> {
+        let has = |cap: &str| self.caps.iter().any(|c| c == cap);
+        (has("aot") && has("rv32imc")).then_some(AotTarget::Riscv32Imc)
+    }
+
+    /// What of `needs` this master does not have, in the order of `needs`.
     pub fn missing_caps(&self, needs: &[String]) -> Vec<String> {
         needs
             .iter()
@@ -391,7 +474,8 @@ mod tests {
             if !self.sent_ready && self.written.ends_with(b"\n") {
                 self.sent_ready = true;
                 self.replies.extend(self.ready.clone());
-            } else if self.sent_ready && data.starts_with(b"\0asm") {
+            } else if self.sent_ready && (data.starts_with(b"\0asm") || data.starts_with(b"\0aot"))
+            {
                 self.replies.extend(self.done.clone());
             }
             Ok(data.len())
@@ -644,6 +728,151 @@ end
         assert!(!info("math,flashmod,retain").keeps_modules_in_ram());
         assert!(MasterInfo::default().keeps_modules_in_ram());
         assert!(OLD_STORAGE_MESSAGE.contains("Перезалейте мастер"));
+    }
+
+    #[test]
+    fn uploads_an_aot_image_with_its_own_length_and_crc() {
+        let aot = b"\0aot\x05\0\0\0some code bytes";
+        let mut port = Fake::new("ready\n", "ok\n");
+        let allow = vec!["gpio_write".to_owned()];
+        upload_image(&mut port, "blink", aot, 4096, &allow).unwrap();
+        let header = format!(
+            "put blink {} {:08x} gpio_write mem=4096\n",
+            aot.len(),
+            crc32(aot)
+        );
+        assert!(port.written.starts_with(header.as_bytes()));
+        assert!(port.written.ends_with(aot));
+    }
+
+    #[test]
+    fn upload_image_refuses_garbage_and_module_entry_refuses_aot() {
+        let mut port = Fake::new("ready\n", "ok\n");
+        assert!(matches!(
+            upload_image(&mut port, "m", b"hello world", 4096, &[]),
+            Err(ModuleUploadError::NotWasm)
+        ));
+        assert!(matches!(
+            upload_module(&mut port, "m", b"\0aot\x05\0\0\0", &[]),
+            Err(ModuleUploadError::NotWasm)
+        ));
+        assert!(port.written.is_empty());
+    }
+
+    #[test]
+    fn takes_aot_comes_from_modcaps() {
+        let info = |answer: &str| {
+            let mut port = StatsMaster {
+                answer: answer.as_bytes().to_vec(),
+                out: Default::default(),
+            };
+            wait_for_master_info(&mut port, Duration::from_secs(2)).unwrap()
+        };
+        assert!(info("modcaps=flashmod,abi4,aot\nend\n").takes_aot());
+        assert!(!info("modcaps=math,retain\nend\n").takes_aot());
+        assert!(!info("free=1 largest=1\nend\n").takes_aot());
+    }
+
+    fn info_with(caps: &[&str]) -> MasterInfo {
+        MasterInfo {
+            caps: caps.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn temp_cache(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("crab-image-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    const TINY_WASM: &[u8] = b"\0asm\x01\0\0\0";
+
+    #[test]
+    fn aot_target_needs_aot_and_cpu() {
+        assert_eq!(
+            info_with(&["aot", "rv32imc"]).aot_target(),
+            Some(AotTarget::Riscv32Imc)
+        );
+        assert_eq!(info_with(&["aot"]).aot_target(), None);
+        assert_eq!(info_with(&["rv32imc"]).aot_target(), None);
+        assert_eq!(info_with(&[]).aot_target(), None);
+    }
+
+    #[test]
+    fn image_is_wasm_when_master_cannot_aot() {
+        let cache = temp_cache("noaot");
+        for caps in [&["flashmod"][..], &["aot"][..]] {
+            let mut asked = false;
+            let image = module_image(&info_with(caps), TINY_WASM, &cache, &mut || {
+                asked = true;
+                Err(WamrcError::Cancelled)
+            })
+            .unwrap();
+            assert!(!asked);
+            assert!(!image.aot);
+            assert_eq!(image.bytes, TINY_WASM);
+            assert!(image.warning.is_none());
+        }
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn image_cache_hit_skips_compiler() {
+        let cache = temp_cache("hit");
+        let key = wamrc::cache_key(TINY_WASM, AotTarget::Riscv32Imc);
+        std::fs::write(cache.join(format!("{key}.aot")), b"\0aot cached").unwrap();
+        let mut asked = false;
+        let image = module_image(
+            &info_with(&["aot", "rv32imc"]),
+            TINY_WASM,
+            &cache,
+            &mut || {
+                asked = true;
+                Err(WamrcError::Cancelled)
+            },
+        )
+        .unwrap();
+        assert!(!asked);
+        assert!(image.aot);
+        assert_eq!(image.bytes, b"\0aot cached");
+        assert!(image.warning.is_none());
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn image_falls_back_to_wasm_with_warning() {
+        let cache = temp_cache("fallback");
+        let info = info_with(&["aot", "rv32imc"]);
+        let image = module_image(&info, TINY_WASM, &cache, &mut || {
+            Err(WamrcError::Download("нет сети".to_owned()))
+        })
+        .unwrap();
+        assert!(!image.aot);
+        assert_eq!(image.bytes, TINY_WASM);
+        let warning = image.warning.unwrap();
+        assert!(warning.contains("нет сети"), "{warning}");
+        assert!(warning.contains("медленнее"), "{warning}");
+
+        let missing = cache.join("no-such-wamrc.exe");
+        let image = module_image(&info, TINY_WASM, &cache, &mut || Ok(missing.clone())).unwrap();
+        assert!(!image.aot);
+        assert!(image.warning.is_some());
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn image_cancel_is_an_error() {
+        let cache = temp_cache("cancel");
+        let result = module_image(
+            &info_with(&["aot", "rv32imc"]),
+            TINY_WASM,
+            &cache,
+            &mut || Err(WamrcError::Cancelled),
+        );
+        assert!(matches!(result, Err(WamrcError::Cancelled)));
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]
