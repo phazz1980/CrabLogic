@@ -163,15 +163,21 @@ where
     /// The first error stops the scan; the failing module's leases end.
     pub fn run_quantum(&mut self, dt_ms: u32) -> Result<(), String> {
         for i in 0..self.order.len() {
-            let h = self.order[i];
-            if let Err(e) = self.step_one(h, dt_ms) {
-                if let Some(m) = self.modules.get_mut(h) {
-                    m.host_mut().leases.release();
-                }
-                return Err(e);
-            }
+            self.step(self.order[i], dt_ms)?;
         }
         Ok(())
+    }
+
+    /// One scan of one module, for a host that paces the modules itself (its own periods,
+    /// pauses, statistics). On an error the module's leases end.
+    pub fn step(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
+        let result = self.step_one(h, dt_ms);
+        if result.is_err() {
+            if let Some(m) = self.modules.get_mut(h) {
+                m.host_mut().leases.release();
+            }
+        }
+        result
     }
 
     fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<(), String> {
