@@ -22,9 +22,17 @@ fn write_pin(pin: u8, high: bool) {
     }
 }
 
-fn millis() -> i32 {
+pub fn millis() -> i32 {
     // SAFETY: no arguments, no state.
     (unsafe { sys::esp_timer_get_time() } / 1000) as i32
+}
+
+/// The levels the pins are driven to (GPIO_OUT_REG of the ESP32-C3), bit per pin: what an
+/// output is set to, whatever is connected to it.
+pub fn out_register() -> u32 {
+    const GPIO_OUT_REG: *const u32 = 0x6000_4004 as *const u32;
+    // SAFETY: a readable register of the chip; reading has no side effects.
+    unsafe { GPIO_OUT_REG.read_volatile() }
 }
 
 /// Puts outputs into their safe state when a lease ends.

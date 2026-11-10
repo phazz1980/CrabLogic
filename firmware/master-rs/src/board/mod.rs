@@ -5,6 +5,9 @@
 //! One thread does everything in turn: reads the port, moves an upload one step further (a
 //! flash sector erased or a chunk written), scans the modules. Nothing is printed on its own:
 //! every line is an answer to a command, module errors wait in the journal (`log`).
+//!
+//! Commands: `put`, `list`, `info`, `tick`, `del`, `swap`, `reset`, `rmax`, `log`; live
+//! data of a module: `in`, `param`, `out`, `ev`, `force`, `unforce`, `pins`.
 
 mod devices;
 mod engine;
@@ -16,9 +19,13 @@ use std::time::{Duration, Instant};
 
 use crab_kernel::engine::{Instance, Limits};
 use crab_kernel::handle::Handle;
-use crab_kernel::host::ModuleHost;
+use crab_kernel::host::{ModuleHost, Word};
+use crab_kernel::lease::{Fault, PinUse};
 use crab_kernel::Kernel;
-use crab_master_rs::protocol::{parse_command, Command, Event, Input};
+use crab_master_rs::protocol::{
+    format_events, format_outputs, format_pin, parse_command, Command, Event, Input, ParseError,
+    MAX_SLOTS,
+};
 use crab_master_rs::storage::{crc32_update, Area, Meta, Storage, SECTOR};
 use crab_master_rs::wamr::{crab_mem, ExecutionMode};
 use esp_idf_svc::sys;
@@ -107,6 +114,19 @@ struct Upload {
     received: usize,
     crc: u32,
     last_rx: Instant,
+}
+
+/// The answer to a line that did not parse, as the C++ master gives it.
+fn fallback(line: &str) -> &'static str {
+    match line.split(' ').next().unwrap_or("") {
+        "put" if line.len() > 3 => "bad put",
+        "tick" if line.len() > 4 => "bad tick",
+        "in" | "param" | "force" if line.contains(' ') => "bad index or type",
+        "unforce" if line.contains(' ') => "bad index",
+        "out" if line.contains(' ') => "bad count",
+        "ev" | "reset" if line.contains(' ') => "no such module",
+        _ => "unknown command",
+    }
 }
 
 struct Master {
@@ -218,6 +238,9 @@ impl Master {
             return false;
         };
         let begin = Instant::now();
+        if let Some(m) = self.kernel.get_mut(handle) {
+            m.host_mut().now_ms = devices::millis() as u32;
+        }
         let result = self.kernel.step(handle, dt_ms);
         let us = begin.elapsed().as_micros() as u32;
         let lines = self
@@ -407,6 +430,124 @@ impl Master {
         }
     }
 
+    /// The host of a running module.
+    fn host_of(&mut self, name: &str) -> Option<&mut ModuleHost<BoardDevices>> {
+        let handle = self.slots[self.slot(name)?].handle?;
+        Some(self.kernel.get_mut(handle)?.host_mut())
+    }
+
+    /// `in` and `param`: the editor sets a value of a module by its index.
+    fn set_word(&mut self, name: &str, index: usize, word: u32, param: bool) {
+        let Some(host) = self.host_of(name) else {
+            println!("err no such module");
+            return;
+        };
+        let words = if param {
+            &mut host.params
+        } else {
+            &mut host.inputs
+        };
+        // Empty by default; a module reads 0 beyond the end.
+        if words.len() < MAX_SLOTS {
+            words.resize(MAX_SLOTS, Word::default());
+        }
+        words[index] = Word(word);
+        println!("ok");
+    }
+
+    fn outputs(&mut self, name: &str, count: usize) {
+        let Some(host) = self.host_of(name) else {
+            println!("err no such module");
+            return;
+        };
+        let raw: Vec<u32> = host.outputs.iter().map(|w| w.0).collect();
+        println!("{}", format_outputs(&raw, count));
+        println!("ok");
+    }
+
+    fn events(&mut self, name: &str) {
+        let Some(host) = self.host_of(name) else {
+            println!("err no such module");
+            return;
+        };
+        let (events, lost) = host.take_events();
+        let events: Vec<(u8, u8, u32)> = events.iter().map(|e| (e.slot, e.value, e.ms)).collect();
+        println!(
+            "{}",
+            format_events(name, devices::millis() as u32, lost, &events)
+        );
+        println!("ok");
+    }
+
+    fn force(&mut self, name: &str, index: usize, word: u32) {
+        let Some(host) = self.host_of(name) else {
+            println!("err no such module");
+            return;
+        };
+        if host.force(index, Word(word)) {
+            println!("ok");
+        } else {
+            println!("err bad index or type");
+        }
+    }
+
+    /// `index` is `None` for all of them.
+    fn unforce(&mut self, name: &str, index: Option<usize>) {
+        let Some(host) = self.host_of(name) else {
+            println!("err no such module");
+            return;
+        };
+        match index {
+            Some(i) if !host.unforce(i) => println!("err bad index"),
+            Some(_) => println!("ok"),
+            None => {
+                host.unforce_all();
+                println!("ok");
+            }
+        }
+    }
+
+    /// A fresh instance from the stored image: state, forced values and the pause are gone.
+    fn reset(&mut self, name: &str) {
+        let Some(index) = self.slot(name).filter(|&i| self.slots[i].handle.is_some()) else {
+            println!("err no such module");
+            return;
+        };
+        match self.start(self.slots[index].at) {
+            Ok(()) => println!("ok"),
+            Err(e) => {
+                self.log(name, &e);
+                println!("err not started (see log)");
+            }
+        }
+    }
+
+    /// Outputs every running module holds, then the levels the pins are driven to.
+    fn pins(&self) {
+        let out = devices::out_register();
+        for s in &self.slots {
+            let Some(host) = s.handle.and_then(|h| self.kernel.get(h)).map(|m| m.host()) else {
+                continue;
+            };
+            for lease in host.leases.iter() {
+                let (pin, use_) = (lease.pin(), lease.use_());
+                let word = match use_ {
+                    PinUse::Out => "out",
+                    PinUse::Pwm => "pwm",
+                };
+                let fault = match lease.fault() {
+                    Fault::Low => "0",
+                    Fault::High => "1",
+                    Fault::Hold => "hold",
+                };
+                let level = (use_ == PinUse::Out && pin < 32).then(|| out >> pin & 1 != 0);
+                println!("{}", format_pin(pin, &s.name, word, fault, level));
+            }
+        }
+        println!("out={out:08x}");
+        println!("end");
+    }
+
     fn tick(&mut self, name: &str, count: u32, dt_ms: u32) {
         let Some(index) = self.slot(name) else {
             println!("err no such module");
@@ -453,9 +594,10 @@ impl Master {
             );
         }
         // What this master has of the features of the C++ one: step times, modules in flash,
-        // ABI 4; `aot` is its own: it takes XIP AOT images, built for the CPU named next to it
+        // ABI 4, output events (`ev`); `aot` is its own: it takes XIP AOT images, built for the CPU
+        // named next to it
         // (the editor does not compile for a CPU it does not see here).
-        println!("caps=us");
+        println!("caps=us,ev");
         println!("modcaps=flashmod,abi4,aot,{AOT_CPU}");
         // SAFETY: plain queries of the heap.
         let (largest, min) = unsafe {
@@ -516,6 +658,14 @@ impl Master {
                 }
                 println!("ok");
             }
+            Ok(Command::SetInput { name, index, word }) => self.set_word(&name, index, word, false),
+            Ok(Command::SetParam { name, index, word }) => self.set_word(&name, index, word, true),
+            Ok(Command::Outputs { name, count }) => self.outputs(&name, count),
+            Ok(Command::Events { name }) => self.events(&name),
+            Ok(Command::Force { name, index, word }) => self.force(&name, index, word),
+            Ok(Command::Unforce { name, index }) => self.unforce(&name, index),
+            Ok(Command::Reset { name }) => self.reset(&name),
+            Ok(Command::Pins) => self.pins(),
             Ok(Command::Log) => {
                 for (ms, text) in &self.journal {
                     println!("{ms} {text}");
@@ -523,9 +673,10 @@ impl Master {
                 println!("end");
             }
             // The answers the editor knows from the C++ master.
-            Err(_) if line.starts_with("put ") => println!("err bad put"),
-            Err(_) if line.starts_with("tick ") => println!("err bad tick"),
-            Err(_) => println!("err unknown command"),
+            Err(e @ (ParseError::BadIndexOrType | ParseError::BadIndex | ParseError::BadCount)) => {
+                println!("err {e}")
+            }
+            Err(_) => println!("err {}", fallback(line)),
         }
     }
 

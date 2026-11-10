@@ -4,7 +4,7 @@
 //! math, string tags) and takes the output leases; the hardware imports go to [`Devices`], which
 //! the board (or the PC stub) implements.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -16,6 +16,9 @@ use crate::lease::{Fault, Hal, Leases, PinUse};
 pub const MAX_LOG_LINES: usize = 200;
 pub const MAX_MESSAGE: usize = 4096;
 pub const MAX_TOPICS: usize = 32;
+/// Output events kept between takes: the C++ master's ring of 32 holds 31 (one cell tells full
+/// from empty).
+pub const MAX_EVENTS: usize = 31;
 
 /// A value crossing the ABI.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,6 +127,15 @@ pub trait Devices {
     fn tick(&mut self, _dt_ms: u32) {}
 }
 
+/// A 0/1 output that changed, for the debugger's timeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputEvent {
+    pub slot: u8,
+    pub value: u8,
+    /// Board time of the step that reported it.
+    pub ms: u32,
+}
+
 /// The state the host keeps for one module.
 pub struct ModuleHost<D: Devices> {
     pub inputs: Vec<Word>,
@@ -141,6 +153,12 @@ pub struct ModuleHost<D: Devices> {
     pub leases: Leases<D::Hal>,
     /// Time that passed while a `step` was suspended; the next `step` gets it on top of its own.
     pub missed_ms: u32,
+    /// Board time at the start of the current step; whoever runs the module sets it before the step.
+    pub now_ms: u32,
+    /// Forced value per output slot (the debugger overrides what the module reports).
+    forced: Vec<Option<Word>>,
+    events: VecDeque<OutputEvent>,
+    lost: u32,
     pub devices: D,
 }
 
@@ -157,19 +175,93 @@ impl<D: Devices> ModuleHost<D> {
             log: Vec::new(),
             leases: Leases::new(devices.hal()),
             missed_ms: 0,
+            now_ms: 0,
+            forced: vec![None; n_outputs],
+            events: VecDeque::new(),
+            lost: 0,
             devices,
         }
+    }
+
+    /// Makes the output `slot` report `value` whatever the module computes; false if out of range.
+    pub fn force(&mut self, slot: usize, value: Word) -> bool {
+        match self.forced.get_mut(slot) {
+            Some(f) => {
+                *f = Some(value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Ends forcing of `slot`; false if out of range.
+    pub fn unforce(&mut self, slot: usize) -> bool {
+        match self.forced.get_mut(slot) {
+            Some(f) => {
+                *f = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn unforce_all(&mut self) {
+        self.forced.fill(None);
+    }
+
+    pub fn forced(&self, slot: usize) -> Option<Word> {
+        self.forced.get(slot).copied().flatten()
+    }
+
+    /// The 0/1 output events since the last take (oldest first) and how many were dropped.
+    pub fn take_events(&mut self) -> (Vec<OutputEvent>, u32) {
+        (
+            self.events.drain(..).collect(),
+            core::mem::take(&mut self.lost),
+        )
+    }
+
+    /// `output_i`: the value the module must use (forced or its own), recording the change.
+    fn output_i(&mut self, slot: i32, v: i32) -> i32 {
+        let Some(i) = usize::try_from(slot)
+            .ok()
+            .filter(|&i| i < self.outputs.len())
+        else {
+            return v;
+        };
+        let v = self.forced[i].map_or(v, Word::as_int);
+        let (old, new) = (self.outputs[i].0, v as u32);
+        // Only 0/1 signals make events, like the C++ master.
+        if old != new && old <= 1 && new <= 1 && i < 256 {
+            if self.events.len() >= MAX_EVENTS {
+                self.lost = self.lost.saturating_add(1);
+            } else {
+                self.events.push_back(OutputEvent {
+                    slot: i as u8,
+                    value: new as u8,
+                    ms: self.now_ms,
+                });
+            }
+        }
+        self.outputs[i] = Word::int(v);
+        v
+    }
+
+    fn output_f(&mut self, slot: i32, v: f32) -> f32 {
+        let Some(i) = usize::try_from(slot)
+            .ok()
+            .filter(|&i| i < self.outputs.len())
+        else {
+            return v;
+        };
+        let v = self.forced[i].map_or(v, Word::as_float);
+        self.outputs[i] = Word::float(v);
+        v
     }
 }
 
 fn slot(slots: &[Word], i: i32) -> Word {
     slots.get(i as usize).copied().unwrap_or_default()
-}
-
-fn set_slot(slots: &mut [Word], i: i32, v: Word) {
-    if let Some(s) = slots.get_mut(i as usize) {
-        *s = v;
-    }
 }
 
 impl<D: Devices> Host for ModuleHost<D> {
@@ -183,14 +275,8 @@ impl<D: Devices> Host for ModuleHost<D> {
             id::INPUT_F => float(slot(&self.inputs, a(0)).as_float()),
             id::PARAM_I => int(slot(&self.params, a(0)).as_int()),
             id::PARAM_F => float(slot(&self.params, a(0)).as_float()),
-            id::OUTPUT_I => {
-                set_slot(&mut self.outputs, a(0), Word::int(a(1)));
-                int(a(1))
-            }
-            id::OUTPUT_F => {
-                set_slot(&mut self.outputs, a(0), Word::float(f(1)));
-                float(f(1))
-            }
+            id::OUTPUT_I => int(self.output_i(a(0), a(1))),
+            id::OUTPUT_F => float(self.output_f(a(0), f(1))),
             id::LOG => {
                 if let Some(bytes) = mem.read(a(0), a(1), 1024) {
                     if self.log.len() < MAX_LOG_LINES {
@@ -433,4 +519,135 @@ fn text_match(a: &[u8], b: &[u8], mode: i32, nocase: bool) -> bool {
             }
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lease::NoHal;
+
+    struct Dev;
+
+    impl Devices for Dev {
+        type Hal = NoHal;
+        fn hal(&self) -> NoHal {
+            NoHal
+        }
+        fn call(&mut self, _: usize, _: &[Val], _: Mem<'_>) -> Option<Val> {
+            None
+        }
+    }
+
+    fn host(n: usize) -> ModuleHost<Dev> {
+        ModuleHost::new(Dev, n)
+    }
+
+    fn out_i(h: &mut ModuleHost<Dev>, slot: i32, v: i32) -> i32 {
+        let r = h.call(id::OUTPUT_I, &[Val::I32(slot), Val::I32(v)], Mem::new(None));
+        r.unwrap().i()
+    }
+
+    fn out_f(h: &mut ModuleHost<Dev>, slot: i32, v: f32) -> f32 {
+        let r = h.call(id::OUTPUT_F, &[Val::I32(slot), Val::F32(v)], Mem::new(None));
+        r.unwrap().f()
+    }
+
+    fn ev(slot: u8, value: u8, ms: u32) -> OutputEvent {
+        OutputEvent { slot, value, ms }
+    }
+
+    #[test]
+    fn unforced_returns_and_stores() {
+        let mut h = host(2);
+        assert_eq!(out_i(&mut h, 0, 7), 7);
+        assert_eq!(h.outputs[0], Word::int(7));
+        assert_eq!(out_f(&mut h, 1, 1.5), 1.5);
+        assert_eq!(h.outputs[1], Word::float(1.5));
+    }
+
+    #[test]
+    fn forced_int_and_unforce() {
+        let mut h = host(3);
+        assert!(h.force(0, Word::int(9)));
+        assert!(h.force(1, Word::int(4)));
+        assert_eq!(h.forced(0), Some(Word::int(9)));
+        assert_eq!(out_i(&mut h, 0, 1), 9);
+        assert_eq!(h.outputs[0], Word::int(9));
+        assert!(h.unforce(0));
+        assert_eq!(h.forced(0), None);
+        assert_eq!(out_i(&mut h, 0, 1), 1);
+        assert_eq!(h.outputs[0], Word::int(1));
+        h.unforce_all();
+        assert_eq!(h.forced(1), None);
+        assert_eq!(out_i(&mut h, 1, 2), 2);
+    }
+
+    #[test]
+    fn forced_float() {
+        let mut h = host(1);
+        assert!(h.force(0, Word::float(2.5)));
+        assert_eq!(out_f(&mut h, 0, 1.0), 2.5);
+        assert_eq!(h.outputs[0], Word::float(2.5));
+        h.unforce(0);
+        assert_eq!(out_f(&mut h, 0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn out_of_range() {
+        let mut h = host(2);
+        assert!(!h.force(2, Word::int(1)));
+        assert!(!h.unforce(5));
+        assert_eq!(h.forced(2), None);
+        assert_eq!(out_i(&mut h, 2, 5), 5);
+        assert_eq!(out_i(&mut h, -1, 6), 6);
+        assert_eq!(out_f(&mut h, 9, 0.5), 0.5);
+        assert_eq!(h.outputs, vec![Word::default(); 2]);
+        assert_eq!(h.take_events(), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn events_of_bool_changes() {
+        let mut h = host(2);
+        for (ms, v) in [(10, 0), (20, 1), (30, 1), (40, 0)] {
+            h.now_ms = ms;
+            out_i(&mut h, 1, v);
+        }
+        assert_eq!(h.take_events(), (vec![ev(1, 1, 20), ev(1, 0, 40)], 0));
+        assert_eq!(h.take_events(), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn no_events_for_non_bool_or_float() {
+        let mut h = host(2);
+        out_i(&mut h, 0, 1);
+        h.take_events();
+        out_i(&mut h, 0, 5);
+        out_i(&mut h, 0, 1);
+        out_f(&mut h, 1, 1.0);
+        out_f(&mut h, 1, 0.0);
+        assert_eq!(h.take_events(), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn forced_slot_records_once() {
+        let mut h = host(1);
+        h.force(0, Word::int(1));
+        for ms in 0..3 {
+            h.now_ms = ms;
+            out_i(&mut h, 0, 0);
+        }
+        assert_eq!(h.take_events().0, vec![ev(0, 1, 0)]);
+    }
+
+    #[test]
+    fn ring_is_bounded() {
+        let mut h = host(1);
+        for k in 0..(MAX_EVENTS as i32 + 5) {
+            out_i(&mut h, 0, (k + 1) & 1);
+        }
+        let (events, lost) = h.take_events();
+        assert_eq!(events.len(), MAX_EVENTS);
+        assert_eq!(lost, 5);
+        assert_eq!(h.take_events().1, 0);
+    }
 }

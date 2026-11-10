@@ -4,10 +4,13 @@
 //! Lines end with `\n`. `put <name> <len> <crc32 hex> <allow,list|-> [mem=<bytes>]` is answered
 //! `ready <chunk>`; then the image follows in chunks of up to `<chunk>` bytes, each answered
 //! `ack <bytes so far>`; at the end `swap_us=<n>` and `ok`, or `err <reason>`.
+//!
+//! The debugger commands (`in`, `param`, `out`, `ev`, `force`, `unforce`, `reset`, `pins`) keep the
+//! C++ master's wording; `format_*` build the answer lines (the caller adds `ok` / `end`).
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt;
+use core::fmt::{self, Write as _};
 
 use crate::storage::{MAX_ALLOW, MAX_NAME};
 
@@ -43,7 +46,50 @@ pub enum Command {
     ResetMax,
     /// The journal of module errors.
     Log,
+    /// Sets input `index` of a module to the raw 32-bit `word`.
+    SetInput {
+        name: String,
+        index: usize,
+        word: u32,
+    },
+    /// Sets parameter `index` of a module to the raw 32-bit `word`.
+    SetParam {
+        name: String,
+        index: usize,
+        word: u32,
+    },
+    /// Reads the first `count` outputs of a module.
+    Outputs {
+        name: String,
+        count: usize,
+    },
+    /// Changes of 0/1 outputs since the previous `ev`.
+    Events {
+        name: String,
+    },
+    /// Forces output `index` to the raw 32-bit `word`.
+    Force {
+        name: String,
+        index: usize,
+        word: u32,
+    },
+    /// Releases one forced output; `index` is `None` for `all`.
+    Unforce {
+        name: String,
+        index: Option<usize>,
+    },
+    /// Restarts a module with cleared state.
+    Reset {
+        name: String,
+    },
+    /// The held pins.
+    Pins,
 }
+
+/// Inputs and parameters per module.
+pub const MAX_SLOTS: usize = 8;
+/// Outputs per module (force index `< 128`, `out` count `<= 128`).
+pub const MAX_OUTPUTS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
@@ -55,6 +101,10 @@ pub enum ParseError {
     InvalidName,
     InvalidAllow,
     TooManyArguments,
+    /// Index out of range, or the type is not `i`/`f`.
+    BadIndexOrType,
+    BadIndex,
+    BadCount,
 }
 
 impl fmt::Display for ParseError {
@@ -68,6 +118,10 @@ impl fmt::Display for ParseError {
             Self::InvalidName => "неверное имя модуля",
             Self::InvalidAllow => "неверный список прав",
             Self::TooManyArguments => "лишние аргументы",
+            // The editor matches these words of the C++ master.
+            Self::BadIndexOrType => "bad index or type",
+            Self::BadIndex => "bad index",
+            Self::BadCount => "bad count",
         };
         f.write_str(text)
     }
@@ -103,6 +157,47 @@ fn no_more<'a>(args: &mut impl Iterator<Item = &'a str>) -> Result<(), ParseErro
     } else {
         Ok(())
     }
+}
+
+/// `<idx> <i|f> <value>` of `in`, `param` and `force`: the slot and the raw word.
+fn typed_word<'a>(
+    args: &mut impl Iterator<Item = &'a str>,
+    limit: usize,
+) -> Result<(usize, u32), ParseError> {
+    let index: usize = one(args)?.parse().map_err(|_| ParseError::BadIndexOrType)?;
+    let ty = one(args)?;
+    let value = one(args)?;
+    if index >= limit {
+        return Err(ParseError::BadIndexOrType);
+    }
+    let word = match ty {
+        "i" => {
+            let n = match value.parse::<i64>() {
+                Ok(n) => n,
+                // Like strtoll, a number too long for i64 saturates.
+                Err(_) if is_integer(value) => {
+                    if value.starts_with('-') {
+                        i64::MIN
+                    } else {
+                        i64::MAX
+                    }
+                }
+                Err(_) => return Err(ParseError::InvalidNumber),
+            };
+            n.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32 as u32
+        }
+        "f" => value
+            .parse::<f32>()
+            .map_err(|_| ParseError::InvalidNumber)?
+            .to_bits(),
+        _ => return Err(ParseError::BadIndexOrType),
+    };
+    Ok((index, word))
+}
+
+fn is_integer(value: &str) -> bool {
+    let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Parses one command line (without its newline). The image of a `put` is not a line: see
@@ -155,10 +250,97 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
         "swap" => Command::Swap {
             name: name(one(&mut args)?)?,
         },
+        "in" | "param" | "force" => {
+            let module = name(one(&mut args)?)?;
+            let limit = if command == "force" {
+                MAX_OUTPUTS
+            } else {
+                MAX_SLOTS
+            };
+            let (index, word) = typed_word(&mut args, limit)?;
+            match command {
+                "in" => Command::SetInput {
+                    name: module,
+                    index,
+                    word,
+                },
+                "param" => Command::SetParam {
+                    name: module,
+                    index,
+                    word,
+                },
+                _ => Command::Force {
+                    name: module,
+                    index,
+                    word,
+                },
+            }
+        }
+        "unforce" => {
+            let module = name(one(&mut args)?)?;
+            let index = match one(&mut args)? {
+                "all" => None,
+                word => match word.parse::<usize>() {
+                    Ok(i) if i < MAX_OUTPUTS => Some(i),
+                    _ => return Err(ParseError::BadIndex),
+                },
+            };
+            Command::Unforce {
+                name: module,
+                index,
+            }
+        }
+        "out" => {
+            let module = name(one(&mut args)?)?;
+            let count = match one(&mut args)?.parse::<usize>() {
+                Ok(n) if n <= MAX_OUTPUTS => n,
+                _ => return Err(ParseError::BadCount),
+            };
+            Command::Outputs {
+                name: module,
+                count,
+            }
+        }
+        "ev" => Command::Events {
+            name: name(one(&mut args)?)?,
+        },
+        "reset" => Command::Reset {
+            name: name(one(&mut args)?)?,
+        },
+        "pins" => Command::Pins,
         _ => return Err(ParseError::UnknownCommand),
     };
     no_more(&mut args)?;
     Ok(parsed)
+}
+
+/// `out 0000002a 3f800000`: the first `count` outputs, 8 hex digits each; missing ones are zero.
+pub fn format_outputs(outputs: &[u32], count: usize) -> String {
+    let mut line = String::from("out");
+    for i in 0..count {
+        let _ = write!(line, " {:08x}", outputs.get(i).copied().unwrap_or(0));
+    }
+    line
+}
+
+/// `ev <name> <now ms> <lost> <slot>:<value>:<ms> ...`
+pub fn format_events(name: &str, now_ms: u32, lost: u32, events: &[(u8, u8, u32)]) -> String {
+    let mut line = String::new();
+    let _ = write!(line, "ev {name} {now_ms} {lost}");
+    for (slot, value, ms) in events {
+        let _ = write!(line, " {slot}:{value}:{ms}");
+    }
+    line
+}
+
+/// One line of `pins`: `<pin> <module> out|pwm|pullup fault=0|1|hold[ level=0|1]`.
+pub fn format_pin(pin: u8, module: &str, use_: &str, fault: &str, level: Option<bool>) -> String {
+    let mut line = String::new();
+    let _ = write!(line, "{pin} {module} {use_} fault={fault}");
+    if let Some(level) = level {
+        let _ = write!(line, " level={}", u8::from(level));
+    }
+    line
 }
 
 /// Longest command line; a longer run of bytes with no newline is noise and is dropped.
@@ -321,6 +503,157 @@ mod tests {
         assert_eq!(
             parse_command("list extra"),
             Err(ParseError::TooManyArguments)
+        );
+    }
+
+    fn typed(cmd: &str) -> Command {
+        parse_command(cmd).unwrap()
+    }
+
+    #[test]
+    fn parses_the_debugger_commands() {
+        let n = || String::from("s");
+        assert_eq!(
+            typed("force s 3 i 1"),
+            Command::Force {
+                name: n(),
+                index: 3,
+                word: 1
+            }
+        );
+        assert_eq!(
+            typed("force s 4 f 2.5"),
+            Command::Force {
+                name: n(),
+                index: 4,
+                word: 2.5f32.to_bits()
+            }
+        );
+        assert_eq!(
+            typed("in s 0 i -5"),
+            Command::SetInput {
+                name: n(),
+                index: 0,
+                word: (-5i32) as u32
+            }
+        );
+        assert_eq!(
+            typed("in s 0 i 99999999999"),
+            Command::SetInput {
+                name: n(),
+                index: 0,
+                word: i32::MAX as u32
+            }
+        );
+        assert_eq!(
+            typed("param s 7 i -99999999999999999999999"),
+            Command::SetParam {
+                name: n(),
+                index: 7,
+                word: i32::MIN as u32
+            }
+        );
+        assert_eq!(
+            typed("unforce s all"),
+            Command::Unforce {
+                name: n(),
+                index: None
+            }
+        );
+        assert_eq!(
+            typed("unforce s 7"),
+            Command::Unforce {
+                name: n(),
+                index: Some(7)
+            }
+        );
+        assert_eq!(
+            typed("out s 12"),
+            Command::Outputs {
+                name: n(),
+                count: 12
+            }
+        );
+        assert_eq!(
+            typed("out s 128"),
+            Command::Outputs {
+                name: n(),
+                count: 128
+            }
+        );
+        assert_eq!(typed("ev s"), Command::Events { name: n() });
+        assert_eq!(typed("reset s"), Command::Reset { name: n() });
+        assert_eq!(typed("pins"), Command::Pins);
+    }
+
+    #[test]
+    fn parses_floats_as_rust_prints_them() {
+        let bits = |text: &str| match typed(&format!("in s 1 f {text}")) {
+            Command::SetInput { word, .. } => word,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(bits("1e20"), 1e20f32.to_bits());
+        assert_eq!(bits("inf"), f32::INFINITY.to_bits());
+        assert_eq!(bits("-inf"), f32::NEG_INFINITY.to_bits());
+        assert!(f32::from_bits(bits("NaN")).is_nan());
+        assert_eq!(bits("-0"), (-0.0f32).to_bits());
+    }
+
+    #[test]
+    fn rejects_bad_debugger_commands() {
+        let err = |cmd: &str| parse_command(cmd).unwrap_err();
+        assert_eq!(err("in s 8 i 1"), ParseError::BadIndexOrType);
+        assert_eq!(err("in s -1 i 1"), ParseError::BadIndexOrType);
+        assert_eq!(err("force s 128 i 1"), ParseError::BadIndexOrType);
+        assert_eq!(err("in s 0 x 1"), ParseError::BadIndexOrType);
+        assert_eq!(err("in s 0 i abc"), ParseError::InvalidNumber);
+        assert_eq!(err("in s 0 i 1.5"), ParseError::InvalidNumber);
+        assert_eq!(err("in s 0 f abc"), ParseError::InvalidNumber);
+        assert_eq!(err("out s 129"), ParseError::BadCount);
+        assert_eq!(err("out s many"), ParseError::BadCount);
+        assert_eq!(err("unforce s 128"), ParseError::BadIndex);
+        assert_eq!(err("unforce s none"), ParseError::BadIndex);
+        assert_eq!(err("unforce s"), ParseError::MissingArgument);
+        assert_eq!(err("in s 0 i"), ParseError::MissingArgument);
+        assert_eq!(err("in s"), ParseError::MissingArgument);
+        assert_eq!(err("out s"), ParseError::MissingArgument);
+        assert_eq!(err("ev"), ParseError::MissingArgument);
+        assert_eq!(err("reset bad/name"), ParseError::InvalidName);
+        assert_eq!(err("force bad/name 0 i 1"), ParseError::InvalidName);
+        assert_eq!(err("pins x"), ParseError::TooManyArguments);
+        assert_eq!(err("ev s x"), ParseError::TooManyArguments);
+    }
+
+    #[test]
+    fn debugger_errors_use_the_cpp_words() {
+        assert_eq!(ParseError::BadIndexOrType.to_string(), "bad index or type");
+        assert_eq!(ParseError::BadIndex.to_string(), "bad index");
+        assert_eq!(ParseError::BadCount.to_string(), "bad count");
+    }
+
+    #[test]
+    fn formats_the_debugger_answers() {
+        assert_eq!(
+            format_outputs(&[42, 0x3f80_0000], 3),
+            "out 0000002a 3f800000 00000000"
+        );
+        assert_eq!(format_outputs(&[1], 0), "out");
+        assert_eq!(
+            format_events("s", 1000, 2, &[(3, 1, 990), (3, 0, 995)]),
+            "ev s 1000 2 3:1:990 3:0:995"
+        );
+        assert_eq!(format_events("s", 1000, 0, &[]), "ev s 1000 0");
+        assert_eq!(
+            format_pin(2, "blink", "out", "0", Some(true)),
+            "2 blink out fault=0 level=1"
+        );
+        assert_eq!(
+            format_pin(4, "blink", "pwm", "hold", None),
+            "4 blink pwm fault=hold"
+        );
+        assert_eq!(
+            format_pin(5, "m", "out", "1", Some(false)),
+            "5 m out fault=1 level=0"
         );
     }
 
