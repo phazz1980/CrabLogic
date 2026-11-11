@@ -17,6 +17,18 @@ use crate::bus::{Bus, TopicDecl};
 use crate::engine::{Instance, Run};
 use crate::handle::{Handle, SlotMap};
 use crate::host::{Devices, ModuleHost};
+use crate::lease::Leases;
+
+/// A module taken out of memory for a while (see [`Kernel::evict`]): its place in the scan, its
+/// mailbox and its output leases stay with the kernel's sheet; the outputs keep their values.
+///
+/// Finish it with [`Kernel::restore`] or [`Kernel::abandon`]. Dropping it without either ends
+/// the leases (the outputs go to their safe state); the place in the scan is then left empty.
+#[must_use = "restore or abandon the evicted module"]
+pub struct Evicted<D: Devices> {
+    handle: Handle,
+    leases: Leases<D::Hal>,
+}
 
 /// One quantum of a module: time passes for its devices, then a suspended `step` resumes or a
 /// new one starts (with the time it missed while suspended).
@@ -150,6 +162,62 @@ where
         Ok(new)
     }
 
+    /// Frees the memory of a module but keeps its outputs: the instance is dropped, its leases
+    /// move into the returned [`Evicted`] (no output changes), its place in the scan and its
+    /// mailbox stay (messages wait). Until [`Kernel::restore`] / [`Kernel::abandon`] the scan
+    /// skips the place.
+    pub fn evict(&mut self, h: Handle) -> Result<Evicted<D>, String> {
+        if !self.order.contains(&h) {
+            return Err(String::from("нет такого модуля"));
+        }
+        let mut leaving = self
+            .modules
+            .remove(h)
+            .ok_or_else(|| String::from("нет такого модуля"))?;
+        let leases = leaving.host_mut().leases.take_all();
+        drop(leaving);
+        Ok(Evicted { handle: h, leases })
+    }
+
+    /// Puts a new instance in the place of an evicted module: the kept leases pass to it (no
+    /// output changes), the waiting messages stay for it. Returns the new handle. If the
+    /// instance cannot be inserted, the module is lost: its leases end and its place goes.
+    pub fn restore(&mut self, evicted: Evicted<D>, inst: I) -> Result<Handle, String> {
+        let Evicted {
+            handle: old,
+            mut leases,
+        } = evicted;
+        let pos = self
+            .order
+            .iter()
+            .position(|&h| h == old)
+            .ok_or_else(|| String::from("нет такого модуля"))?;
+        let new = match self.insert(inst) {
+            Ok(new) => new,
+            Err(e) => {
+                self.order.retain(|&x| x != old);
+                self.bus.detach(old);
+                return Err(e);
+            }
+        };
+        if let Some(m) = self.modules.get_mut(new) {
+            leases.hand_over(&mut m.host_mut().leases);
+        }
+        self.bus.rekey(old, new);
+        self.note(new);
+        self.order[pos] = new;
+        Ok(new)
+    }
+
+    /// Gives up an evicted module: its leases end (outputs go to their safe state), its place in
+    /// the scan and its mailbox go.
+    pub fn abandon(&mut self, evicted: Evicted<D>) {
+        let h = evicted.handle;
+        self.order.retain(|&x| x != h);
+        self.bus.detach(h);
+        drop(evicted);
+    }
+
     /// Removes a module: its leases end (outputs go to their safe state), its mailbox closes.
     pub fn unload(&mut self, h: Handle) -> Option<I> {
         let inst = self.modules.remove(h)?;
@@ -187,6 +255,10 @@ where
     }
 
     fn step_one(&mut self, h: Handle, dt_ms: u32) -> Result<Run, String> {
+        // An evicted place has no module: its messages wait.
+        if !self.modules.contains(h) {
+            return Ok(Run::Done);
+        }
         // A module still in its last step gets the waiting messages before its next one.
         let suspended = self.modules.get(h).is_some_and(|m| m.suspended());
         let waiting = if suspended {

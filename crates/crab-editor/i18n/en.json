@@ -1282,5 +1282,15 @@
  "Задача": "Task",
  "Стек не тронут, байт": "Stack never used, bytes",
  "Сколько стека задачи ни разу не использовалось с запуска": "How much of the task's stack has never been used since start",
- "Мастер на плате старой версии: держит модули в ОЗУ, и памяти на Wi-Fi и MQTT остаётся мало. Перезалейте мастер («Залить мастер-прошивку»); после этого модули заливаются заново": "The master on the board is an old version: it keeps modules in RAM, leaving little memory for Wi-Fi and MQTT. Upload the master again (“Upload master firmware”); the modules then have to be uploaded again"
+ "Мастер на плате старой версии: держит модули в ОЗУ, и памяти на Wi-Fi и MQTT остаётся мало. Перезалейте мастер («Залить мастер-прошивку»); после этого модули заливаются заново": "The master on the board is an old version: it keeps modules in RAM, leaving little memory for Wi-Fi and MQTT. Upload the master again (“Upload master firmware”); the modules then have to be uploaded again",
+ "Не все листы будут ускорены": "Not every sheet will be accelerated",
+ "Больше не спрашивать для этих листов (скорость «Фоновая»)": "Do not ask again for these sheets (speed “Background”)",
+ "Залить так": "Upload anyway",
+ "Быстрая": "Fast",
+ "Обычная": "Normal",
+ "Фоновая": "Background",
+ "Заливка отменена": "Upload cancelled",
+ "Листы остановятся на время заливки": "Sheets will stop during the upload",
+ "Залить": "Upload",
+ "Модуль «{0}» остановлен для замены на месте": "Module “{0}” stopped to be replaced in place"
 }

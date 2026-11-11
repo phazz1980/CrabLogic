@@ -154,6 +154,21 @@ impl Bus {
         self.boxes.insert(new, mailbox);
     }
 
+    /// Moves the mailbox of `old` to `new` keeping the waiting messages and the loss counter
+    /// (a module restarted in place). The subscriptions start empty: the new module subscribes
+    /// itself, and a message it does not subscribe to is skipped at delivery.
+    pub fn rekey(&mut self, old: Handle, new: Handle) {
+        let mailbox = match self.boxes.remove(&old) {
+            Some(b) => Mailbox {
+                subs: Vec::new(),
+                seen: 0,
+                ..b
+            },
+            None => Mailbox::new(0),
+        };
+        self.boxes.insert(new, mailbox);
+    }
+
     /// Records the module subscriptions (`subs` only grows); messages routed from now on reach
     /// the new topics. The last state value comes at the next [`Bus::take`].
     pub fn note_subscriptions(&mut self, h: Handle, subs: &[String]) {

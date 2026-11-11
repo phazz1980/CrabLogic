@@ -1,9 +1,10 @@
 //! Background build and upload, so the editor stays responsive.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use crab_build::{
     ArduinoCli, BuildControl, BuildMode, CliReason, CompileOptions, Compiled, OutputLine,
@@ -41,6 +42,26 @@ pub enum JobEvent {
     /// Shown even for a background job.
     Note(LogLevel, String),
     Done(Result<Done, String>),
+    /// The upload waits for the user: some sheets cannot be accelerated. Answer with
+    /// [`Job::answer`].
+    Ask(UploadQuestion),
+}
+
+/// What an upload question is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionKind {
+    /// Some sheets cannot be accelerated.
+    Demote,
+    /// Some sheets stop while they are replaced in place.
+    Stop,
+}
+
+/// One question for the whole upload (`specs/wasm-kernel`, decision 16).
+pub struct UploadQuestion {
+    pub kind: QuestionKind,
+    pub message: String,
+    /// Sheets that go without acceleration; «do not ask again» makes them background ones.
+    pub sheets: Vec<u32>,
 }
 
 /// How far a background master build has gone: upload can still join it until it ends.
@@ -61,6 +82,8 @@ pub struct Job {
     control: Arc<BuildControl>,
     promotion: Arc<Mutex<Promotion>>,
     rx: Receiver<JobEvent>,
+    /// Answers to [`JobEvent::Ask`]: `true` uploads anyway.
+    answers: Sender<bool>,
 }
 
 impl Job {
@@ -89,14 +112,20 @@ impl Job {
         let promotion = Arc::new(Mutex::new(Promotion::default()));
         let worker_promotion = promotion.clone();
         let (tx, rx) = mpsc::channel();
+        let (answers, answer_rx) = mpsc::channel();
         thread::spawn(move || {
             let send = |e: JobEvent| {
                 let _ = tx.send(e);
                 wake();
             };
+            let cancel = worker.clone();
             let report = Report {
                 out: &mut |level, line| send(JobEvent::Line(level, line.to_owned())),
                 note: &mut |level, line| send(JobEvent::Note(level, line.to_owned())),
+                ask: &mut |question| {
+                    send(JobEvent::Ask(question));
+                    wait_answer(&answer_rx, &cancel)
+                },
                 direct: &AtomicBool::new(false),
                 promotion: &worker_promotion,
             };
@@ -110,7 +139,13 @@ impl Job {
             control,
             promotion,
             rx,
+            answers,
         }
+    }
+
+    /// Answers the question of the upload: `true` uploads anyway, `false` stops it.
+    pub fn answer(&self, upload: bool) {
+        let _ = self.answers.send(upload);
     }
 
     /// Turns a running background master build into a normal upload to `port`: the log
@@ -159,8 +194,24 @@ impl Job {
 struct Report<'a> {
     out: &'a mut dyn FnMut(LogLevel, &str),
     note: &'a mut dyn FnMut(LogLevel, &str),
+    /// Asks the user and waits; `false` when declined or the job is cancelled.
+    ask: &'a mut dyn FnMut(UploadQuestion) -> bool,
     direct: &'a AtomicBool,
     promotion: &'a Mutex<Promotion>,
+}
+
+/// Waits for the user's answer, giving up when the job is cancelled or the editor is gone.
+fn wait_answer(answers: &Receiver<bool>, control: &BuildControl) -> bool {
+    loop {
+        if control.is_cancelled() {
+            return false;
+        }
+        match answers.recv_timeout(Duration::from_millis(100)) {
+            Ok(answer) => return answer,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return false,
+        }
+    }
 }
 
 fn run(
@@ -175,6 +226,7 @@ fn run(
     let Report {
         out,
         note,
+        ask,
         direct,
         promotion,
     } = report;
@@ -183,7 +235,7 @@ fn run(
         return precompile_master(project, lib, control, promotion, out);
     }
     if let JobKind::UploadModules { port } = &kind {
-        return upload_modules(port.as_deref(), project, lib, debug, &control, out);
+        return upload_modules(port.as_deref(), project, lib, debug, &control, out, ask);
     }
     // The upload puts the master on the board, with debugging on or off; the schema follows
     // as modules (debugging is a flag of the module build).
@@ -590,15 +642,18 @@ fn upload_modules(
     watch: bool,
     control: &BuildControl,
     out: &mut dyn FnMut(LogLevel, &str),
+    ask: &mut dyn FnMut(UploadQuestion) -> bool,
 ) -> Result<Done, String> {
     let project = &crab_codegen::prepare(project, lib);
     let program = Program::build(project, lib).map_err(|e| e.to_string())?;
     let mut modules = Vec::new();
+    let mut numbers = Vec::new();
     for sheet in program.sheets() {
         let module = program
             .wasm_module_with(sheet, watch)
             .map_err(|e| crate::i18n::fmt("лист {0}: {1}", &[&sheet, &e]))?;
         modules.push(module);
+        numbers.push(sheet);
     }
     let cli = ArduinoCli::locate().map_err(|e| e.to_string())?;
     let port = cli
@@ -644,41 +699,84 @@ fn upload_modules(
         ),
         crab_build::MasterState::Current | crab_build::MasterState::Unknown => {}
     }
-    for module in &modules {
+    // Which sheets go accelerated is decided for the whole upload at once (`specs/wasm-kernel`, 3.8–3.9).
+    let space = if info.takes_aot() {
+        crab_build::upload_plan::read_crabmod_space(&mut serial).map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    let sheets: Vec<_> = modules
+        .iter()
+        .zip(&numbers)
+        .map(|(module, &sheet)| crab_build::upload_plan::SheetModule {
+            sheet,
+            name: &module.name,
+            wasm: &module.wasm,
+            speed: project
+                .logic
+                .sheets
+                .iter()
+                .find(|s| s.number == sheet)
+                .map_or(crab_core::SheetSpeed::Normal, |s| s.speed),
+        })
+        .collect();
+    let plan = crab_build::upload_plan::plan_upload(
+        &info,
+        space.as_ref(),
+        &sheets,
+        &project.work_dir().join("aot"),
+        &mut || {
+            let wamrc = crate::theme::wamrc_path();
+            let manual = (!wamrc.is_empty()).then(|| std::path::PathBuf::from(wamrc));
+            let mut shown = 0;
+            // Both callbacks log; they never run at the same time.
+            let log = std::cell::RefCell::new(&mut *out);
+            crab_build::wamrc::ensure(
+                manual.as_deref(),
+                control.cancel_flag(),
+                &mut |line| (log.borrow_mut())(LogLevel::Info, line),
+                &mut |got, total| {
+                    let percent = (got * 100).checked_div(total).unwrap_or(0);
+                    if percent >= shown + 10 {
+                        shown = percent / 10 * 10;
+                        (log.borrow_mut())(
+                            LogLevel::Info,
+                            &crate::i18n::fmt("Скачано {0}%", &[&shown]),
+                        );
+                    }
+                },
+            )
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(report) = &plan.report {
+        let message = report.message();
+        out(LogLevel::Warning, &message);
+        let question = UploadQuestion {
+            kind: QuestionKind::Demote,
+            message,
+            sheets: report.demoted_sheets(),
+        };
+        if !ask(question) {
+            return Err(crate::i18n::tr("Заливка отменена").to_owned());
+        }
+    }
+    if let Some(stops) = &plan.stops {
+        let message = stops.message();
+        out(LogLevel::Warning, &message);
+        let question = UploadQuestion {
+            kind: QuestionKind::Stop,
+            message,
+            sheets: stops.sheets.iter().map(|s| s.sheet).collect(),
+        };
+        if !ask(question) {
+            return Err(crate::i18n::tr("Заливка отменена").to_owned());
+        }
+    }
+    for ((module, image), &in_place) in modules.iter().zip(&plan.images).zip(&plan.in_place) {
         let allow = crab_sim::mcu::Manifest::parse(&module.manifest)
             .map(|m| m.allow)
             .unwrap_or_default();
-        let image = crab_build::mcu_module::module_image(
-            &info,
-            &module.wasm,
-            &project.work_dir().join("aot"),
-            &mut || {
-                let wamrc = crate::theme::wamrc_path();
-                let manual = (!wamrc.is_empty()).then(|| std::path::PathBuf::from(wamrc));
-                let mut shown = 0;
-                // Both callbacks log; they never run at the same time.
-                let log = std::cell::RefCell::new(&mut *out);
-                crab_build::wamrc::ensure(
-                    manual.as_deref(),
-                    control.cancel_flag(),
-                    &mut |line| (log.borrow_mut())(LogLevel::Info, line),
-                    &mut |got, total| {
-                        let percent = (got * 100).checked_div(total).unwrap_or(0);
-                        if percent >= shown + 10 {
-                            shown = percent / 10 * 10;
-                            (log.borrow_mut())(
-                                LogLevel::Info,
-                                &crate::i18n::fmt("Скачано {0}%", &[&shown]),
-                            );
-                        }
-                    },
-                )
-            },
-        )
-        .map_err(|e| e.to_string())?;
-        if let Some(warning) = &image.warning {
-            out(LogLevel::Warning, warning);
-        }
         if image.aot {
             out(
                 LogLevel::Info,
@@ -699,6 +797,17 @@ fn upload_modules(
         let mem = crab_build::mcu_module::module_memory(&module.wasm)
             .ok_or(crab_build::mcu_module::ModuleUploadError::OldModule)
             .map_err(|e| e.to_string())?;
+        if in_place {
+            crab_build::mcu_module::delete_module(&mut serial, &module.name)
+                .map_err(|e| e.to_string())?;
+            out(
+                LogLevel::Warning,
+                &crate::i18n::fmt(
+                    "Модуль «{0}» остановлен для замены на месте",
+                    &[&module.name],
+                ),
+            );
+        }
         crab_build::mcu_module::upload_image(&mut serial, &module.name, &image.bytes, mem, &allow)
             .map_err(|e| e.to_string())?;
     }

@@ -316,3 +316,76 @@ fn holder_of_finds_the_other_module() {
     assert_eq!(k.holder_of(8, a), Some(b));
     assert_eq!(k.holder_of(9, a), None);
 }
+
+#[test]
+fn evict_keeps_outputs_and_the_scan_skips_the_place() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let a = k.add(load(&hal, A), &[], 0).unwrap();
+    let b = k.add(load(&hal, B), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+
+    let ev = k.evict(a).unwrap();
+    assert!(hal.take().is_empty(), "evict changes no output");
+    assert!(k.get(a).is_none());
+    assert_eq!(k.handles(), [a, b], "the place stays");
+    k.run_quantum(10).unwrap();
+    assert!(k.step(a, 10).is_ok());
+    assert!(k.get(b).unwrap().host().devices.writes > 0);
+
+    k.abandon(ev);
+    assert_eq!(hal.take(), a_safe(), "abandon ends the leases");
+    assert_eq!(k.handles(), [b]);
+    k.run_quantum(10).unwrap();
+}
+
+#[test]
+fn restore_hands_the_kept_leases_to_the_new_instance() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let old = k.add(load(&hal, A), &[], 0).unwrap();
+    let other = k.add(load(&hal, B), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+
+    let ev = k.evict(old).unwrap();
+    let new = k.restore(ev, load(&hal, A)).unwrap();
+    assert!(
+        hal.take().is_empty(),
+        "no output changes across evict and restore"
+    );
+    assert_eq!(k.handles(), [new, other], "the scan position is kept");
+    let leases = &k.get(new).unwrap().host().leases;
+    assert!([2, 3, 4, 5].iter().all(|&p| leases.holds(p)));
+    k.run_quantum(10).unwrap();
+    assert!(k.get(new).unwrap().host().devices.writes > 0);
+    assert!(hal.take().is_empty());
+}
+
+#[test]
+fn messages_wait_across_evict_and_restore() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let old = k.add(load(&hal, A), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+
+    let ev = k.evict(old).unwrap();
+    k.publish("e", b"while away");
+    k.run_quantum(10).unwrap();
+    let new = k.restore(ev, load(&hal, A)).unwrap();
+    k.run_quantum(10).unwrap();
+    assert_eq!(
+        k.get(new).unwrap().host().outputs[0],
+        Word::int(1),
+        "the message published during the eviction arrived"
+    );
+}
+
+#[test]
+fn dropping_an_evicted_module_ends_its_leases() {
+    let hal = StubHal::default();
+    let mut k: Kernel<Module, Board> = Kernel::new();
+    let a = k.add(load(&hal, A), &[], 0).unwrap();
+    k.run_quantum(10).unwrap();
+    drop(k.evict(a).unwrap());
+    assert_eq!(hal.take(), a_safe());
+}

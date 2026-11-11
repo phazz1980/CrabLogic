@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use crab_build::upload_plan::{self, SheetModule, StopReport, UploadReport};
 use crab_build::{ArduinoCli, BuildMode, CompileOptions, Compiled};
 use crab_codegen::{ArduinoCpp, Backend, GenError, Program};
+use crab_core::logic::SheetSpeed;
 use crab_core::{check_project, Diagnostic, Library, LocalValues, Project, Severity};
 
 /// Exit code when the schema has errors.
@@ -122,6 +124,12 @@ enum Command {
         /// Порт платы, например COM3 (по умолчанию единственный найденный)
         #[arg(long, short)]
         port: Option<String>,
+        /// Ошибка, если какой-то лист не удаётся ускорить (без флага — предупреждение)
+        #[arg(long)]
+        require_aot: bool,
+        /// Разрешить остановить листы на время заливки, если новая версия не помещается рядом со старой (без флага — ошибка)
+        #[arg(long)]
+        allow_stop: bool,
     },
     /// Залить один WASM-модуль на плату с мастер-прошивкой (без сброса выходов и соседних модулей); если мастер умеет AOT, модуль компилируется в .aot
     UploadWasm {
@@ -230,7 +238,20 @@ fn main() -> ExitCode {
             watch,
             upload,
             port,
-        } => run_gen_wasm(&project, cli.library.as_deref(), sheet, watch, upload, port),
+            require_aot,
+            allow_stop,
+        } => run_gen_wasm(
+            &project,
+            cli.library.as_deref(),
+            sheet,
+            watch,
+            upload,
+            port,
+            UploadFlags {
+                require_aot,
+                allow_stop,
+            },
+        ),
         Command::Block { action } => run_block(action, cli.library.as_deref()),
         Command::Convert { project } => run_convert(&project, cli.library.as_deref()),
     }
@@ -528,26 +549,10 @@ fn push_module(
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)
     };
-    let port = match port {
-        Some(port) => port,
-        None => match ArduinoCli::locate()
-            .and_then(|cli| cli.serial_ports())
-            .and_then(|ports| crab_build::auto_port(&ports))
-        {
-            Ok(port) => port,
-            Err(e) => return failed(e.to_string()),
-        },
+    let (mut serial, port) = match open_master_port(port) {
+        Ok(opened) => opened,
+        Err(message) => return failed(message),
     };
-    let mut serial = match serialport::new(&port, 115_200)
-        .timeout(std::time::Duration::from_millis(200))
-        .open()
-    {
-        Ok(serial) => serial,
-        Err(e) => return failed(format!("порт {port} не открыт: {e}")),
-    };
-    // Release DTR/RTS so opening the port does not reset the board.
-    let _ = serial.write_data_terminal_ready(false);
-    let _ = serial.write_request_to_send(false);
     let info = match crab_build::mcu_module::wait_for_master_info(
         &mut serial,
         std::time::Duration::from_secs(8),
@@ -621,6 +626,197 @@ fn push_module(
     }
 }
 
+/// Opens the serial port of the board (the only found one if `port` is not given) without
+/// resetting it. Returns the port and its name.
+fn open_master_port(
+    port: Option<String>,
+) -> Result<(Box<dyn serialport::SerialPort>, String), String> {
+    let port = match port {
+        Some(port) => port,
+        None => ArduinoCli::locate()
+            .and_then(|cli| cli.serial_ports())
+            .and_then(|ports| crab_build::auto_port(&ports))
+            .map_err(|e| e.to_string())?,
+    };
+    let mut serial = serialport::new(&port, 115_200)
+        .timeout(std::time::Duration::from_millis(200))
+        .open()
+        .map_err(|e| format!("порт {port} не открыт: {e}"))?;
+    // Release DTR/RTS so opening the port does not reset the board.
+    let _ = serial.write_data_terminal_ready(false);
+    let _ = serial.write_request_to_send(false);
+    Ok((serial, port))
+}
+
+/// What to do with the upload report: an error with `--require-aot`, a warning text otherwise.
+fn report_verdict(
+    report: Option<&UploadReport>,
+    require_aot: bool,
+) -> Result<Option<String>, String> {
+    match report {
+        None => Ok(None),
+        Some(report) if require_aot => Err(report.message()),
+        Some(report) => Ok(Some(report.message())),
+    }
+}
+
+/// What to do with the stop report: an error without `--allow-stop` (with a hint), a warning text
+/// with it.
+fn stop_verdict(stops: Option<&StopReport>, allow_stop: bool) -> Result<Option<String>, String> {
+    match stops {
+        None => Ok(None),
+        Some(stops) if allow_stop => Ok(Some(stops.message())),
+        Some(stops) => Err(format!(
+            "{}
+Запустите с --allow-stop, чтобы остановить листы на время заливки.",
+            stops.message()
+        )),
+    }
+}
+
+/// Sends all the sheet modules over one opened port: the placement (AOT or plain) is decided for
+/// all of them together. `numbers` are the sheet numbers of `modules`; the AOT image of a module
+/// is also written next to its `.wasm`.
+fn upload_sheets(
+    project: &Project,
+    modules: &[crab_codegen::WasmModule],
+    numbers: &[u32],
+    allows: &[Vec<String>],
+    port: Option<String>,
+    require_aot: bool,
+    allow_stop: bool,
+) -> ExitCode {
+    use crab_build::mcu_module as mm;
+    let failed = |message: String| {
+        eprintln!("ошибка: {message}");
+        ExitCode::from(EXIT_BUILD_FAILED)
+    };
+    let (mut serial, port) = match open_master_port(port) {
+        Ok(opened) => opened,
+        Err(message) => return failed(message),
+    };
+    let info = match mm::wait_for_master_info(&mut serial, std::time::Duration::from_secs(8)) {
+        Ok(info) => info,
+        Err(e) => return failed(e.to_string()),
+    };
+    for module in modules {
+        let missing = info.missing_caps(&module.needs);
+        if !missing.is_empty() {
+            return failed(mm::missing_caps_message(&module.name, &missing));
+        }
+    }
+    if info.keeps_modules_in_ram() {
+        eprintln!("предупреждение: {}", mm::OLD_STORAGE_MESSAGE);
+    }
+    let space = if info.takes_aot() {
+        match upload_plan::read_crabmod_space(&mut serial) {
+            Ok(space) => space,
+            Err(e) => return failed(e.to_string()),
+        }
+    } else {
+        None
+    };
+    let sheet_modules: Vec<SheetModule> = modules
+        .iter()
+        .zip(numbers)
+        .map(|(m, &sheet)| SheetModule {
+            sheet,
+            name: &m.name,
+            wasm: &m.wasm,
+            speed: project
+                .logic
+                .sheets
+                .iter()
+                .find(|s| s.number == sheet)
+                .map_or(SheetSpeed::Normal, |s| s.speed),
+        })
+        .collect();
+    let cache = project.work_dir().join("aot");
+    // No cancelling from the command line: Ctrl+C ends the process.
+    let never_cancelled = std::sync::atomic::AtomicBool::new(false);
+    let mut shown = 0;
+    let planned =
+        upload_plan::plan_upload(&info, space.as_ref(), &sheet_modules, &cache, &mut || {
+            crab_build::wamrc::ensure(
+                None,
+                &never_cancelled,
+                &mut |line| println!("{line}"),
+                &mut |got, total| {
+                    let percent = (got * 100).checked_div(total).unwrap_or(0);
+                    if percent >= shown + 10 {
+                        shown = percent / 10 * 10;
+                        println!("  скачано {shown}%");
+                    }
+                },
+            )
+        });
+    let plan = match planned {
+        Ok(plan) => plan,
+        Err(e) => return failed(e.to_string()),
+    };
+    match report_verdict(plan.report.as_ref(), require_aot) {
+        Ok(Some(text)) => eprintln!("предупреждение: {text}"),
+        Ok(None) => {}
+        Err(text) => return failed(text),
+    }
+    match stop_verdict(plan.stops.as_ref(), allow_stop) {
+        Ok(Some(text)) => eprintln!("предупреждение: {text}"),
+        Ok(None) => {}
+        Err(text) => return failed(text),
+    }
+    for (((module, allow), image), &in_place) in modules
+        .iter()
+        .zip(allows)
+        .zip(&plan.images)
+        .zip(&plan.in_place)
+    {
+        let name = &module.name;
+        if in_place {
+            if let Err(e) = mm::delete_module(&mut serial, name) {
+                return failed(e.to_string());
+            }
+            println!("Модуль «{name}» остановлен для замены на месте");
+        }
+        let uploaded = if image.aot {
+            println!(
+                "Модуль «{name}»: AOT {} байт (WASM {} байт) -> {port}...",
+                image.bytes.len(),
+                module.wasm.len()
+            );
+            let path = project
+                .work_dir()
+                .join("wasm")
+                .join(name)
+                .join(format!("{name}.aot"));
+            if let Err(e) = std::fs::write(&path, &image.bytes) {
+                return failed(format!("не записан {}: {e}", path.display()));
+            }
+            match mm::module_memory(&module.wasm) {
+                Some(mem) => mm::upload_image(&mut serial, name, &image.bytes, mem, allow),
+                None => Err(mm::ModuleUploadError::OldModule),
+            }
+        } else {
+            println!("Модуль «{name}» ({} байт) -> {port}...", module.wasm.len());
+            mm::upload_module(&mut serial, name, &module.wasm, allow)
+        };
+        match uploaded {
+            Ok(done) => match done.swap_us {
+                Some(us) => println!("Модуль «{name}» залит и запущен (замена {} мс)", us / 1000),
+                None => println!("Модуль «{name}» залит и запущен"),
+            },
+            Err(e) => return failed(e.to_string()),
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Strictness flags of `gen-wasm --upload`.
+#[derive(Clone, Copy)]
+struct UploadFlags {
+    require_aot: bool,
+    allow_stop: bool,
+}
+
 /// Builds the sheets of the project as WASM modules into `.crab/<project>/wasm/<name>/`
 /// (`<name>.wasm` + `module.toml`); with `upload` also sends them to the board (AOT-compiled, with
 /// `<name>.aot` next to the `.wasm`, if the master runs AOT).
@@ -631,6 +827,7 @@ fn run_gen_wasm(
     watch: bool,
     upload: bool,
     port: Option<String>,
+    flags: UploadFlags,
 ) -> ExitCode {
     let (project, lib) = match load(project_dir, library) {
         Ok(loaded) => loaded,
@@ -651,6 +848,7 @@ fn run_gen_wasm(
     };
     let sheets = sheet.map_or_else(|| program.sheets(), |n| vec![n]);
     let mut modules = Vec::new();
+    let numbers = sheets.clone();
     for n in sheets {
         match program.wasm_module_with(n, watch) {
             Ok(module) => modules.push(module),
@@ -683,21 +881,15 @@ fn run_gen_wasm(
         );
     }
     if upload {
-        for (module, allow) in modules.iter().zip(&allows) {
-            let dir = project.work_dir().join("wasm").join(&module.name);
-            let code = push_module(
-                &module.name,
-                &module.wasm,
-                allow,
-                &module.needs,
-                port.clone(),
-                &dir,
-                Some(&dir.join(format!("{}.aot", module.name))),
-            );
-            if code != ExitCode::SUCCESS {
-                return code;
-            }
-        }
+        return upload_sheets(
+            &project,
+            &modules,
+            &numbers,
+            &allows,
+            port,
+            flags.require_aot,
+            flags.allow_stop,
+        );
     }
     ExitCode::SUCCESS
 }
@@ -985,4 +1177,111 @@ fn find_library(project_dir: &Path) -> Option<PathBuf> {
                 .collect::<Vec<_>>()
         })
         .find(|dir| dir.is_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crab_build::placement::DemoteReason;
+    use crab_build::upload_plan::DemotedSheet;
+
+    fn report() -> UploadReport {
+        UploadReport {
+            demoted: vec![DemotedSheet {
+                sheet: 2,
+                name: "sheet2".to_owned(),
+                reason: DemoteReason::NoSpace,
+                step_us: 250,
+                fast_step_us: 70,
+                exceeds_period: false,
+            }],
+            wamrc_problem: None,
+            needed: 8192,
+            free: 4096,
+        }
+    }
+
+    #[test]
+    fn verdict_without_report() {
+        assert_eq!(report_verdict(None, false), Ok(None));
+        assert_eq!(report_verdict(None, true), Ok(None));
+    }
+
+    #[test]
+    fn verdict_with_report() {
+        let r = report();
+        assert_eq!(report_verdict(Some(&r), true), Err(r.message()));
+        assert_eq!(report_verdict(Some(&r), false), Ok(Some(r.message())));
+    }
+
+    #[test]
+    fn require_aot_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "crablogic",
+            "gen-wasm",
+            "p.crab",
+            "--upload",
+            "--require-aot",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GenWasm {
+                require_aot: true,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["crablogic", "gen-wasm", "p.crab"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GenWasm {
+                require_aot: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stop_verdict_with_and_without_flag() {
+        use crab_build::upload_plan::StoppedSheet;
+        assert_eq!(stop_verdict(None, false), Ok(None));
+        let stops = StopReport {
+            sheets: vec![StoppedSheet {
+                sheet: 2,
+                name: "sheet2".to_owned(),
+                bytes: 1000,
+            }],
+        };
+        let err = stop_verdict(Some(&stops), false).unwrap_err();
+        assert!(err.starts_with(&stops.message()));
+        assert!(err.contains("--allow-stop"));
+        assert_eq!(stop_verdict(Some(&stops), true), Ok(Some(stops.message())));
+    }
+
+    #[test]
+    fn allow_stop_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "crablogic",
+            "gen-wasm",
+            "p.crab",
+            "--upload",
+            "--allow-stop",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GenWasm {
+                allow_stop: true,
+                ..
+            }
+        ));
+        let cli = Cli::try_parse_from(["crablogic", "gen-wasm", "p.crab"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GenWasm {
+                allow_stop: false,
+                ..
+            }
+        ));
+    }
 }

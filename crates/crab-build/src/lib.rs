@@ -23,6 +23,7 @@ mod direct;
 mod master;
 pub mod native;
 pub mod placement;
+pub mod upload_plan;
 pub use master::{
     master_id_text, master_sketch_id, master_state, MasterBuild, MasterFeatures, MasterState,
 };

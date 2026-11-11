@@ -69,7 +69,7 @@ pub(super) fn sheet_body(ui: &mut Ui, d: &mut SheetDialog) {
                     crate::i18n::tr("Блоки отключённой платы не входят в сборку, а ошибки в них не проверяются.                      Блоки других плат, которые брали от них значения, останутся без источника."),
                 );
             ui.end_row();
-            ui.label(crate::i18n::tr("Скорость WASM"));
+            ui.label(crate::i18n::tr("Скорость"));
             egui::ComboBox::from_id_salt("sheet_speed")
                 .selected_text(match d.speed {
                     crab_core::SheetSpeed::Fast => crate::i18n::tr("Быстрая"),

@@ -217,6 +217,52 @@ impl Master {
         Ok((module, before.saturating_sub(free_heap())))
     }
 
+    /// The new version did not load next to the running old one (not enough memory): the old
+    /// instance is freed but keeps its outputs, the new one is loaded again, and if that fails
+    /// the old image is put back. Returns the new handle and heap, or the original error `err`
+    /// (the old version then runs again, or the module is stopped if even that failed).
+    fn load_without_old(
+        &mut self,
+        old: Handle,
+        index: usize,
+        area: &Area,
+        err: String,
+    ) -> Result<(Handle, u32), String> {
+        let name = area.meta.name.clone();
+        let Ok(evicted) = self.kernel.evict(old) else {
+            return Err(err);
+        };
+        self.log(
+            &name,
+            "не хватило памяти рядом со старой версией: старая выгружена на время загрузки",
+        );
+        let evicted = match self.load(area) {
+            Ok((module, heap)) => match self.kernel.restore(evicted, module) {
+                Ok(h) => return Ok((h, heap)),
+                Err(e) => {
+                    self.slots[index].handle = None;
+                    return Err(e);
+                }
+            },
+            Err(_) => evicted,
+        };
+        let previous = self.storage.area(self.slots[index].at).cloned();
+        match previous.map(|a| self.load(&a)) {
+            Some(Ok((module, heap))) => match self.kernel.restore(evicted, module) {
+                Ok(h) => {
+                    self.slots[index].handle = Some(h);
+                    self.slots[index].heap = heap;
+                }
+                Err(_) => self.slots[index].handle = None,
+            },
+            _ => {
+                self.kernel.abandon(evicted);
+                self.slots[index].handle = None;
+            }
+        }
+        Err(err)
+    }
+
     /// Starts the module of the area at `at`. A running module with the same name is replaced
     /// without touching its outputs; if the new one does not start, the old one keeps running.
     /// `by_hand` (upload, `swap`, `reset`, boot) starts the restart policy afresh; a restart by
@@ -227,11 +273,13 @@ impl Master {
             .area(at)
             .cloned()
             .ok_or_else(|| "образ модуля не найден".to_owned())?;
-        let (module, heap) = self.load(&area)?;
         let index = self.slot(&area.meta.name);
-        let handle = match index.and_then(|i| self.slots[i].handle) {
-            Some(old) => self.kernel.swap(old, module, &[], 0)?,
-            None => self.kernel.add(module, &[], 0)?,
+        let running = index.and_then(|i| self.slots[i].handle);
+        let (handle, heap) = match (self.load(&area), running, index) {
+            (Ok((module, heap)), Some(old), _) => (self.kernel.swap(old, module, &[], 0)?, heap),
+            (Ok((module, heap)), None, _) => (self.kernel.add(module, &[], 0)?, heap),
+            (Err(e), Some(old), Some(i)) => self.load_without_old(old, i, &area, e)?,
+            (Err(e), _, _) => return Err(e),
         };
         let mut slot = Slot::new(area.meta.name, at, Some(handle), heap);
         let now = devices::uptime_ms();

@@ -145,6 +145,15 @@ impl<H: Hal> Leases<H> {
         self.held.clear();
     }
 
+    /// Moves every lease into a new `Leases` (sharing the same HAL): no output changes. Dropping
+    /// the returned value ends the leases (safe state), as for any `Leases`.
+    pub fn take_all(&mut self) -> Leases<H> {
+        Leases {
+            hal: self.hal.clone(),
+            held: core::mem::take(&mut self.held),
+        }
+    }
+
     /// Hands every lease over to `other` (module replacement): no output changes. The leases
     /// stay inherited until `other` writes the pin.
     pub fn hand_over(&mut self, other: &mut Leases<H>) {

@@ -192,16 +192,90 @@ impl EditorApp {
                     self.info(LogLevel::Error, crate::i18n::msg("ошибка: {0}", &[&text]));
                     done = true;
                 }
+                JobEvent::Ask(question) => self.upload_question = Some((question, false)),
             }
         }
         if done {
             self.job = None;
+            self.upload_question = None;
             if let Some(kind) = self.queued.take() {
                 self.start_job(kind, ctx);
             }
         }
         if let Some(port) = connect {
             self.connect_debug(Some(port), ctx);
+        }
+    }
+
+    /// One question for the upload when some sheets go without acceleration
+    /// (`specs/wasm-kernel`, decision 16).
+    pub(super) fn upload_question_dialog(&mut self, ctx: &egui::Context) {
+        let Some((question, never_ask)) = &mut self.upload_question else {
+            return;
+        };
+        let mut answer = None;
+        egui::Modal::new(egui::Id::unique("upload_question")).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            let stop = question.kind == QuestionKind::Stop;
+            ui.heading(crate::i18n::tr(if stop {
+                "Листы остановятся на время заливки"
+            } else {
+                "Не все листы будут ускорены"
+            }));
+            ui.add_space(4.0);
+            ui.label(&question.message);
+            ui.add_space(8.0);
+            if !stop {
+                ui.checkbox(
+                    never_ask,
+                    crate::i18n::tr("Больше не спрашивать для этих листов (скорость «Фоновая»)"),
+                );
+                ui.add_space(8.0);
+            }
+            ui.horizontal(|ui| {
+                let go = if stop {
+                    "Залить"
+                } else {
+                    "Залить так"
+                };
+                if ui.button(crate::i18n::tr(go)).clicked() {
+                    answer = Some(true);
+                }
+                if ui.button(crate::i18n::tr("Отмена")).clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        let Some(upload) = answer else { return };
+        let Some((question, never_ask)) = self.upload_question.take() else {
+            return;
+        };
+        if upload && never_ask && question.kind == QuestionKind::Demote {
+            self.make_sheets_background(&question.sheets);
+        }
+        if let Some(job) = &self.job {
+            job.answer(upload);
+        }
+    }
+
+    /// «Do not ask again»: the sheets get the background speed, so the next upload puts them
+    /// without acceleration silently.
+    fn make_sheets_background(&mut self, sheets: &[u32]) {
+        let Some(doc) = self.doc.as_mut() else { return };
+        let result = doc.edit(&self.lib, None, |p| {
+            for &number in sheets {
+                match p.logic.sheets.iter_mut().find(|s| s.number == number) {
+                    Some(sheet) => sheet.speed = crab_core::SheetSpeed::Background,
+                    None => p.logic.sheets.push(crab_core::SheetExecution {
+                        number,
+                        speed: crab_core::SheetSpeed::Background,
+                    }),
+                }
+            }
+            Ok::<_, String>(())
+        });
+        if let Err(e) = result {
+            self.info(LogLevel::Error, e);
         }
     }
 }

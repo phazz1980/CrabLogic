@@ -33,7 +33,7 @@ use crate::canvas::{self, CanvasState};
 use crate::debugview::{self, DebugState};
 use crate::dialogs::{self, Dialog};
 use crate::doc::Doc;
-use crate::job::{Job, JobEvent, JobKind};
+use crate::job::{Job, JobEvent, JobKind, QuestionKind, UploadQuestion};
 use crate::panels;
 use crate::selfupdate;
 use crate::theme::{self, Theme};
@@ -202,6 +202,8 @@ pub struct EditorApp {
     /// Live values published for the AI while debugging.
     ai_live: crate::ai::SharedLive,
     job: Option<Job>,
+    /// The upload of modules waits for this answer; the flag is «do not ask again for these sheets».
+    upload_question: Option<(UploadQuestion, bool)>,
     /// Build requested while precompilation runs; starts right after it.
     queued: Option<JobKind>,
     /// What the build folder holds a master firmware build of.
@@ -335,6 +337,7 @@ impl EditorApp {
             ai: Default::default(),
             ai_live: Default::default(),
             job: None,
+            upload_question: None,
             pending: None,
             allow_close: false,
             autosave_minutes: theme::autosave_minutes(),
@@ -650,6 +653,7 @@ impl eframe::App for EditorApp {
             debugview::diagnostics_window(d, &pal, layout, &ctx);
         }
         self.unsaved_dialog(&ctx);
+        self.upload_question_dialog(&ctx);
         crate::textmenu::show(&ctx);
     }
 }

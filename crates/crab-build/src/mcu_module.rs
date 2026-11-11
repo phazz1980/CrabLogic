@@ -37,6 +37,8 @@ pub enum ModuleUploadError {
     Rejected(String),
     #[error("модуль собран старой версией CrabLogic (нет сведений о памяти): пересоберите его")]
     OldModule,
+    #[error("мастер не удалил модуль «{0}»")]
+    NotDeleted(String),
 }
 
 /// What the master reported about a stored module.
@@ -203,6 +205,24 @@ pub fn upload_image<P: Read + Write>(
             return Ok(ModuleUploaded { swap_us });
         } else if let Some(reason) = line.strip_prefix("err") {
             return Err(ModuleUploadError::Rejected(reason.trim().to_owned()));
+        }
+    }
+}
+
+/// Deletes module `name` from the master (`del`): its outputs go to the safe state and its flash
+/// area is freed.
+pub fn delete_module<P: Read + Write>(port: &mut P, name: &str) -> Result<(), ModuleUploadError> {
+    check_name_and_allow(name, &[])?;
+    drain(port)?;
+    port.write_all(format!("del {name}\n").as_bytes())?;
+    port.flush()?;
+    loop {
+        let line = read_line(port)?;
+        if line == "ok" {
+            return Ok(());
+        }
+        if line.starts_with("err") {
+            return Err(ModuleUploadError::NotDeleted(name.to_owned()));
         }
     }
 }
@@ -406,7 +426,7 @@ fn is_timeout(e: &io::Error) -> bool {
 }
 
 /// Reads one trimmed line; read timeouts of the port are retried until `ANSWER_TIMEOUT`.
-fn read_line<P: Read>(port: &mut P) -> Result<String, ModuleUploadError> {
+pub(crate) fn read_line<P: Read>(port: &mut P) -> Result<String, ModuleUploadError> {
     read_line_within(port, ANSWER_TIMEOUT)
 }
 
@@ -937,5 +957,33 @@ end
             Err(ModuleUploadError::OldModule)
         ));
         assert!(port.written.is_empty());
+    }
+
+    #[test]
+    fn delete_module_sends_del_and_waits_for_ok() {
+        let mut port = Fake::new(
+            "noise
+ok
+",
+            "",
+        );
+        delete_module(&mut port, "sheet1").unwrap();
+        assert_eq!(
+            port.written,
+            b"del sheet1
+"
+        );
+    }
+
+    #[test]
+    fn delete_module_reports_err() {
+        let mut port = Fake::new(
+            "err no such module
+",
+            "",
+        );
+        let err = delete_module(&mut port, "sheet1").unwrap_err();
+        assert!(matches!(err, ModuleUploadError::NotDeleted(_)));
+        assert!(err.to_string().contains("«sheet1»"));
     }
 }
