@@ -4,7 +4,8 @@
 //! The import only writes settings, queues publications, registers filters and reads the last message
 //! of a filter, so a module step never waits for the broker. The thread `crab-mqtt` owns the client:
 //! it creates it when the settings are complete, the network is up and a module still asks for it,
-//! and drops it otherwise. Reconnects are done by the ESP-IDF client itself.
+//! and drops it otherwise. Reconnects are done by the ESP-IDF client itself, except with a Sparkplug
+//! will (see `start_client`).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -13,13 +14,13 @@ use std::time::{Duration, Instant};
 
 use crab_kernel::host::Mem;
 use esp_idf_svc::handle::RawHandle;
-use esp_idf_svc::mqtt::client::{
-    Details, EspMqttClient, EspMqttEvent, EventPayload, MqttClientConfiguration, QoS,
-};
+use esp_idf_svc::mqtt::client::{EspMqttClient, LwtConfiguration, MqttClientConfiguration, QoS};
 use esp_idf_svc::sys::{self, EspError};
 
 use super::devices::uptime_ms;
+use super::eth;
 use super::net::{self, LEASE_MS};
+use super::sparkplug;
 
 /// Stack of `crab-mqtt`.
 const MQTT_STACK: usize = 8192;
@@ -65,7 +66,7 @@ struct Mqtt {
     text: [String; 4],
     port: i32,
     keep_alive: i32,
-    /// 0 Wi-Fi, 1 Ethernet (not supported yet, treated as Wi-Fi).
+    /// 0 Wi-Fi, 1 Ethernet.
     network: i32,
     max_slots: i32,
     /// Op 9 code 63 came.
@@ -107,6 +108,16 @@ fn push_note(text: String) {
         q.pop_front();
     }
     q.push_back(text);
+}
+
+/// A line for the journal from the Sparkplug node.
+pub(super) fn note(text: String) {
+    push_note(text);
+}
+
+/// A module is still there: keeps the client alive (ops that are not 11..=16 call it themselves).
+pub(super) fn touch() {
+    LAST_CALL_MS.store(uptime_ms() as u32, Ordering::Release);
 }
 
 /// Takes the queued MQTT messages (for the journal).
@@ -326,64 +337,96 @@ fn matches(filter: &str, topic: &str) -> bool {
     }
 }
 
-/// Runs on the esp-mqtt task: copies the message into the slots of the matching filters.
-fn on_event(payload: EventPayload<'_, EspError>) {
-    match payload {
-        EventPayload::Connected(_) => {
-            let mut m = lock();
-            for s in &mut m.slots {
-                s.subscribed = false;
-            }
-            drop(m);
-            ERROR.store(error::NONE, Ordering::Release);
-            CONNECTED.store(true, Ordering::Release);
+/// Says once per boot that a message with a non UTF-8 topic was dropped.
+static BAD_TOPIC_NOTED: AtomicBool = AtomicBool::new(false);
+
+fn on_connected() {
+    let mut m = lock();
+    for s in &mut m.slots {
+        s.subscribed = false;
+    }
+    drop(m);
+    ERROR.store(error::NONE, Ordering::Release);
+    CONNECTED.store(true, Ordering::Release);
+}
+
+/// Copies the first chunk of a message into the slots of the matching filters. A topic that is not
+/// UTF-8 cannot match a filter of a module (filters are text), so the message is dropped.
+fn on_data(topic: &[u8], data: &[u8]) {
+    let Ok(topic) = core::str::from_utf8(topic) else {
+        if !BAD_TOPIC_NOTED.swap(true, Ordering::AcqRel) {
+            note!("message dropped: topic is not UTF-8");
         }
-        EventPayload::Disconnected => CONNECTED.store(false, Ordering::Release),
-        EventPayload::Received {
-            topic: Some(topic),
-            data,
-            details,
-            ..
-        } => {
-            if matches!(details, Details::SubsequentChunk(_)) {
+        return;
+    };
+    let data = &data[..data.len().min(MAX_PAYLOAD)];
+    let mut m = lock();
+    for s in m.slots.iter_mut().filter(|s| matches(&s.filter, topic)) {
+        s.text.clear();
+        s.text.extend_from_slice(data);
+        s.count = s.count.wrapping_add(1);
+    }
+}
+
+fn error_code(h: &sys::esp_mqtt_error_codes_t) -> Option<i32> {
+    match h.error_type {
+        sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_TCP_TRANSPORT => Some(error::NO_TCP),
+        sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_CONNECTION_REFUSED => Some(error::REFUSED),
+        sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_SUBSCRIBE_FAILED => {
+            Some(error::SUBSCRIBE_REJECTED)
+        }
+        _ => None,
+    }
+}
+
+/// Raw handler of the client events, run on the esp-mqtt task. The safe event of esp-idf-svc 0.51 is
+/// not used: its payload hides the error details and panics on a topic that is not UTF-8
+/// (`from_utf8(..).unwrap()`), which would let any client of the broker reboot the board.
+unsafe extern "C" fn on_raw(
+    _arg: *mut core::ffi::c_void,
+    _base: sys::esp_event_base_t,
+    id: i32,
+    data: *mut core::ffi::c_void,
+) {
+    // SAFETY: for client events the data is the `esp_mqtt_event_t` of the client, valid during the call.
+    let Some(e) = (unsafe { (data as *const sys::esp_mqtt_event_t).as_ref() }) else {
+        return;
+    };
+    match id {
+        sys::esp_mqtt_event_id_t_MQTT_EVENT_CONNECTED => on_connected(),
+        sys::esp_mqtt_event_id_t_MQTT_EVENT_DISCONNECTED => {
+            CONNECTED.store(false, Ordering::Release)
+        }
+        sys::esp_mqtt_event_id_t_MQTT_EVENT_DATA => {
+            // Later chunks of a long message carry no topic: only the first chunk is kept.
+            if e.current_data_offset != 0 || e.topic.is_null() {
                 return;
             }
-            let data = &data[..data.len().min(MAX_PAYLOAD)];
-            let mut m = lock();
-            for s in m.slots.iter_mut().filter(|s| matches(&s.filter, topic)) {
-                s.text.clear();
-                s.text.extend_from_slice(data);
-                s.count = s.count.wrapping_add(1);
+            // SAFETY: the client keeps `topic_len` bytes at `topic` and `data_len` bytes at `data`
+            // during the call; null and negative lengths are checked first.
+            let (topic, data) = unsafe {
+                let topic = core::slice::from_raw_parts(
+                    e.topic as *const u8,
+                    usize::try_from(e.topic_len).unwrap_or(0),
+                );
+                let data = match usize::try_from(e.data_len) {
+                    Ok(len) if len > 0 && !e.data.is_null() => {
+                        core::slice::from_raw_parts(e.data as *const u8, len)
+                    }
+                    _ => &[],
+                };
+                (topic, data)
+            };
+            on_data(topic, data);
+        }
+        sys::esp_mqtt_event_id_t_MQTT_EVENT_ERROR => {
+            // SAFETY: `error_handle` is checked for null by `as_ref` and lives during the call.
+            if let Some(code) = unsafe { e.error_handle.as_ref() }.and_then(error_code) {
+                set_error(code);
             }
         }
         _ => {}
     }
-}
-
-/// Handler of MQTT_EVENT_ERROR: the safe wrapper hides the error details, so the reason is read here.
-unsafe extern "C" fn on_error(
-    _arg: *mut core::ffi::c_void,
-    _base: sys::esp_event_base_t,
-    _id: i32,
-    data: *mut core::ffi::c_void,
-) {
-    // SAFETY: for this event the data is the `esp_mqtt_event_t` of the client, valid during the call;
-    // `error_handle` is checked for null before it is read.
-    let code = unsafe {
-        let event = data as *const sys::esp_mqtt_event_t;
-        match event.as_ref().and_then(|e| e.error_handle.as_ref()) {
-            Some(h) => match h.error_type {
-                sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_TCP_TRANSPORT => error::NO_TCP,
-                sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_CONNECTION_REFUSED => error::REFUSED,
-                sys::esp_mqtt_error_type_t_MQTT_ERROR_TYPE_SUBSCRIBE_FAILED => {
-                    error::SUBSCRIBE_REJECTED
-                }
-                _ => return,
-            },
-            None => return,
-        }
-    };
-    set_error(code);
 }
 
 /// The part of the settings that needs a new client.
@@ -395,6 +438,9 @@ struct Applied {
     client_id: String,
     user: String,
     password: String,
+    /// Sparkplug NDEATH (topic, payload); the broker takes it with CONNECT only, so a new one needs a
+    /// new client.
+    will: Option<(String, Vec<u8>)>,
 }
 
 fn applied_of(m: &Mqtt) -> Applied {
@@ -405,6 +451,7 @@ fn applied_of(m: &Mqtt) -> Applied {
         client_id: m.text[1].clone(),
         user: m.text[2].clone(),
         password: m.text[3].clone(),
+        will: None,
     }
 }
 
@@ -418,6 +465,17 @@ fn default_client_id() -> String {
     format!("crab-{:02x}{:02x}{:02x}", mac[3], mac[4], mac[5])
 }
 
+/// The settings now; the will comes from the Sparkplug node (its lock is taken after the MQTT lock
+/// is released, so the two never nest).
+fn snapshot() -> (Applied, bool, i32) {
+    let (mut applied, complete, network) = {
+        let guard = lock();
+        (applied_of(&guard), guard.complete, guard.network)
+    };
+    applied.will = sparkplug::will();
+    (applied, complete, network)
+}
+
 fn start_client(a: &Applied) -> Result<EspMqttClient<'static>, EspError> {
     let url = format!("mqtt://{}:{}", a.broker, a.port);
     let client_id = if a.client_id.is_empty() {
@@ -425,28 +483,39 @@ fn start_client(a: &Applied) -> Result<EspMqttClient<'static>, EspError> {
     } else {
         a.client_id.clone()
     };
+    let lwt = a.will.as_ref().map(|(topic, payload)| LwtConfiguration {
+        topic,
+        payload,
+        qos: QoS::AtMostOnce,
+        retain: false,
+    });
     let conf = MqttClientConfiguration {
         client_id: Some(&client_id),
+        lwt,
+        // With a will the ESP-IDF reconnect is off: it would bring the node back with the old
+        // `bdSeq`. The worker drops the client when the link is lost (`sparkplug::track`) and makes a
+        // new one with the next `bdSeq`; a client that never got connected is renewed after
+        // `RETRY_PAUSE`.
+        reconnect_timeout: a.will.is_none().then(|| Duration::from_secs(0)),
         username: (!a.user.is_empty()).then_some(a.user.as_str()),
         password: (!a.user.is_empty()).then_some(a.password.as_str()),
         keep_alive_interval: (a.keep_alive > 0).then(|| Duration::from_secs(a.keep_alive as u64)),
         ..Default::default()
     };
-    let client = EspMqttClient::new_cb(&url, &conf, |event: EspMqttEvent<'_>| {
-        on_event(event.payload())
-    })?;
+    // Events are read by `on_raw`; the safe callback must not touch the payload (see `on_raw`).
+    let client = EspMqttClient::new_cb(&url, &conf, |_event| {})?;
     // SAFETY: the handle is valid while `client` lives, and the handler is a plain function without
     // captured state (the argument is not used).
     let registered = unsafe {
         sys::esp_mqtt_client_register_event(
             client.handle(),
-            sys::esp_mqtt_event_id_t_MQTT_EVENT_ERROR,
-            Some(on_error),
+            sys::esp_mqtt_event_id_t_MQTT_EVENT_ANY,
+            Some(on_raw),
             core::ptr::null_mut(),
         )
     };
     if registered != 0 {
-        note!("cannot watch client errors (code {registered})");
+        note!("cannot watch client events (code {registered})");
     }
     Ok(client)
 }
@@ -475,7 +544,6 @@ struct Live {
 struct Told {
     connected: bool,
     error: i32,
-    ethernet: bool,
     failure: String,
 }
 
@@ -569,27 +637,35 @@ fn worker() {
     let mut told = Told {
         connected: false,
         error: 0,
-        ethernet: false,
         failure: String::new(),
     };
     let mut retry_at = Instant::now();
     loop {
-        let (applied, complete, network) = {
+        {
             let guard = lock();
-            let (guard, _) = WAKE
+            let _ = WAKE
                 .wait_timeout(guard, TICK)
                 .unwrap_or_else(|e| e.into_inner());
-            (applied_of(&guard), guard.complete, guard.network)
-        };
-        if network == 1 && !told.ethernet {
-            told.ethernet = true;
-            note!("Ethernet is not supported yet, using Wi-Fi");
         }
+        // A Sparkplug session that ended starts a new `bdSeq` before the settings (and the will)
+        // are read for the next client.
+        if sparkplug::track(CONNECTED.load(Ordering::Acquire)) && live.take().is_some() {
+            CONNECTED.store(false, Ordering::Release);
+            note!("sparkplug: session ended, restarting the client");
+        }
+        let (mut applied, complete, network) = snapshot();
         let idle =
             (uptime_ms() as u32).wrapping_sub(LAST_CALL_MS.load(Ordering::Acquire)) > LEASE_MS;
-        let wanted = complete && !idle && net::link_ready();
+        let wanted = complete
+            && !idle
+            && if network == 1 {
+                eth::ready()
+            } else {
+                net::link_ready()
+            };
         if !wanted {
             if live.take().is_some() {
+                sparkplug::ended();
                 note!("client stopped");
             }
             CONNECTED.store(false, Ordering::Release);
@@ -598,6 +674,20 @@ fn worker() {
                 live = None;
                 CONNECTED.store(false, Ordering::Release);
                 note!("settings changed, restarting the client");
+                // A session that was up ends here: the new client has the next `bdSeq`.
+                sparkplug::ended();
+                applied = snapshot().0;
+            }
+            // A client without auto reconnect (see `start_client`) that is not connected for a while
+            // is renewed; its will is still valid, so `bdSeq` stays.
+            if applied.will.is_some()
+                && !CONNECTED.load(Ordering::Acquire)
+                && live
+                    .as_ref()
+                    .is_some_and(|l| l.down_since.elapsed() > RETRY_PAUSE)
+            {
+                live = None;
+                note!("sparkplug: no connection, restarting the client");
             }
             if live.is_none() && Instant::now() >= retry_at {
                 if applied.broker.is_empty() {
@@ -628,10 +718,12 @@ fn worker() {
         }
         let broker = format!("{}:{}", applied.broker, applied.port);
         watch(&mut told, &mut live, &broker);
-        if CONNECTED.load(Ordering::Acquire) {
-            if let Some(l) = live.as_mut() {
+        let connected = CONNECTED.load(Ordering::Acquire);
+        if let Some(l) = live.as_mut() {
+            if connected {
                 serve(l, &mut told, &mut retry_at);
             }
+            sparkplug::poll(&mut l.client, connected);
         }
     }
 }

@@ -79,6 +79,8 @@ struct Wanted {
     ap_password: String,
     /// `net` op 64 came: the NTP settings are complete.
     ntp_set: bool,
+    /// NTP may also run over Ethernet (when it is ready).
+    ntp_eth: bool,
     ntp_server: String,
     ntp_period_ms: u32,
 }
@@ -97,6 +99,7 @@ impl Wanted {
             ap_ssid: String::new(),
             ap_password: String::new(),
             ntp_set: false,
+            ntp_eth: false,
             ntp_server: String::new(),
             ntp_period_ms: 0,
         }
@@ -183,14 +186,21 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, mem: &mut Mem<'_>) -> i32 {
 }
 
 fn set_number(code: i32, value: i32) -> i32 {
-    let mut net = lock();
-    let w = &mut net.wanted;
-    match code {
-        1 => w.dhcp = value != 0,
-        2 => w.ntp_period_ms = value.max(0) as u32,
-        63 => w.wifi_set = true,
-        64 => w.ntp_set = true,
-        _ => {} // 3: NTP over Ethernet, not on this board
+    {
+        let mut net = lock();
+        let w = &mut net.wanted;
+        match code {
+            1 => w.dhcp = value != 0,
+            2 => w.ntp_period_ms = value.max(0) as u32,
+            3 => w.ntp_eth = value != 0,
+            63 => w.wifi_set = true,
+            64 => w.ntp_set = true,
+            _ => {}
+        }
+    }
+    if code == 64 {
+        // NTP alone (over Ethernet) needs the thread too; the radio stays off while the mode is 0.
+        ensure_thread();
     }
     0
 }
@@ -228,7 +238,14 @@ fn set_mode(mode: i32) -> i32 {
             net.wanted.mode = mode;
         }
     }
-    if mode != 0 && !STARTED.swap(true, Ordering::AcqRel) {
+    if mode != 0 {
+        ensure_thread();
+    }
+    0
+}
+
+fn ensure_thread() {
+    if !STARTED.swap(true, Ordering::AcqRel) {
         let spawned = std::thread::Builder::new()
             .name("crab-net".into())
             .stack_size(NET_STACK)
@@ -238,7 +255,19 @@ fn set_mode(mode: i32) -> i32 {
             STARTED.store(false, Ordering::Release);
         }
     }
-    0
+}
+
+static SYSLOOP: Mutex<Option<EspSystemEventLoop>> = Mutex::new(None);
+
+/// The system event loop: ESP-IDF hands it out once, so Wi-Fi and Ethernet share this copy.
+pub(super) fn sysloop() -> Result<EspSystemEventLoop, EspError> {
+    let mut slot = SYSLOOP.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(l) = slot.as_ref() {
+        return Ok(l.clone());
+    }
+    let l = EspSystemEventLoop::take()?;
+    *slot = Some(l.clone());
+    Ok(l)
 }
 
 /// The client or the access point has an address: a service on top (MQTT) may open sockets.
@@ -266,6 +295,15 @@ fn unix_now() -> Option<i64> {
     }
     let t = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     Some(t.as_secs() as i64)
+}
+
+/// Unix time in milliseconds, if the clock was set by SNTP.
+pub(super) fn unix_ms() -> Option<u64> {
+    if SYNCED_AT_S.load(Ordering::Acquire) == 0 {
+        return None;
+    }
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some(t.as_millis() as u64)
 }
 
 fn read_ntp(field: i32, offset: i32) -> i32 {
@@ -653,8 +691,9 @@ impl Worker {
         });
     }
 
-    /// Runs SNTP while the client has an address and NTP was set up.
+    /// Runs SNTP while the client (or Ethernet, if NTP is allowed on it) has an address and NTP was set up.
     fn watch_ntp(&mut self, w: &Wanted, client_ready: bool) {
+        let client_ready = client_ready || (w.ntp_eth && super::eth::ready());
         if !w.ntp_set || !client_ready {
             if !w.ntp_set {
                 self.ntp = None;
@@ -705,7 +744,7 @@ fn init() -> Result<Worker, String> {
     let peripherals = Peripherals::take().map_err(|e| format!("peripherals: {e}"))?;
     // The driver keeps the modem for the life of the program.
     let modem: &'static mut Modem = Box::leak(Box::new(peripherals.modem));
-    let sysloop = EspSystemEventLoop::take().map_err(|e| format!("event loop: {e}"))?;
+    let sysloop = sysloop().map_err(|e| format!("event loop: {e}"))?;
     let nvs = EspDefaultNvsPartition::take().ok();
     let wifi =
         EspWifi::new(modem, sysloop.clone(), nvs).map_err(|e| format!("wifi driver: {e}"))?;

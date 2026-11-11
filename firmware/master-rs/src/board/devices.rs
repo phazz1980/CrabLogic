@@ -1,7 +1,7 @@
 //! The hardware of the ESP32-C3 as modules see it. So far: digital pins and the clock;
 //! the other imports answer 0 until their drivers move over from the C++ master.
 
-use super::{mqtt, net};
+use super::{eth, mqtt, net, sparkplug};
 use crab_kernel::abi::id;
 use crab_kernel::host::{Devices, Mem, Val};
 use crab_kernel::lease::{Fault, Hal, PinUse};
@@ -83,8 +83,12 @@ impl Devices for BoardDevices {
             id::NET => {
                 let mut mem = mem;
                 let op = a(0);
-                Some(Val::I32(if (9..=16).contains(&op) {
+                Some(Val::I32(if (6..=8).contains(&op) {
+                    eth::call(op, a(1), a(2), a(3), &mut mem)
+                } else if (9..=16).contains(&op) {
                     mqtt::call(op, a(1), a(2), a(3), a(4), &mut mem)
+                } else if (30..=33).contains(&op) {
+                    sparkplug::call(op, a(1), a(2), a(3), &mut mem)
                 } else {
                     net::call(op, a(1), a(2), a(3), &mut mem)
                 }))

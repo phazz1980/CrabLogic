@@ -30,6 +30,10 @@ pub enum Command {
     List,
     /// The storage: free space and the stored images.
     Info,
+    /// `spdump <ms>`: the Sparkplug messages as hex, nothing is sent.
+    SpDump {
+        ts_ms: u64,
+    },
     Tick {
         name: String,
         count: u32,
@@ -379,6 +383,11 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
             name: name(one(&mut args)?)?,
         },
         "pins" => Command::Pins,
+        "spdump" => Command::SpDump {
+            ts_ms: one(&mut args)?
+                .parse()
+                .map_err(|_| ParseError::InvalidNumber)?,
+        },
         "bus" | "topic" | "queue" => parse_bus(command, &mut args)?,
         _ => return Err(ParseError::UnknownCommand),
     };
@@ -689,6 +698,14 @@ mod tests {
         assert_eq!(typed("ev s"), Command::Events { name: n() });
         assert_eq!(typed("reset s"), Command::Reset { name: n() });
         assert_eq!(typed("pins"), Command::Pins);
+        assert_eq!(
+            typed("spdump 1700000000000"),
+            Command::SpDump {
+                ts_ms: 1_700_000_000_000
+            }
+        );
+        assert_eq!(parse_command("spdump"), Err(ParseError::MissingArgument));
+        assert_eq!(parse_command("spdump x"), Err(ParseError::InvalidNumber));
     }
 
     #[test]

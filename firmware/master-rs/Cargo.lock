@@ -256,10 +256,15 @@ name = "crab-master-rs"
 version = "0.1.0"
 dependencies = [
  "crab-kernel",
+ "crab-sparkplug",
  "embuild",
  "esp-idf-svc",
  "wat",
 ]
+
+[[package]]
+name = "crab-sparkplug"
+version = "1.5.0"
 
 [[package]]
 name = "critical-section"

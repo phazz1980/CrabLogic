@@ -13,9 +13,11 @@
 
 mod devices;
 mod engine;
+mod eth;
 mod flash;
 mod mqtt;
 mod net;
+mod sparkplug;
 mod usb;
 
 use std::collections::VecDeque;
@@ -139,6 +141,7 @@ fn fallback(line: &str) -> &'static str {
         "unforce" if line.contains(' ') => "bad index",
         "out" if line.contains(' ') => "bad count",
         "topic" | "queue" | "bus" => "bad bus command",
+        "spdump" => "spdump <ms>",
         "ev" | "reset" if line.contains(' ') => "no such module",
         _ => "unknown command",
     }
@@ -817,7 +820,7 @@ impl Master {
         // named next to it
         // (the editor does not compile for a CPU it does not see here).
         println!("caps=us,ev,bus");
-        println!("modcaps=flashmod,abi4,aot,{AOT_CPU}");
+        println!("modcaps=flashmod,abi4,aot,sparkplug,{AOT_CPU}");
         // The Rust master is not built per project: the editor reads this prefix as "current".
         println!("id=rs-{}", env!("CARGO_PKG_VERSION"));
         // Safe mode after a boot loop: the editor warns that the stored modules do not run.
@@ -891,6 +894,7 @@ impl Master {
             Ok(Command::Unforce { name, index }) => self.unforce(&name, index),
             Ok(Command::Reset { name }) => self.reset(&name),
             Ok(Command::Pins) => self.pins(),
+            Ok(Command::SpDump { ts_ms }) => sparkplug::dump(ts_ms),
             Ok(Command::Topic {
                 name,
                 state,
@@ -936,6 +940,9 @@ impl Master {
             self.upload_step();
             for text in net::take_notes() {
                 self.log("net", &text);
+            }
+            for text in eth::take_notes() {
+                self.log("eth", &text);
             }
             for text in mqtt::take_notes() {
                 self.log("mqtt", &text);
