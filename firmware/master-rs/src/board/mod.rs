@@ -14,6 +14,7 @@
 mod devices;
 mod engine;
 mod flash;
+mod mqtt;
 mod net;
 mod usb;
 
@@ -935,6 +936,9 @@ impl Master {
             self.upload_step();
             for text in net::take_notes() {
                 self.log("net", &text);
+            }
+            for text in mqtt::take_notes() {
+                self.log("mqtt", &text);
             }
             let dt = last_scan.elapsed().as_millis() as u32;
             if dt >= QUANTUM_MS {

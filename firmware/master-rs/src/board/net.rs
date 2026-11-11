@@ -45,7 +45,7 @@ const MIN_NTP_PERIOD_MS: u32 = 15_000;
 const MAX_TEXT: usize = 128;
 /// Without a radio request (op 2) for this long no module wants the network any more (all were
 /// deleted or stopped), so the radio goes off.
-const LEASE_MS: u32 = 10_000;
+pub(super) const LEASE_MS: u32 = 10_000;
 
 mod status {
     pub const OFF: i32 = 0;
@@ -239,6 +239,12 @@ fn set_mode(mode: i32) -> i32 {
         }
     }
     0
+}
+
+/// The client or the access point has an address: a service on top (MQTT) may open sockets.
+pub fn link_ready() -> bool {
+    let s = lock().snap;
+    s.client_ready || s.ap_ready
 }
 
 fn read_wifi(field: i32) -> i32 {
