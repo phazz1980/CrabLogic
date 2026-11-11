@@ -39,6 +39,9 @@ fn examples() -> Vec<PathBuf> {
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.join("project.toml").is_file())
+        // Examples with their own driver blocks (`library/`, `specs/wasm-drivers`) are modules
+        // only; crab-sim runs them (`tests/driver_example.rs`).
+        .filter(|p| !p.join("library").is_dir())
         .collect();
     dirs.sort();
     dirs

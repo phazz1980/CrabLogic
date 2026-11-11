@@ -90,7 +90,7 @@ name = "net"
 type = "string"
 label = "Сеть"
 default = "wifi"
-description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet W5500»)"
+description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet»)"
 
 [[param.choice]]
 value = "wifi"

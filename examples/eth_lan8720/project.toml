@@ -1,0 +1,9 @@
+[project]
+name = "eth_lan8720"
+description = "Modbus TCP через Ethernet LAN8720 (RMII) на ESP32: кнопка и реле по сети"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit
+# ESP32 + отдельный модуль LAN8720: MDC — 23, MDIO — 18, такт 50 МГц с модуля на GPIO0.
+# Выводы 19, 21, 22, 25, 26, 27 заняты шиной RMII. Адрес — по DHCP, виден на выходе IP.
+# Discrete 0 — кнопка, discrete 1 — связь с сетью, coil 0 — реле.

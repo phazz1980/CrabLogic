@@ -103,7 +103,14 @@ impl EditorApp {
                     let mut project =
                         crab_core::project::Project::load(src).map_err(|e| e.to_string())?;
                     project.path = dest.clone();
-                    project.save().map_err(|e| e.to_string())
+                    // Blocks of the example itself (`library/`) travel in the copy and are
+                    // installed into the user library on open, as for any project file.
+                    let blocks = crab_core::packed::pack_block_folders(&src.join("library"));
+                    let extra: Vec<(&str, &[u8])> = blocks
+                        .iter()
+                        .map(|(n, d)| (n.as_str(), d.as_slice()))
+                        .collect();
+                    project.save_with(&extra).map_err(|e| e.to_string())
                 }
             });
         match copied {

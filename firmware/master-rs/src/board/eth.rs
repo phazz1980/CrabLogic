@@ -1,8 +1,10 @@
-//! Ethernet of the master: a W5500 module on SPI2 (`specs/wasm-kernel/plan.md`, 4.2). Modules reach
-//! this through the `net` import, ops 6..=8 (the same ABI as the C++ master):
+//! Ethernet of the master: a W5500 module on SPI2 (`specs/wasm-kernel/plan.md`, 4.2) or, on the
+//! classic ESP32, a LAN8720 PHY on the EMAC (`specs/lan8720`). Modules reach this through the
+//! `net` import, ops 6..=8 (the same ABI as the C++ master):
 //!
 //! - op 6 `(code, value)`: numbers: 1 DHCP (0/1), 2 SCK, 3 MISO, 4 MOSI, 5 CS, 6 last MAC byte,
-//!   63 the settings are complete;
+//!   7 chip (0 W5500, 1 LAN8720), 8 PHY address, 9 MDC, 10 MDIO, 11 PHY power pin (-1 none),
+//!   12 RMII clock mode (as `FLPROG_RMII_CLOCK_*`), 63 the settings are complete;
 //! - op 7 `(code, ptr, len)`: texts: 1 address, 2 gateway, 3 subnet mask;
 //! - op 8 `(field)`: 0 ready (0/1), 1 IPv4 address (first octet in the lowest byte, as Wi-Fi op 3
 //!   field 4); 0 while not ready.
@@ -14,7 +16,7 @@
 //! The thread `crab-eth` starts on the first op 6 code 63. Pins and the MAC are taken once at that
 //! start (a later change only puts one note in the journal); DHCP or a fixed address may change
 //! at any time. The W5500 is polled over SPI (no INT wire is needed). Pins are checked per chip
-//! before any hardware is touched.
+//! before any hardware is touched; LAN8720 on the C3 (no EMAC) only puts a note in the journal.
 
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
@@ -23,7 +25,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crab_kernel::host::Mem;
-use crab_master_rs::eth_cfg::{check_pins, parse_fixed, Chip, Fixed, Pins};
+use crab_master_rs::eth_cfg::{check_pins, check_rmii, parse_fixed, Chip, Fixed, Pins, Rmii};
 use esp_idf_svc::eth::{EspEth, EthDriver, SpiEth, SpiEthChipset, SpiEventSource};
 use esp_idf_svc::hal::gpio::{AnyIOPin, AnyInputPin, AnyOutputPin};
 use esp_idf_svc::hal::spi::config::DriverConfig;
@@ -62,6 +64,8 @@ struct Wanted {
     pins: Pins,
     /// Last byte of the MAC `78:AC:C0:2C:3E:xx`.
     mac: u8,
+    /// LAN8720 on the EMAC instead of the W5500 (codes 7..=12).
+    rmii: Option<Rmii>,
     ip: String,
     gateway: String,
     subnet: String,
@@ -78,6 +82,7 @@ static WANTED: Mutex<Wanted> = Mutex::new(Wanted {
         cs: 5,
     },
     mac: 40,
+    rmii: None,
     ip: String::new(),
     gateway: String::new(),
     subnet: String::new(),
@@ -85,6 +90,8 @@ static WANTED: Mutex<Wanted> = Mutex::new(Wanted {
 });
 static STARTED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
+/// The W5500 driver took SPI2 (never freed): the SPI of driver blocks cannot use it on the C3.
+static SPI2_TAKEN: AtomicBool = AtomicBool::new(false);
 /// First octet in the lowest byte, as Wi-Fi reports it; 0 while not ready.
 static IP: AtomicU32 = AtomicU32::new(0);
 
@@ -96,7 +103,7 @@ macro_rules! note {
     ($($arg:tt)*) => { push_note(format!($($arg)*)) };
 }
 
-fn push_note(text: String) {
+pub fn push_note(text: String) {
     let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
     if q.len() == MAX_NOTES {
         q.pop_front();
@@ -112,6 +119,12 @@ pub fn take_notes() -> Vec<String> {
 
 fn lock() -> std::sync::MutexGuard<'static, Wanted> {
     WANTED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the W5500 driver took (or is about to take) SPI2.
+#[cfg(target_arch = "riscv32")]
+pub fn spi2_taken() -> bool {
+    SPI2_TAKEN.load(Ordering::Acquire)
 }
 
 /// The interface has a link and an address: a service on top (MQTT, NTP) may open sockets.
@@ -143,6 +156,17 @@ fn set_number(code: i32, value: i32) -> i32 {
             4 => w.pins.mosi = value,
             5 => w.pins.cs = value,
             6 => w.mac = value.clamp(0, 255) as u8,
+            7 => w.rmii = (value == 1).then_some(Rmii::MODULE),
+            8..=12 => {
+                let r = w.rmii.get_or_insert(Rmii::MODULE);
+                match code {
+                    8 => r.phy_addr = value,
+                    9 => r.mdc = value,
+                    10 => r.mdio = value,
+                    11 => r.power = value,
+                    _ => r.clock = value,
+                }
+            }
             63 => w.complete = true,
             _ => {}
         }
@@ -226,9 +250,10 @@ fn fixed_of(w: &Wanted) -> Option<Fixed> {
     }
 }
 
-fn create(w: &Wanted, fixed: Option<Fixed>) -> Result<Eth, String> {
+fn create_spi(w: &Wanted, fixed: Option<Fixed>) -> Result<Eth, String> {
     let sysloop = net::sysloop().map_err(|e| format!("event loop: {e}"))?;
     let p = w.pins;
+    SPI2_TAKEN.store(true, Ordering::Release);
     // SAFETY: nothing else in the master uses SPI2 or these pins (the pins were checked against
     // the flash and the USB console of the chip), and the thread creates them once.
     let (spi, sck, mosi, miso, cs) = unsafe {
@@ -270,27 +295,94 @@ fn create(w: &Wanted, fixed: Option<Fixed>) -> Result<Eth, String> {
     EspEth::wrap_all(driver, netif).map_err(|e| format!("interface glue: {e}"))
 }
 
+/// LAN8720 on the EMAC of the classic ESP32. The data pins are fixed by the chip; MDC, MDIO and
+/// the power pin come from the module.
+#[cfg(target_arch = "xtensa")]
+fn create_rmii(
+    r: Rmii,
+    fixed: Option<Fixed>,
+) -> Result<EspEth<'static, esp_idf_svc::eth::RmiiEth>, String> {
+    use esp_idf_svc::eth::{RmiiClockConfig, RmiiEthChipset};
+    use esp_idf_svc::hal::gpio::{Gpio0, Gpio16, Gpio17, Gpio19, Gpio21, Gpio22, Gpio25};
+    use esp_idf_svc::hal::gpio::{Gpio26, Gpio27, PinDriver};
+    use esp_idf_svc::hal::mac::MAC;
+
+    let sysloop = net::sysloop().map_err(|e| format!("event loop: {e}"))?;
+    if r.power >= 0 {
+        // The PHY (or its 50 MHz oscillator) is switched on only now, after the boot: an
+        // oscillator on GPIO0 must not run while the strapping pins are read.
+        // SAFETY: the pin was checked against the flash, the RMII pins and the other PHY pins.
+        let mut power = PinDriver::output(unsafe { AnyOutputPin::new(r.power) })
+            .map_err(|e| format!("power pin: {e}"))?;
+        power.set_high().map_err(|e| format!("power pin: {e}"))?;
+        // Kept high for the life of the board.
+        std::mem::forget(power);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // SAFETY: nothing else in the master uses the EMAC, the RMII pins or these GPIOs (checked by
+    // `check_rmii`), and the thread creates them once.
+    let driver = unsafe {
+        let clock = match r.clock {
+            1 => RmiiClockConfig::<Gpio0, Gpio16, Gpio17>::OutputGpio0(Gpio0::new()),
+            2 => RmiiClockConfig::OutputGpio16(Gpio16::new()),
+            3 => RmiiClockConfig::OutputInvertedGpio17(Gpio17::new()),
+            _ => RmiiClockConfig::Input(Gpio0::new()),
+        };
+        EthDriver::new_rmii(
+            MAC::new(),
+            Gpio25::new(),
+            Gpio26::new(),
+            Gpio27::new(),
+            AnyOutputPin::new(r.mdc),
+            Gpio22::new(),
+            Gpio21::new(),
+            Gpio19::new(),
+            AnyIOPin::new(r.mdio),
+            clock,
+            None::<AnyOutputPin>,
+            RmiiEthChipset::LAN87XX,
+            Some(r.phy_addr as u32),
+            sysloop,
+        )
+    }
+    .map_err(|e| format!("LAN8720 driver: {e}"))?;
+    let netif = eth_netif(fixed).map_err(|e| format!("interface: {e}"))?;
+    EspEth::wrap_all(driver, netif).map_err(|e| format!("interface glue: {e}"))
+}
+
 fn ip_to_u32(ip: Ipv4Addr) -> u32 {
     u32::from_le_bytes(ip.octets())
 }
 
 fn worker() {
     let first = lock().clone();
-    if let Err(text) = check_pins(CHIP, first.pins) {
+    let checked = match first.rmii {
+        Some(r) => check_rmii(CHIP, r),
+        None => check_pins(CHIP, first.pins),
+    };
+    if let Err(text) = checked {
         note!("{text}");
         // Not started: the next "settings complete" (a module restart) may bring other pins.
         STARTED.store(false, Ordering::Release);
         return;
     }
-    let mut fixed = fixed_of(&first);
-    let mut eth = match create(&first, fixed) {
-        Ok(e) => e,
-        Err(text) => {
-            note!("cannot start Ethernet: {text}");
-            // The bus stays taken (see `create`): no second try before a reset.
-            return;
-        }
+    let fixed = fixed_of(&first);
+    let created = match first.rmii {
+        #[cfg(target_arch = "xtensa")]
+        Some(r) => create_rmii(r, fixed).map(|eth| run(eth, first, fixed)),
+        // `check_rmii` has refused LAN8720 on a chip without the EMAC.
+        #[cfg(not(target_arch = "xtensa"))]
+        Some(_) => Ok(()),
+        None => create_spi(&first, fixed).map(|eth| run(eth, first, fixed)),
     };
+    if let Err(text) = created {
+        note!("cannot start Ethernet: {text}");
+        // The bus stays taken (see `create_spi`): no second try before a reset.
+    }
+}
+
+/// Starts the interface, then follows the settings and the link for the life of the board.
+fn run<T>(mut eth: EspEth<'static, T>, first: Wanted, mut fixed: Option<Fixed>) {
     if let Err(e) = eth.start() {
         note!("start failed: {e}");
         return;
@@ -303,7 +395,8 @@ fn worker() {
     loop {
         let wanted = lock().clone();
         if wanted != seen {
-            if (wanted.pins, wanted.mac) != (first.pins, first.mac) && !told_pins {
+            let hardware = (wanted.pins, wanted.mac, wanted.rmii);
+            if hardware != (first.pins, first.mac, first.rmii) && !told_pins {
                 told_pins = true;
                 note!("pins/MAC change needs a reset");
             }

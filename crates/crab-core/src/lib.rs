@@ -11,6 +11,7 @@ pub mod edit;
 pub mod error;
 pub mod expander;
 pub mod ident;
+pub mod lan8720;
 pub mod layout;
 pub mod library;
 pub mod local;

@@ -12,7 +12,7 @@ includes = ["flprogModbusTCP.h"]
 name = "net"
 type = "string"
 default = "wifi"
-description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet W5500»)"
+description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet»)"
 
 [[param]]
 name = "ip"

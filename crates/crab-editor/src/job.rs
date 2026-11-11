@@ -751,13 +751,14 @@ fn upload_modules(
         space.as_ref(),
         &sheets,
         &project.work_dir().join("aot"),
-        &mut || {
+        &mut |target| {
             let wamrc = crate::theme::wamrc_path();
             let manual = (!wamrc.is_empty()).then(|| std::path::PathBuf::from(wamrc));
             let mut shown = 0;
             // Both callbacks log; they never run at the same time.
             let log = std::cell::RefCell::new(&mut *out);
-            crab_build::wamrc::ensure(
+            crab_build::wamrc::ensure_for(
+                target,
                 manual.as_deref(),
                 control.cancel_flag(),
                 &mut |line| (log.borrow_mut())(LogLevel::Info, line),

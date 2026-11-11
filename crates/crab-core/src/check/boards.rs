@@ -1,4 +1,6 @@
 use super::*;
+use crate::lan8720::Lan8720;
+use crate::pins::Chip;
 
 /// Blocks on pins of an expander that the board carries: the pin must be one the board
 /// brings out and must do what the block wants.
@@ -67,6 +69,37 @@ pub(super) fn check_board_blocks(project: &Project, lib: &Library, report: &mut 
                 block.kind
             ),
         );
+    }
+}
+
+/// The `ethernet` block with LAN8720: only the classic ESP32 has the EMAC, and an
+/// oscillator on GPIO0 with no power pin may stop the boot.
+pub(super) fn check_lan8720(project: &Project, chip: Option<Chip>, report: &mut Report) {
+    for block in project.logic.blocks.iter().filter(|b| b.kind == "ethernet") {
+        let Some(phy) = Lan8720::from_params(&block.params) else {
+            continue;
+        };
+        let id = block.id.as_str();
+        if chip.is_some_and(|c| c != Chip::Esp32) {
+            report.block_error(
+                DiagKind::BoardBlock,
+                id,
+                format!("блок «{id}»: LAN8720 работает только на классическом ESP32 — у этого чипа нет встроенного Ethernet (EMAC); выберите W5500 или плату ESP32"),
+            );
+        }
+        // Only for the own pins: a preset is a board as the user has it (decision 27 of
+        // `specs/wasm-kernel/questions.md`).
+        let custom =
+            matches!(block.params.get("preset"), Some(ParamValue::Text(p)) if p == "custom");
+        if custom && phy.clock_risk() {
+            report.push(
+                DiagKind::PinWarning,
+                Severity::Warning,
+                Some(id),
+                None,
+                format!("блок «{id}»: генератор 50 МГц модуля LAN8720 подаёт такт на GPIO0 с момента включения, а GPIO0 решает режим загрузки — ESP32 может не запуститься. Нужен вывод «Питание PHY», который включает генератор после старта (или доработка модуля)"),
+            );
+        }
     }
 }
 

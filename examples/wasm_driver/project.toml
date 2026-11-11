@@ -1,0 +1,8 @@
+[project]
+name = "wasm_driver"
+description = "Драйвер на WASM: BMP280 по I²C, вентилятор при температуре выше 30 °C. Только модулем на мастере Rust."
+
+# Блок bmp280 лежит в library/ рядом: скопируйте library/bmp280 в свой набор блоков
+# (user_library/Мои блоки/bmp280/), чтобы открыть проект в редакторе.
+[board]
+fqbn = "esp32:esp32:esp32"

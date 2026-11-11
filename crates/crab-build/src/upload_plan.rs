@@ -9,7 +9,7 @@ use crab_core::logic::SheetSpeed;
 use crate::board_memo::BoardMemo;
 use crate::mcu_module::{read_line, MasterInfo, ModuleImage, ModuleUploadError};
 use crate::placement::{self, DemoteReason, Mode, PlacementError, SheetImage};
-use crate::wamrc::{self, WamrcError};
+use crate::wamrc::{self, AotTarget, WamrcError};
 
 /// Scan period of the master; every sheet has it for now.
 pub const MASTER_PERIOD_MS: u32 = 10;
@@ -537,7 +537,7 @@ pub fn plan_upload(
     space: Option<&CrabmodSpace>,
     modules: &[SheetModule],
     cache: &Path,
-    wamrc: &mut dyn FnMut() -> Result<PathBuf, WamrcError>,
+    wamrc: &mut dyn FnMut(AotTarget) -> Result<PathBuf, WamrcError>,
 ) -> Result<UploadPlan, UploadPlanError> {
     let Some(target) = info.aot_target() else {
         if let Some(m) = modules.iter().find(|m| m.speed == SheetSpeed::Fast) {
@@ -564,7 +564,7 @@ pub fn plan_upload(
             continue;
         }
         if compiler.is_none() {
-            compiler = Some(match wamrc() {
+            compiler = Some(match wamrc(target) {
                 Ok(exe) => Ok(exe),
                 Err(WamrcError::Cancelled) => return Err(UploadPlanError::Cancelled),
                 Err(e) => Err(e.to_string()),
@@ -926,7 +926,7 @@ mod tests {
             Some(&space),
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || panic!("no compiler needed"),
+            &mut |_| panic!("no compiler needed"),
         )
         .ok()
         .unwrap();
@@ -948,7 +948,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || panic!("no compiler needed"),
+            &mut |_| panic!("no compiler needed"),
         )
         .ok()
         .unwrap();
@@ -984,7 +984,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || panic!("no compiler needed"),
+            &mut |_| panic!("no compiler needed"),
         )
         .ok()
         .unwrap();
@@ -1003,7 +1003,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Fast)],
             &t.0,
-            &mut || panic!("no compiler needed"),
+            &mut |_| panic!("no compiler needed"),
         )
         .err()
         .unwrap();
@@ -1022,7 +1022,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Background)],
             &t.0,
-            &mut || panic!("background sheets are not compiled"),
+            &mut |_| panic!("background sheets are not compiled"),
         )
         .ok()
         .unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || panic!("cached"),
+            &mut |_| panic!("cached"),
         )
         .ok()
         .unwrap();
@@ -1070,7 +1070,7 @@ mod tests {
                 module(3, &b, SheetSpeed::Normal),
             ],
             &t.0,
-            &mut || panic!("cached"),
+            &mut |_| panic!("cached"),
         )
         .ok()
         .unwrap();
@@ -1096,7 +1096,7 @@ mod tests {
             None,
             &[module(3, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || {
+            &mut |_| {
                 asked += 1;
                 Err(WamrcError::Download("нет сети".to_owned()))
             },
@@ -1122,7 +1122,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
-            &mut || Err(WamrcError::Cancelled),
+            &mut |_| Err(WamrcError::Cancelled),
         )
         .err()
         .unwrap();
@@ -1138,7 +1138,7 @@ mod tests {
             None,
             &[module(2, &w, SheetSpeed::Fast)],
             &t.0,
-            &mut || Err(WamrcError::Failed("x".to_owned())),
+            &mut |_| Err(WamrcError::Failed("x".to_owned())),
         )
         .err()
         .unwrap();

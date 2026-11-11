@@ -42,6 +42,7 @@ extern "C" {
         err_len: u32,
     ) -> Module;
     fn crab_wamr_is_aot(module: Module) -> i32;
+    fn crab_wamr_unload(module: Module);
     fn crab_wamr_import(
         module: Module,
         index: i32,
@@ -70,7 +71,6 @@ extern "C" {
     fn wasm_runtime_get_module_inst(env: Env) -> Inst;
     fn wasm_runtime_destroy_exec_env(env: Env);
     fn wasm_runtime_deinstantiate(inst: Inst);
-    fn wasm_runtime_unload(module: Module);
 }
 
 /// WASM operand stack and execution environment of one module, bytes (stage 0 measurements).
@@ -420,7 +420,7 @@ impl<H> Drop for WamrInstance<H> {
             if !self.inst.is_null() {
                 wasm_runtime_deinstantiate(self.inst);
             }
-            wasm_runtime_unload(self.module);
+            crab_wamr_unload(self.module);
         }
     }
 }

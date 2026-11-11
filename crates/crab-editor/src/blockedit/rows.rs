@@ -124,7 +124,7 @@ pub(super) fn ports_table(ui: &mut Ui, id: &str, rows: &mut Vec<PortRow>, inputs
                 RichText::new(if inputs {
                     crate::i18n::tr("Если не подключён")
                 } else {
-                    ""
+                    crate::i18n::tr("В симуляции")
                 })
                 .strong(),
             );
@@ -147,7 +147,13 @@ pub(super) fn ports_table(ui: &mut Ui, id: &str, rows: &mut Vec<PortRow>, inputs
                         "Значение неподключённого входа; пусто — вход надо подключить",
                     ));
                 } else {
-                    ui.label("");
+                    ui.add_sized(
+                        [90.0, 20.0],
+                        TextEdit::singleline(&mut row.sim).hint_text(crate::i18n::tr("нет")),
+                    )
+                    .on_hover_text(crate::i18n::tr(
+                        "Значение выхода в симуляции на компьютере, если код блока работает                          только на плате (драйвер железа); пусто — 0",
+                    ));
                 }
                 ui.add_sized(
                     [130.0, 20.0],

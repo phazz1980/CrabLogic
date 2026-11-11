@@ -263,6 +263,38 @@ fn write_block(user_dir: &Path, group: &str, kind: &str, files: &[PackedFile]) -
     crate::blockfile::write_files(&dir, files).is_ok()
 }
 
+/// Archive entries for every block folder under `dir` (an example's own `library/`, e.g.
+/// `examples/wasm_driver/library/bmp280`): packed as user blocks, so opening the example
+/// installs them like the blocks of any project file.
+pub fn pack_block_folders(dir: &Path) -> Vec<PackedFile> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut folders: Vec<_> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join(crate::library::BLOCK_FILE).is_file())
+        .collect();
+    folders.sort();
+    let mut out = Vec::new();
+    for folder in folders {
+        let Ok(block) = crate::library::LibraryBlock::load(&folder) else {
+            continue;
+        };
+        let kind = &block.def.info.kind;
+        let group = block.def.info.group.trim_matches('/');
+        let prefix = if group.is_empty() {
+            format!("{PACKED_DIR}/{kind}")
+        } else {
+            format!("{PACKED_DIR}/{group}/{kind}")
+        };
+        if let Ok(files) = crate::blockfile::read_files(&folder) {
+            out.extend(files.into_iter().map(|(n, d)| (format!("{prefix}/{n}"), d)));
+        }
+    }
+    out
+}
+
 /// Restores the packed user blocks of the project file `project` that are missing in
 /// `lib` into `user_dir` (the `user_library/` folder). Blocks that already exist stay as
 /// they are. Returns the types written; the caller reloads the library when it is not empty.
@@ -470,6 +502,35 @@ mod tests {
         assert!(!safe_part(".."));
         assert!(!safe_part(""));
         assert!(!safe_part("C:"));
+    }
+
+    #[test]
+    fn example_blocks_travel_in_the_example_copy() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let src = repo.join("examples/wasm_driver");
+        let entries = pack_block_folders(&src.join("library"));
+        assert!(entries
+            .iter()
+            .any(|(n, _)| n == "user_blocks/Датчики/bmp280/block.wasm"));
+
+        let root = std::env::temp_dir().join(format!("crab_example_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project::load(&src).unwrap();
+        project.path = root.join("wasm_driver.crab");
+        let extra: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        project.save_with(&extra).unwrap();
+
+        let (lib, _) = Library::load(repo.join("library")).unwrap();
+        assert!(lib.get("bmp280").is_none());
+        let user = root.join("user_library");
+        let written = unpack_missing_blocks(&project.path, &user, &lib);
+        assert_eq!(written, ["bmp280"]);
+        assert!(user.join("Датчики/bmp280/block.wasm").is_file());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

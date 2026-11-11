@@ -1,0 +1,14 @@
+# Classic ESP32 DevKit (added by ESP-IDF on top of sdkconfig.defaults for this target): the console
+# is UART0 through the USB-UART bridge of the board (CP2102/CH340), as the C++ master uses it.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# Most DevKits wire the flash for DIO; QIO is not safe to assume.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# The EMAC for LAN8720 on RMII (the `ethernet` block with chip = "lan8720"); only the classic ESP32 has it.
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_PHY_INTERFACE_RMII=y
+
+# UART0 is both the console and the protocol channel of the master: only warnings and errors
+# of ESP-IDF go there (info lines of Wi-Fi or GPIO would slow the steps and mix with the answers).
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y

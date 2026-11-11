@@ -1,7 +1,9 @@
 //! `wamrc` (the WAMR AOT compiler): finding it, downloading it on first use and running it.
 //!
 //! It is not shipped with the program: the pinned release is fetched into
-//! `<program folder>/tools/wamrc-<version>/` and checked against a SHA-256.
+//! `<program folder>/tools/wamrc-<version>/` and checked against a SHA-256. The build that can target
+//! Xtensa (classic ESP32) comes from the CrabLogic release `wamrc-esp-<version>` into
+//! `tools/wamrc-esp-<version>/`.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -13,16 +15,25 @@ use sha2::{Digest, Sha256};
 pub const WAMRC_VERSION: &str = "2.4.5";
 /// SHA-256 of `wamrc-<version>-x86_64-windows-2022.zip`.
 const WAMRC_ZIP_SHA256: &str = "a913cda13f7d8aa6c3d77229d3f9c268a8714c5ce86be3e13b39cedb07ea958e";
+/// SHA-256 of `wamrc-esp-<version>-x86_64-windows.zip` from the CrabLogic release `wamrc-esp-<version>`
+/// (`firmware/master-rs/tools/pack-wamrc.ps1`).
+const WAMRC_ESP_ZIP_SHA256: &str =
+    "3ff306f5be755519e7ea6b2cd9e851f8e078556b5732f6304cd141f304c4c739";
 /// Name of the compiler inside the archive and in the tool folder.
 const EXE_NAME: &str = "wamrc.exe";
 /// Environment variable with a path to a hand-installed compiler.
 const ENV_VAR: &str = "CRAB_WAMRC";
+/// Environment variable with a path to a wamrc that can target Xtensa (classic ESP32).
+const ENV_VAR_XTENSA: &str = "CRAB_WAMRC_ESP";
 
 /// CPU a module is compiled for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AotTarget {
-    /// ESP32-C3; Xtensa comes later.
+    /// ESP32-C3.
     Riscv32Imc,
+    /// Classic ESP32: needs a wamrc built with Espressif's LLVM (`firmware/master-rs/tools/build-wamrc.cmd`);
+    /// the image is pre-linked by `aot_xtensa::prelink` after wamrc.
+    XtensaEsp32,
 }
 
 impl AotTarget {
@@ -34,6 +45,14 @@ impl AotTarget {
                 "--target-abi=ilp32",
                 "--cpu=generic-rv32",
                 "--cpu-features=+m,+c,-a,-f,-d",
+                "--xip",
+                "--disable-simd",
+                "--disable-ref-types",
+                "--bounds-checks=1",
+            ],
+            AotTarget::XtensaEsp32 => &[
+                "--target=xtensa",
+                "--cpu=esp32",
                 "--xip",
                 "--disable-simd",
                 "--disable-ref-types",
@@ -70,6 +89,21 @@ pub enum WamrcError {
     #[error("wamrc завершился с ошибкой:\n{0}")]
     Failed(String),
     #[error(
+        "не найден wamrc с поддержкой ESP32 (Xtensa): официальный wamrc умеет только RISC-V. \
+         Соберите его скриптом firmware/master-rs/tools/build-wamrc.cmd и положите в папку \
+         tools/wamrc-esp-{WAMRC_VERSION} рядом с программой (или укажите путь в переменной среды \
+         CRAB_WAMRC_ESP)"
+    )]
+    NoXtensa,
+    #[error(
+        "не удалось скачать wamrc для ESP32: {0}. Проверьте подключение к интернету или скачайте \
+         архив wamrc-esp-{WAMRC_VERSION}-x86_64-windows.zip со страницы релизов CrabLogic \
+         (github.com/phazz1980/CrabLogic/releases), распакуйте его в папку \
+         tools/wamrc-esp-{WAMRC_VERSION} рядом с программой (или укажите путь к wamrc.exe в \
+         переменной среды CRAB_WAMRC_ESP)"
+    )]
+    DownloadXtensa(String),
+    #[error(
         "автоматическая загрузка wamrc поддерживается только в Windows x64: скачайте wamrc \
          вручную и укажите путь к нему в настройках (или в переменной среды CRAB_WAMRC)"
     )]
@@ -94,6 +128,70 @@ pub fn tool_dir() -> Option<PathBuf> {
         exe.parent()?
             .join("tools")
             .join(format!("wamrc-{WAMRC_VERSION}")),
+    )
+}
+
+/// `<program folder>/tools/wamrc-esp-<version>/` (the wamrc that can target Xtensa) whether or not
+/// it exists.
+pub fn tool_dir_xtensa() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(
+        exe.parent()?
+            .join("tools")
+            .join(format!("wamrc-esp-{WAMRC_VERSION}")),
+    )
+}
+
+/// The compiler for `target`: for RISC-V `ensure` (may download the official release); for Xtensa
+/// `CRAB_WAMRC_ESP`, else `tool_dir_xtensa()`, else the CrabLogic build downloaded from the
+/// CrabLogic GitHub release (official wamrc has no Xtensa).
+pub fn ensure_for(
+    target: AotTarget,
+    manual: Option<&Path>,
+    cancel: &AtomicBool,
+    on_line: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<PathBuf, WamrcError> {
+    match target {
+        AotTarget::Riscv32Imc => ensure(manual, cancel, on_line, progress),
+        AotTarget::XtensaEsp32 => {
+            let env = std::env::var_os(ENV_VAR_XTENSA).map(PathBuf::from);
+            match locate_in(None, env.as_deref(), tool_dir_xtensa().as_deref()) {
+                Some(p) => Ok(p),
+                None => install_xtensa(cancel, on_line, progress),
+            }
+        }
+    }
+}
+
+/// Downloads the CrabLogic build of wamrc with Xtensa (wamrc.exe + VC++ runtime DLLs, packed by
+/// `firmware/master-rs/tools/pack-wamrc.ps1`) into `tool_dir_xtensa()`.
+pub fn install_xtensa(
+    cancel: &AtomicBool,
+    on_line: &mut dyn FnMut(&str),
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<PathBuf, WamrcError> {
+    if !cfg!(windows) {
+        return Err(WamrcError::NoXtensa);
+    }
+    let dir = tool_dir_xtensa()
+        .ok_or_else(|| WamrcError::Download("не найдена папка программы".to_string()))?;
+    let url = format!(
+        "https://github.com/phazz1980/CrabLogic/releases/download/wamrc-esp-{v}/wamrc-esp-{v}-x86_64-windows.zip",
+        v = WAMRC_VERSION
+    );
+    install_into(
+        &dir,
+        WAMRC_ESP_ZIP_SHA256,
+        cancel,
+        on_line,
+        progress,
+        &mut |progress| {
+            http_fetch(&url, cancel, progress).map_err(|e| match e {
+                WamrcError::Download(why) => WamrcError::DownloadXtensa(why),
+                other => other,
+            })
+        },
     )
 }
 
@@ -207,29 +305,38 @@ fn install_into(
     }
     let bad = |e: &dyn std::fmt::Display| WamrcError::BadArchive(e.to_string());
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| bad(&e))?;
-    // The exe may sit in a subfolder of the archive.
-    let index = (0..zip.len())
-        .find(|&i| {
-            zip.by_index(i)
-                .is_ok_and(|f| f.is_file() && f.name().rsplit('/').next() == Some(EXE_NAME))
+    // Files may sit in a subfolder of the archive; they are unpacked flat. The exe goes last, so a
+    // tool folder with the exe always has the DLLs that came with it (the CrabLogic build of wamrc
+    // brings the VC++ runtime).
+    let mut files: Vec<(usize, String)> = (0..zip.len())
+        .filter_map(|i| {
+            let f = zip.by_index(i).ok()?;
+            let name = f.name().rsplit('/').next().unwrap_or("").to_string();
+            (f.is_file() && !name.is_empty()).then_some((i, name))
         })
-        .ok_or_else(|| bad(&"в архиве нет wamrc.exe"))?;
-    let mut entry = zip.by_index(index).map_err(|e| bad(&e))?;
-    std::fs::create_dir_all(dir).map_err(io_err(dir))?;
-    let target = dir.join(EXE_NAME);
-    let part = dir.join(format!("{EXE_NAME}.part"));
-    let written = (|| {
-        let mut out = std::fs::File::create(&part).map_err(io_err(&part))?;
-        std::io::copy(&mut entry, &mut out).map_err(io_err(&part))?;
-        out.flush().map_err(io_err(&part))
-    })();
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&part);
-        return Err(e);
+        .collect();
+    if !files.iter().any(|(_, n)| n == EXE_NAME) {
+        return Err(bad(&"в архиве нет wamrc.exe"));
     }
-    std::fs::rename(&part, &target).map_err(io_err(&target))?;
+    files.sort_by_key(|(_, n)| n == EXE_NAME);
+    std::fs::create_dir_all(dir).map_err(io_err(dir))?;
+    for (index, name) in files {
+        let mut entry = zip.by_index(index).map_err(|e| bad(&e))?;
+        let target = dir.join(&name);
+        let part = dir.join(format!("{name}.part"));
+        let written = (|| {
+            let mut out = std::fs::File::create(&part).map_err(io_err(&part))?;
+            std::io::copy(&mut entry, &mut out).map_err(io_err(&part))?;
+            out.flush().map_err(io_err(&part))
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&part);
+            return Err(e);
+        }
+        std::fs::rename(&part, &target).map_err(io_err(&target))?;
+    }
     on_line("wamrc установлен");
-    Ok(target)
+    Ok(dir.join(EXE_NAME))
 }
 
 pub(crate) fn cache_key(wasm: &[u8], target: AotTarget) -> String {
@@ -240,6 +347,10 @@ pub(crate) fn cache_key(wasm: &[u8], target: AotTarget) -> String {
     for arg in target.args() {
         hasher.update(arg.as_bytes());
         hasher.update([0]);
+    }
+    if target == AotTarget::XtensaEsp32 {
+        // The cached image is the pre-linked one: a change of `prelink` must not reuse old files.
+        hasher.update(b"prelink-1 ");
     }
     hasher.update(wasm);
     hex(&hasher.finalize())[..16].to_string()
@@ -274,7 +385,11 @@ pub fn compile(
     let result = run_wamrc(wamrc, target, &wasm_path, &out_path);
     let _ = std::fs::remove_file(&wasm_path);
     let _ = std::fs::remove_file(&out_path);
-    let image = result?;
+    let mut image = result?;
+    if target == AotTarget::XtensaEsp32 {
+        image =
+            crate::aot_xtensa::prelink(&image).map_err(|e| WamrcError::Failed(e.to_string()))?;
+    }
 
     let part = cache.join(format!("{key}.aot.part"));
     std::fs::write(&part, &image).map_err(io_err(&part))?;
@@ -385,6 +500,54 @@ mod tests {
             Some(env)
         );
         assert_eq!(locate_in(Some(&missing), None, Some(&cache)), Some(cached));
+    }
+
+    #[test]
+    fn install_unpacks_dlls_with_exe() {
+        let t = TempDir::new("install-dlls");
+        let dir = t.0.join("tools").join("wamrc-esp");
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, body) in [
+            ("wamrc.exe", &b"exe"[..]),
+            ("msvcp140.dll", b"dll1"),
+            ("sub/vcruntime140.dll", b"dll2"),
+        ] {
+            w.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(body).unwrap();
+        }
+        let zip = w.finish().unwrap().into_inner();
+        let exe = install_into(
+            &dir,
+            &sha(&zip),
+            &AtomicBool::new(false),
+            &mut |_| {},
+            &mut |_, _| {},
+            &mut |_| Ok(zip.clone()),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"exe");
+        assert_eq!(std::fs::read(dir.join("msvcp140.dll")).unwrap(), b"dll1");
+        assert_eq!(
+            std::fs::read(dir.join("vcruntime140.dll")).unwrap(),
+            b"dll2"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn real_esp_archive_when_present() {
+        // The archive packed by pack-wamrc.ps1 must match the pinned hash (set CRAB_WAMRC_ESP_ZIP).
+        let Some(path) = std::env::var_os("CRAB_WAMRC_ESP_ZIP") else {
+            return;
+        };
+        let data = std::fs::read(path).unwrap();
+        assert_eq!(sha(&data), WAMRC_ESP_ZIP_SHA256);
     }
 
     #[test]
@@ -534,5 +697,34 @@ mod tests {
         // The second call must not need the compiler at all.
         let second = compile(&t.0.join("gone.exe"), wasm, AotTarget::Riscv32Imc, &cache).unwrap();
         assert_eq!(first, second);
+    }
+
+    /// With the locally built Xtensa wamrc (`firmware/master-rs/tools/build-wamrc.cmd`): the image
+    /// comes out pre-linked, with no `.rela.text` group left.
+    #[test]
+    fn real_compile_xtensa() {
+        let exe = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../firmware/master-rs/.deps/wamrc-esp/wamrc.exe");
+        if !exe.is_file() {
+            return;
+        }
+        let t = TempDir::new("real-xtensa");
+        let cache = t.0.join("aot");
+        // (func (export "f") (result i32) i32.const 0x12345678): the constant needs a literal.
+        let wasm: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type () -> i32
+            0x03, 0x02, 0x01, 0x00, // function 0 of type 0
+            0x07, 0x05, 0x01, 0x01, b'f', 0x00, 0x00, // export "f"
+            0x0a, 0x0a, 0x01, 0x08, 0x00, 0x41, 0xf8, 0xac, 0xd1, 0x91, 0x01, 0x0b, // code
+        ];
+        let raw_out = t.0.join("raw.aot");
+        let wasm_path = t.0.join("m.wasm");
+        std::fs::write(&wasm_path, wasm).unwrap();
+        let raw = run_wamrc(&exe, AotTarget::XtensaEsp32, &wasm_path, &raw_out).unwrap();
+        let image = compile(&exe, wasm, AotTarget::XtensaEsp32, &cache).unwrap();
+        assert!(image.starts_with(b" aot"));
+        assert_eq!(crate::aot_xtensa::prelink(&image).unwrap(), image);
+        assert_eq!(crate::aot_xtensa::prelink(&raw).unwrap(), image);
     }
 }

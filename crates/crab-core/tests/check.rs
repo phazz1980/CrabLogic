@@ -860,3 +860,115 @@ fn mqtt_settings_switch_wifi_on() {
     );
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn lan8720_pins_chip_and_clock() {
+    use crab_core::{ParamValue, Severity};
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/eth_lan8720")).unwrap();
+    let report = crab_core::check_project(&project, &lib);
+    assert!(
+        report.errors().next().is_none(),
+        "{:#?}",
+        report.diagnostics
+    );
+    // The module's oscillator on GPIO0 with no power pin: no warning for a preset...
+    let clock_warning = |r: &crab_core::Report| {
+        r.diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.message.contains("GPIO0"))
+    };
+    assert!(!clock_warning(&report), "{:#?}", report.diagnostics);
+    // ...but a warning for the own pins with the same clock.
+    let eth = project.logic.blocks.iter_mut().find(|b| b.id == "eth");
+    eth.unwrap()
+        .params
+        .insert("preset".into(), ParamValue::Text("custom".into()));
+    assert!(clock_warning(&crab_core::check_project(&project, &lib)));
+
+    // RMII pins are taken: a relay on RXD1 (GPIO26) conflicts.
+    let relay = project.logic.blocks.iter_mut().find(|b| b.id == "relay");
+    relay
+        .unwrap()
+        .params
+        .insert("pin".into(), ParamValue::Int(26));
+    let errors: Vec<_> = crab_core::check_project(&project, &lib)
+        .errors()
+        .map(|d| d.kind)
+        .collect();
+    assert_eq!(errors, [DiagKind::PinBusy]);
+
+    // W5500 by default: the same pin is free again.
+    let eth = project
+        .logic
+        .blocks
+        .iter_mut()
+        .find(|b| b.id == "eth")
+        .unwrap();
+    eth.params.remove("chip");
+    assert!(crab_core::check_project(&project, &lib)
+        .errors()
+        .next()
+        .is_none());
+
+    // No EMAC on ESP32-C3; WT32-ETH01 has a power pin, so no clock warning.
+    let eth = project
+        .logic
+        .blocks
+        .iter_mut()
+        .find(|b| b.id == "eth")
+        .unwrap();
+    eth.params
+        .insert("chip".into(), ParamValue::Text("lan8720".into()));
+    eth.params
+        .insert("preset".into(), ParamValue::Text("wt32_eth01".into()));
+    project.logic.blocks.retain(|b| b.id != "relay");
+    project.config.board.fqbn = "esp32:esp32:esp32c3".into();
+    let report = crab_core::check_project(&project, &lib);
+    let errors: Vec<_> = report.errors().map(|d| d.message.clone()).collect();
+    assert!(errors.iter().any(|m| m.contains("EMAC")), "{errors:#?}");
+    assert!(!report
+        .diagnostics
+        .iter()
+        .any(|d| d.message.contains("генератор 50 МГц")));
+}
+
+/// The hidden fixed pins of `library/ethernet/block.toml` are the pins `Lan8720` takes.
+#[test]
+fn lan8720_block_pins_match_presets() {
+    use crab_core::lan8720::Lan8720;
+    use crab_core::ParamValue;
+    let lib = library();
+    let text = |s: &str| ParamValue::Text(s.into());
+    let mut cases = vec![];
+    for preset in ["module", "wt32_eth01", "olimex_poe"] {
+        cases.push(vec![("preset", text(preset))]);
+    }
+    for clock in 0..4 {
+        cases.push(vec![
+            ("preset", text("custom")),
+            ("clock", ParamValue::Int(clock)),
+            ("mdc", ParamValue::Int(4)),
+            (
+                "power_pin",
+                ParamValue::Int(if clock == 0 { 5 } else { -1 }),
+            ),
+        ]);
+    }
+    for case in cases {
+        let mut logic = Logic::default();
+        let mut block: crab_core::Block =
+            toml::from_str("id = \"eth\"\ntype = \"ethernet\"\nchip = \"lan8720\"").unwrap();
+        for (k, v) in &case {
+            block.params.insert((*k).into(), v.clone());
+        }
+        let phy = Lan8720::from_params(&block.params).unwrap();
+        logic.blocks.push(block);
+        let mut pins: Vec<i64> = crab_core::pins::pin_uses(&logic, &lib)
+            .iter()
+            .map(|u| u.gpio)
+            .collect();
+        pins.sort_unstable();
+        assert_eq!(pins, phy.pins(), "{case:?}");
+    }
+}

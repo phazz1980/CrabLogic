@@ -10,9 +10,10 @@ crab-core = { path = "../crab-core" }
 crab-debug = { path = "../crab-debug" }
 minijinja = { version = "2", features = ["unicode"] }
 thiserror.workspace = true
-wasm-encoder = "0.263.0"
+wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }
+wasmparser = "0.263"
 
 [dev-dependencies]
 toml.workspace = true
-wasmparser = "0.263"
+wat = "1.263.0"
 wasmprinter = "0.263.0"

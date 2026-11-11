@@ -1,0 +1,68 @@
+[[block]]
+id = "eth"
+type = "ethernet"
+chip = "lan8720"
+preset = "module"
+out_address = true
+
+[[block]]
+id = "slave"
+type = "modbus_tcp_slave"
+net = "ethernet"
+holding = 0
+input = 0
+coils = 2
+discrete = 2
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "button_reg"
+type = "modbus_write"
+table = "discrete"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "online_reg"
+type = "modbus_write"
+table = "discrete"
+kind = "bool"
+reg = 1
+
+[[block]]
+id = "relay_reg"
+type = "modbus_read"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "relay"
+type = "digital_out"
+pin = 4
+
+[[block]]
+id = "ip_len"
+type = "text_length"
+
+[[link]]
+from = "button.out"
+to   = "button_reg.in_b"
+
+[[link]]
+from = "eth.ready"
+to   = "online_reg.in_b"
+
+[[link]]
+from = "relay_reg.out_b"
+to   = "relay.in"
+
+[[link]]
+from = "eth.address"
+to   = "ip_len.in"

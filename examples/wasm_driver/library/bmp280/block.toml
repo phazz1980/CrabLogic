@@ -1,0 +1,61 @@
+[block]
+type = "bmp280"
+name = "BMP280 (драйвер WASM)"
+symbol = "BMP"
+group = "Датчики"
+description = "Температура и давление с BMP280 по I²C. Пример драйвера на WASM: код блока — block.wasm, к шине он ходит через функции мастера (bus.*). Работает только с мастером на Rust."
+
+[[output]]
+name = "temperature"
+label = "T"
+type = "float"
+sim = 21.5
+description = "Температура, °C"
+
+[[output]]
+name = "pressure"
+label = "P"
+type = "float"
+sim = 1013.25
+description = "Давление, гПа"
+
+[[output]]
+name = "ok"
+type = "bool"
+sim = true
+description = "Датчик ответил при последнем измерении"
+
+[[param]]
+name = "address"
+label = "Адрес"
+type = "int"
+default = 118
+min = 8
+max = 119
+bus = "i2c-address"
+description = "Адрес I²C: 118 (0x76, SDO на земле) или 119 (0x77)"
+
+[[param]]
+name = "sda"
+type = "pin"
+mode = "io"
+default = 21
+bus = "i2c-sda"
+description = "Вывод SDA шины I²C"
+
+[[param]]
+name = "scl"
+type = "pin"
+mode = "out"
+default = 22
+bus = "i2c-scl"
+description = "Вывод SCL шины I²C"
+
+[[param]]
+name = "period"
+label = "Период, мс"
+type = "int"
+default = 1000
+min = 50
+max = 60000
+description = "Как часто измерять"

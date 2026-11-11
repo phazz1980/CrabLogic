@@ -695,6 +695,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 return Ok(());
             }
             _ => {
+                if self.user_block(inst)? {
+                    return Ok(());
+                }
                 let reason = if inst.lib.def.info.kind.is_empty() {
                     "блок пока нельзя выразить в модуле"
                 } else {

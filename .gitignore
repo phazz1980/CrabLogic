@@ -15,3 +15,4 @@
 # Build folder of the Rust master firmware (firmware/master-rs, short path for ESP-IDF)
 /.m/
 /.embuild/
+/.llvm/

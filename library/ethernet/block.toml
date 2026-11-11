@@ -1,10 +1,10 @@
 [block]
 type = "ethernet"
-name = "Ethernet W5500"
+name = "Ethernet"
 symbol = "ETH"
 group = "Сеть"
 shared = "network"
-description = "Проводная сеть на модуле W5500 (W5100, W5200) по SPI (библиотека FLProg_Network)."
+description = "Проводная сеть: модуль W5500 (W5100, W5200) по SPI или LAN8720 по RMII на классическом ESP32 (библиотека FLProg_Network)."
 single = true
 hidden = true
 pullable = true
@@ -23,10 +23,27 @@ when = "out_address"
 description = "IP-адрес в проводной сети; пустая строка, пока нет связи"
 
 [[param]]
+name = "chip"
+label = "Чип"
+type = "string"
+default = "w5500"
+static = true
+description = "W5500 — отдельный модуль по SPI, работает на любом ESP32. LAN8720 — PHY на шине RMII, работает только на классическом ESP32 (у C3, S2, S3 нет встроенного Ethernet)"
+
+[[param.choice]]
+value = "w5500"
+label = "W5500 (SPI)"
+
+[[param.choice]]
+value = "lan8720"
+label = "LAN8720 (RMII, только ESP32)"
+
+[[param]]
 name = "cs"
 type = "pin"
 mode = "out"
 default = 5
+when = 'chip == "w5500"'
 description = "Вывод CS модуля"
 
 [[param]]
@@ -34,6 +51,7 @@ name = "sck"
 type = "pin"
 mode = "out"
 default = 18
+when = 'chip == "w5500"'
 description = "Вывод SCK модуля (SPI)"
 
 [[param]]
@@ -41,6 +59,7 @@ name = "miso"
 type = "pin"
 mode = "in"
 default = 19
+when = 'chip == "w5500"'
 description = "Вывод MISO модуля (SPI)"
 
 [[param]]
@@ -48,7 +67,232 @@ name = "mosi"
 type = "pin"
 mode = "out"
 default = 23
+when = 'chip == "w5500"'
 description = "Вывод MOSI модуля (SPI)"
+
+[[param]]
+name = "preset"
+label = "Плата"
+type = "string"
+default = "module"
+static = true
+when = 'chip == "lan8720"'
+description = "Готовые выводы LAN8720 для известных плат; «Свои выводы» — задать всё самому"
+
+[[param.choice]]
+value = "module"
+label = "ESP32 + модуль LAN8720"
+
+[[param.choice]]
+value = "wt32_eth01"
+label = "WT32-ETH01"
+
+[[param.choice]]
+value = "olimex_poe"
+label = "Olimex ESP32-POE"
+
+[[param.choice]]
+value = "custom"
+label = "Свои выводы"
+
+[[param]]
+name = "phy_addr"
+label = "Адрес PHY"
+type = "int"
+default = 1
+min = 0
+max = 31
+static = true
+when = 'chip == "lan8720" and preset == "custom"'
+description = "Адрес микросхемы PHY на шине MDIO: у большинства модулей LAN8720 — 1, у Olimex — 0"
+
+[[param]]
+name = "mdc"
+label = "MDC"
+type = "pin"
+mode = "out"
+default = 23
+when = 'chip == "lan8720" and preset == "custom"'
+description = "Вывод MDC (такт шины управления PHY)"
+
+[[param]]
+name = "mdio"
+label = "MDIO"
+type = "pin"
+mode = "io"
+default = 18
+when = 'chip == "lan8720" and preset == "custom"'
+description = "Вывод MDIO (данные шины управления PHY)"
+
+[[param]]
+name = "power_pin"
+label = "Питание PHY"
+type = "pin"
+mode = "out"
+default = -1
+min = -1
+when = 'chip == "lan8720" and preset == "custom"'
+description = "Вывод, включающий питание PHY или генератора 50 МГц после старта; -1 — нет такого вывода"
+
+[[param]]
+name = "clock"
+label = "Такт 50 МГц"
+type = "int"
+default = 0
+min = 0
+max = 3
+static = true
+when = 'chip == "lan8720" and preset == "custom"'
+description = "Откуда берётся такт RMII 50 МГц: генератор на модуле подаёт его на GPIO0, или ESP32 выдаёт его сам на GPIO0, GPIO16 или GPIO17"
+
+[[param.choice]]
+value = 0
+label = "Вход GPIO0 (генератор на модуле)"
+
+[[param.choice]]
+value = 1
+label = "Выход GPIO0"
+
+[[param.choice]]
+value = 2
+label = "Выход GPIO16"
+
+[[param.choice]]
+value = 3
+label = "Выход GPIO17"
+
+# Pins taken by LAN8720, hidden: they make the common pin check see RMII. Values must match
+# `crab_core::lan8720::Lan8720` (a test compares them).
+
+[[param]]
+name = "rmii_txd0"
+type = "pin"
+mode = "out"
+default = 19
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII TXD0 (занят всегда)"
+
+[[param]]
+name = "rmii_tx_en"
+type = "pin"
+mode = "out"
+default = 21
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII TX_EN (занят всегда)"
+
+[[param]]
+name = "rmii_txd1"
+type = "pin"
+mode = "out"
+default = 22
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII TXD1 (занят всегда)"
+
+[[param]]
+name = "rmii_rxd0"
+type = "pin"
+mode = "in"
+default = 25
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII RXD0 (занят всегда)"
+
+[[param]]
+name = "rmii_rxd1"
+type = "pin"
+mode = "in"
+default = 26
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII RXD1 (занят всегда)"
+
+[[param]]
+name = "rmii_crs_dv"
+type = "pin"
+mode = "in"
+default = 27
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720"'
+description = "RMII CRS_DV (занят всегда)"
+
+[[param]]
+name = "preset_mdc"
+type = "pin"
+mode = "out"
+default = 23
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and preset != "custom"'
+description = "MDC платы из списка"
+
+[[param]]
+name = "preset_mdio"
+type = "pin"
+mode = "io"
+default = 18
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and preset != "custom"'
+description = "MDIO платы из списка"
+
+[[param]]
+name = "preset_power_wt32"
+type = "pin"
+mode = "out"
+default = 16
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and preset == "wt32_eth01"'
+description = "Питание PHY у WT32-ETH01"
+
+[[param]]
+name = "preset_power_olimex"
+type = "pin"
+mode = "out"
+default = 12
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and preset == "olimex_poe"'
+description = "Питание PHY у Olimex ESP32-POE"
+
+[[param]]
+name = "clock_gpio0"
+type = "pin"
+mode = "io"
+default = 0
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and (preset in ["module", "wt32_eth01"] or (preset == "custom" and clock <= 1))'
+description = "Такт RMII на GPIO0"
+
+[[param]]
+name = "clock_gpio16"
+type = "pin"
+mode = "out"
+default = 16
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and preset == "custom" and clock == 2'
+description = "Такт RMII на GPIO16"
+
+[[param]]
+name = "clock_gpio17"
+type = "pin"
+mode = "out"
+default = 17
+fixed = true
+show = "hidden"
+when = 'chip == "lan8720" and (preset == "olimex_poe" or (preset == "custom" and clock == 3))'
+description = "Такт RMII на GPIO17"
 
 [[param]]
 name = "out_address"
@@ -64,7 +308,8 @@ type = "int"
 default = 40
 min = 0
 max = 255
-description = "Последний байт MAC-адреса 78:AC:C0:2C:3E:xx — разный у устройств в одной сети"
+when = 'chip == "w5500"'
+description = "Последний байт MAC-адреса 78:AC:C0:2C:3E:xx — разный у устройств в одной сети (у LAN8720 MAC заводской, из ESP32)"
 
 [[param]]
 name = "dhcp"

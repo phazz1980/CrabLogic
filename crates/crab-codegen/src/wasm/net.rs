@@ -2,6 +2,8 @@
 //! SNTP service (`CRAB_NET` in `master.ino`), a module sets them up once and every step writes the
 //! radio request and reads the last snapshot through the `net` import.
 
+use crab_core::lan8720::Lan8720;
+
 use super::text::{Buf, A};
 use super::*;
 
@@ -202,10 +204,39 @@ impl Emitter<'_, '_> {
         self.op(I::I32Eqz);
         self.op(I::If(BlockType::Empty));
         // Pins and MAC are taken by the master when it creates the interface.
-        for (code, name) in [(2, "sck"), (3, "miso"), (4, "mosi"), (5, "cs"), (6, "mac")] {
-            let value = self.named_param(inst, name)?;
-            self.net_call(6, code, A::C(value), A::C(0));
-            self.op(I::Drop);
+        if self.text_param(inst, "chip") == "lan8720" {
+            // LAN8720 on the EMAC: 7 chip (1), 8 PHY address, 9 MDC, 10 MDIO, 11 power pin
+            // (-1 none), 12 clock mode. A W5500 sends none of them, as before.
+            let mut preset = self.text_param(inst, "preset");
+            if preset.is_empty() {
+                preset = "module".to_owned();
+            }
+            let mut own = Vec::new();
+            for name in ["phy_addr", "mdc", "mdio", "power_pin", "clock"] {
+                own.push((name, self.named_param(inst, name)?));
+            }
+            let phy = Lan8720::of(&preset, |n, d| {
+                own.iter()
+                    .find(|(k, _)| *k == n)
+                    .map_or(d, |(_, v)| i64::from(*v))
+            });
+            for (code, value) in [
+                (7, 1),
+                (8, phy.phy_addr),
+                (9, phy.mdc),
+                (10, phy.mdio),
+                (11, phy.power),
+                (12, phy.clock),
+            ] {
+                self.net_call(6, code, A::C(value as i32), A::C(0));
+                self.op(I::Drop);
+            }
+        } else {
+            for (code, name) in [(2, "sck"), (3, "miso"), (4, "mosi"), (5, "cs"), (6, "mac")] {
+                let value = self.named_param(inst, name)?;
+                self.net_call(6, code, A::C(value), A::C(0));
+                self.op(I::Drop);
+            }
         }
         let dhcp = self.named_param(inst, "dhcp")?;
         self.net_call(6, 1, A::C(dhcp), A::C(0));

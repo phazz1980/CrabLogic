@@ -18,6 +18,7 @@ use crab_codegen::sketch_dir;
 use crab_core::BoardConfig;
 use serde::Deserialize;
 
+pub mod aot_xtensa;
 pub mod board_memo;
 pub mod cores;
 mod direct;

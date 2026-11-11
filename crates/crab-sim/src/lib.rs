@@ -43,6 +43,22 @@ struct Host {
     limits: StoreLimits,
 }
 
+/// Import module of the board's bus functions: a `block.wasm` that imports from it is a
+/// hardware driver (`specs/wasm-drivers`) and runs only on the board.
+pub const BUS_MODULE: &str = "bus";
+
+/// Whether `wasm` is a hardware driver: it imports the board's bus functions.
+pub fn is_driver(wasm: &[u8]) -> bool {
+    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        if let Ok(wasmparser::Payload::ImportSection(imports)) = payload {
+            return imports
+                .into_imports()
+                .any(|i| i.is_ok_and(|i| i.module == BUS_MODULE));
+        }
+    }
+    false
+}
+
 /// A loaded block module with its state.
 pub struct SimModule {
     store: Store<Host>,
@@ -53,6 +69,10 @@ pub struct SimModule {
 impl SimModule {
     /// Loads a module for a block with `n_outputs` outputs and runs its `init`, if there is one.
     pub fn load(wasm: &[u8], n_outputs: usize) -> Result<Self, String> {
+        if is_driver(wasm) {
+            return Err("это драйвер железа (функции bus.*): на компьютере он не выполняется,                  в симуляции схемы выходы берут значения sim из block.toml"
+                .to_owned());
+        }
         let mut config = wasmi::Config::default();
         config.consume_fuel(true);
         let engine = Engine::new(&config);

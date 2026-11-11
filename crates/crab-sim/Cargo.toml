@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Runs WASM block modules (wasmi) to simulate a block on the PC"
 
 [dependencies]
+wasmparser = "0.263"
 crab-core = { path = "../crab-core" }
 crab-blocks = { path = "../crab-blocks" }
 crab-kernel = { path = "../crab-kernel", features = ["serde", "std"] }

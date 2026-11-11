@@ -1,5 +1,7 @@
-//! Firmware code of the network interfaces: Wi-Fi and Ethernet W5500, with the services
+//! Firmware code of the network interfaces: Wi-Fi and Ethernet (W5500 or LAN8720), with the services
 //! they host (web server).
+
+use crab_core::lan8720::Lan8720;
 
 use crate::cpp::{CppCtx, CppParts, Lines};
 
@@ -249,15 +251,60 @@ pub(crate) fn wifi(e: &CppCtx) -> CppParts {
     }
 }
 
+/// LAN8720 settings of the block, `None` for a W5500.
+pub(crate) fn lan8720(e: &CppCtx) -> Option<Lan8720> {
+    if e.text("chip") != "lan8720" {
+        return None;
+    }
+    let preset = match e.text("preset") {
+        "" => "module",
+        p => p,
+    };
+    Some(Lan8720::of(preset, |n, d| e.int(n, d)))
+}
+
+/// DHCP or the fixed address of the RMII interface: it keeps its own address settings.
+fn rmii_address(l: &mut Lines, e: &CppCtx) {
+    let dhcp = e.flag_code("dhcp");
+    l.line(format!("crabEth.rmiiDhcpMode({dhcp});"));
+    if dhcp == "true" {
+        return;
+    }
+    let mut fixed = Lines::default();
+    fixed
+        .line("IPAddress addr;")
+        .line(format!("addr.fromString({});", e.param("ip")))
+        .line("crabEth.rmiiLocalIP(addr);")
+        .line(format!("addr.fromString({});", e.param("gateway")))
+        .line("crabEth.rmiiGateway(addr);")
+        .line("crabEth.rmiiDns(addr);")
+        .line(format!("addr.fromString({});", e.param("subnet")))
+        .line("crabEth.rmiiSubnet(addr);");
+    let fixed = fixed.finish();
+    if dhcp == "false" {
+        l.line("{").line(indent(&fixed, 2)).line("}");
+    } else {
+        l.line(format!("if (!({dhcp})) {{"))
+            .line(indent(&fixed, 2))
+            .line("}");
+    }
+}
+
 pub(crate) fn ethernet(e: &CppCtx) -> CppParts {
     let id = &e.id;
+    let rmii = lan8720(e);
     let s = Services::of(e, &["dhcp", "ip", "gateway", "subnet"]);
     let mut g = Lines::default();
     if s.dynamic {
         g.line(MIX.replace("@ID@", id));
     }
     g.line("// Shared network interface: Modbus TCP and other network blocks use it.")
-        .line(format!("FLProgWiznetInterface crabEth({});", e.param("cs")));
+        .line(if rmii.is_some() {
+            // LAN8720 on the ESP32 EMAC: no SPI chip select.
+            "FLProgWiznetInterface crabEth;".to_owned()
+        } else {
+            format!("FLProgWiznetInterface crabEth({});", e.param("cs"))
+        });
     if s.period {
         period_globals(&mut g, id);
     }
@@ -267,24 +314,38 @@ pub(crate) fn ethernet(e: &CppCtx) -> CppParts {
     }
 
     let mut su = Lines::default();
-    // The module sits on the default SPI pins unless the block moves them.
-    if [("sck", 18), ("miso", 19), ("mosi", 23)]
-        .iter()
-        .any(|(n, d)| e.int(n, *d) != *d)
-    {
-        su.line(format!(
-            "crabEth.setSpiPins({}, {}, {});",
-            e.param("sck"),
-            e.param("miso"),
-            e.param("mosi")
-        ));
-    }
-    su.line(format!(
-        "crabEth.mac(0x78, 0xAC, 0xC0, 0x2C, 0x3E, {});",
-        e.param("mac")
-    ));
     let mut apply = Lines::default();
-    address(&mut apply, "crabEth", e);
+    if let Some(phy) = rmii {
+        su.line("// LAN8720 on the RMII bus of the ESP32 (EMAC); its MAC is the chip's own.")
+            .line("crabEth.wiznetMode(false);")
+            .line("crabEth.rmiiMode(true);")
+            .line(format!("crabEth.setRmiiPhyAddress({});", phy.phy_addr))
+            .line(format!("crabEth.setRmiiMdcPin({});", phy.mdc))
+            .line(format!("crabEth.setRmiiMdioPin({});", phy.mdio));
+        if phy.power >= 0 {
+            su.line(format!("crabEth.setRmiiPowerPin({});", phy.power));
+        }
+        su.line(format!("crabEth.setRmiiClockMode({});", phy.clock));
+        rmii_address(&mut apply, e);
+    } else {
+        // The module sits on the default SPI pins unless the block moves them.
+        if [("sck", 18), ("miso", 19), ("mosi", 23)]
+            .iter()
+            .any(|(n, d)| e.int(n, *d) != *d)
+        {
+            su.line(format!(
+                "crabEth.setSpiPins({}, {}, {});",
+                e.param("sck"),
+                e.param("miso"),
+                e.param("mosi")
+            ));
+        }
+        su.line(format!(
+            "crabEth.mac(0x78, 0xAC, 0xC0, 0x2C, 0x3E, {});",
+            e.param("mac")
+        ));
+        address(&mut apply, "crabEth", e);
+    }
     let apply = apply.finish();
     if !s.dynamic {
         su.line(&apply);

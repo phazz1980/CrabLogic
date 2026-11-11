@@ -1,4 +1,4 @@
-//! Pure parts of the Ethernet (W5500) setup: pin checks per chip and the fixed-address texts.
+//! Pure parts of the Ethernet (W5500 or LAN8720) setup: pin checks per chip and the fixed-address texts.
 //! Kept out of the board code so that they run in desktop tests.
 
 use alloc::format;
@@ -23,7 +23,7 @@ pub struct Pins {
 }
 
 /// Why a pin cannot be used on the chip (the text goes to the journal).
-fn pin_problem(chip: Chip, pin: i32, input_only_ok: bool) -> Option<&'static str> {
+pub fn pin_problem(chip: Chip, pin: i32, input_only_ok: bool) -> Option<&'static str> {
     match chip {
         Chip::Esp32c3 => match pin {
             0..=10 | 20 | 21 => None,
@@ -59,6 +59,75 @@ pub fn check_pins(chip: Chip, p: Pins) -> Result<(), String> {
         for j in i + 1..all.len() {
             if all[i] == all[j] {
                 return Err(format!("pin {} is used twice", all[i]));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RMII data pins fixed by the ESP32 EMAC: TXD0, TX_EN, TXD1, RXD0, RXD1, CRS_DV.
+pub const RMII_DATA_PINS: [i32; 6] = [19, 21, 22, 25, 26, 27];
+
+/// LAN8720 on the EMAC; codes 8..=12 of `net` op 6. `clock` is `FLPROG_RMII_CLOCK_*`:
+/// 0 in on GPIO0, 1 out on GPIO0, 2 out on GPIO16, 3 out (inverted) on GPIO17.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rmii {
+    pub phy_addr: i32,
+    pub mdc: i32,
+    pub mdio: i32,
+    /// Pin powering the PHY or its oscillator; -1 none.
+    pub power: i32,
+    pub clock: i32,
+}
+
+impl Rmii {
+    /// Defaults of the block: an ESP32 with a separate LAN8720 module.
+    pub const MODULE: Rmii = Rmii {
+        phy_addr: 1,
+        mdc: 23,
+        mdio: 18,
+        power: -1,
+        clock: 0,
+    };
+
+    pub fn clock_pin(&self) -> i32 {
+        match self.clock {
+            2 => 16,
+            3 => 17,
+            _ => 0,
+        }
+    }
+}
+
+/// Checks the LAN8720 settings before the hardware is touched. `Err` carries the journal text.
+pub fn check_rmii(chip: Chip, r: Rmii) -> Result<(), String> {
+    if chip != Chip::Esp32 {
+        return Err("LAN8720 needs the classic ESP32 (EMAC); this chip has none".into());
+    }
+    if !(0..=31).contains(&r.phy_addr) {
+        return Err(format!("PHY address {} is out of 0..31", r.phy_addr));
+    }
+    if !(0..=3).contains(&r.clock) {
+        return Err(format!("clock mode {} is unknown", r.clock));
+    }
+    let mut own = alloc::vec![("mdc", r.mdc), ("mdio", r.mdio), ("clock", r.clock_pin())];
+    if r.power >= 0 {
+        own.push(("power", r.power));
+    }
+    for (name, pin) in &own {
+        if let Some(why) = pin_problem(chip, *pin, false) {
+            return Err(format!(
+                "pin {pin} ({name}) cannot be used on this chip ({why})"
+            ));
+        }
+        if RMII_DATA_PINS.contains(pin) {
+            return Err(format!("pin {pin} ({name}) is an RMII data pin"));
+        }
+    }
+    for i in 0..own.len() {
+        for j in i + 1..own.len() {
+            if own[i].1 == own[j].1 {
+                return Err(format!("pin {} is used twice", own[i].1));
             }
         }
     }
@@ -132,6 +201,61 @@ mod tests {
     fn duplicate_pins_are_refused() {
         assert!(check_pins(Chip::Esp32c3, pins(4, 4, 6, 7)).is_err());
         assert!(check_pins(Chip::Esp32, pins(18, 19, 23, 18)).is_err());
+    }
+
+    #[test]
+    fn rmii_rules() {
+        assert!(check_rmii(Chip::Esp32, Rmii::MODULE).is_ok());
+        let e = check_rmii(Chip::Esp32c3, Rmii::MODULE).unwrap_err();
+        assert!(e.contains("EMAC"), "{e}");
+        let olimex = Rmii {
+            phy_addr: 0,
+            power: 12,
+            clock: 3,
+            ..Rmii::MODULE
+        };
+        assert!(check_rmii(Chip::Esp32, olimex).is_ok());
+        // MDC on an RMII data pin, the power pin on the clock, an input-only pin.
+        assert!(check_rmii(
+            Chip::Esp32,
+            Rmii {
+                mdc: 21,
+                ..Rmii::MODULE
+            }
+        )
+        .is_err());
+        assert!(check_rmii(
+            Chip::Esp32,
+            Rmii {
+                power: 0,
+                ..Rmii::MODULE
+            }
+        )
+        .is_err());
+        assert!(check_rmii(
+            Chip::Esp32,
+            Rmii {
+                mdio: 36,
+                ..Rmii::MODULE
+            }
+        )
+        .is_err());
+        assert!(check_rmii(
+            Chip::Esp32,
+            Rmii {
+                clock: 4,
+                ..Rmii::MODULE
+            }
+        )
+        .is_err());
+        assert!(check_rmii(
+            Chip::Esp32,
+            Rmii {
+                phy_addr: 32,
+                ..Rmii::MODULE
+            }
+        )
+        .is_err());
     }
 
     #[test]

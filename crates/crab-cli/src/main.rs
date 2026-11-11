@@ -573,8 +573,9 @@ fn push_module(
     // No cancelling from the command line: Ctrl+C ends the process.
     let never_cancelled = std::sync::atomic::AtomicBool::new(false);
     let mut shown = 0;
-    let image = match crab_build::mcu_module::module_image(&info, wasm, cache, &mut || {
-        crab_build::wamrc::ensure(
+    let image = match crab_build::mcu_module::module_image(&info, wasm, cache, &mut |target| {
+        crab_build::wamrc::ensure_for(
+            target,
             None,
             &never_cancelled,
             &mut |line| println!("{line}"),
@@ -736,9 +737,14 @@ fn upload_sheets(
     // No cancelling from the command line: Ctrl+C ends the process.
     let never_cancelled = std::sync::atomic::AtomicBool::new(false);
     let mut shown = 0;
-    let planned =
-        upload_plan::plan_upload(&info, space.as_ref(), &sheet_modules, &cache, &mut || {
-            crab_build::wamrc::ensure(
+    let planned = upload_plan::plan_upload(
+        &info,
+        space.as_ref(),
+        &sheet_modules,
+        &cache,
+        &mut |target| {
+            crab_build::wamrc::ensure_for(
+                target,
                 None,
                 &never_cancelled,
                 &mut |line| println!("{line}"),
@@ -750,7 +756,8 @@ fn upload_sheets(
                     }
                 },
             )
-        });
+        },
+    );
     let plan = match planned {
         Ok(plan) => plan,
         Err(e) => return failed(e.to_string()),

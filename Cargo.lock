@@ -1172,6 +1172,7 @@ dependencies = [
  "wasm-encoder",
  "wasmparser 0.263.0",
  "wasmprinter",
+ "wat",
 ]
 
 [[package]]
@@ -1292,6 +1293,7 @@ dependencies = [
  "serde",
  "toml 0.8.23",
  "wasmi 2.0.0",
+ "wasmparser 0.263.0",
  "wat",
 ]
 

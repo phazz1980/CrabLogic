@@ -20,6 +20,7 @@ use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 
 mod block;
 mod block_emit;
+mod driver;
 mod expander;
 mod hardware;
 mod modbus;
@@ -30,6 +31,7 @@ mod sparkplug;
 mod text;
 mod types;
 mod uart;
+mod user_block;
 mod web;
 use block_emit::BlockEmit;
 use text::{Buf, A, MEM_START, STR_CAP};
@@ -78,9 +80,13 @@ const HW_MATH: u32 = HW_BASE + 12;
 const HW_RETAIN: u32 = HW_BASE + 13;
 const HW_TAG_TEXT: u32 = HW_BASE + 14;
 const HW_RETAIN_TEXT: u32 = HW_BASE + 15;
+/// `crab.bus(op, a, b, c, d) -> i32`: bus functions of driver blocks (`user_block.rs`).
+const HW_BUS: u32 = HW_BASE + 16;
+/// `crab.log(ptr, len)`: a line of a driver block for the master journal.
+const HW_LOG: u32 = HW_BASE + 17;
 /// Placeholder of the module's own text append function (see `Emitter::append`), defined last.
 const APPEND_FN: u32 = HW_BASE - 1;
-const HW_NAMES: [&str; 16] = [
+const HW_NAMES: [&str; 18] = [
     "gpio_read",
     "gpio_write",
     "adc_read",
@@ -97,6 +103,8 @@ const HW_NAMES: [&str; 16] = [
     "retain",
     "tag_text",
     "retain_text",
+    "bus",
+    "log",
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
@@ -113,7 +121,7 @@ const F_LOCAL_BASE: u32 = 1000;
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 10] = [
+pub const MASTER_CAPS: [&str; 11] = [
     "math",
     "retain",
     "tag_text",
@@ -125,6 +133,8 @@ pub const MASTER_CAPS: [&str; 10] = [
     "on_fault",
     // ABI 4 (fuel counter and `crab.yield`): every module needs it.
     "abi4",
+    // Bus functions of driver blocks (`specs/wasm-drivers`).
+    "bus",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
@@ -228,6 +238,17 @@ struct Global {
     bits: u32,
 }
 
+/// Types every module declares before those of driver blocks (see `encode`).
+const FIXED_TYPES: u32 = 15;
+
+/// Where a block with its own `block.wasm` lands in the module (see `encode`).
+struct DriverLayout {
+    shim_base: u32,
+    func_base: u32,
+    type_base: u32,
+    global_base: u32,
+}
+
 struct Emitter<'a, 'p> {
     program: &'a Program<'p>,
     module: &'a SheetModule,
@@ -272,6 +293,10 @@ struct Emitter<'a, 'p> {
     bufs: HashMap<usize, Buf>,
     /// Retained variables this module owns: loaded in `init`, saved from `step`.
     retained: Vec<Retained>,
+    /// Instances of blocks with their own `block.wasm`, in step order (`user_block.rs`).
+    drivers: Vec<user_block::DriverUse>,
+    /// Parsed `block.wasm` by block type.
+    parsed_drivers: HashMap<String, std::rc::Rc<driver::Driver>>,
 }
 
 /// Blocks per generated function. wasm3 without tail-call optimization (ESP32 build) recurses once
@@ -388,6 +413,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
             consts: HashMap::new(),
             bufs: HashMap::new(),
             retained: Vec::new(),
+            drivers: Vec::new(),
+            parsed_drivers: HashMap::new(),
         };
         for &bi in &module.blocks {
             for &signal in program.blocks[bi].outputs.values() {
@@ -1023,6 +1050,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 HW_TEXT => 13,
                 HW_MATH => 14,
                 HW_RETAIN => 10,
+                HW_BUS => 11,
                 _ => 2,
             };
             imports.import("crab", name, EntityType::Function(ty));
@@ -1039,8 +1067,37 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let groups = group_count(self.cuts.len());
         let append_fn = first + 3 + self.cuts.len() as u32 + groups as u32;
         let wrap_base = append_fn + u32::from(self.uses_append);
+        // Blocks with their own `block.wasm` come last: per use, its shims, then its functions.
+        let mut cursor = wrap_base + if aot { import_types.len() as u32 } else { 0 };
+        let mut type_cursor = FIXED_TYPES;
+        let mut global_cursor = self.globals.len() as u32;
+        let layouts: Vec<DriverLayout> = self
+            .drivers
+            .iter()
+            .map(|u| {
+                let d = &u.driver;
+                let l = DriverLayout {
+                    shim_base: cursor,
+                    func_base: cursor + d.imports.len() as u32,
+                    type_base: type_cursor,
+                    global_base: global_cursor,
+                };
+                cursor += (d.imports.len() + d.funcs.len()) as u32;
+                type_cursor += d.types.len() as u32;
+                global_cursor += d.globals.len() as u32;
+                l
+            })
+            .collect();
+        let driver_step: Vec<u32> = layouts
+            .iter()
+            .zip(&self.drivers)
+            .map(|(l, u)| l.func_base + u.driver.step)
+            .collect();
         // Index to call for a call of import `n` (a fixed index or a hardware placeholder).
         let target = |n: u32| {
+            if n >= user_block::DRIVER_STEP {
+                return driver_step[(n - user_block::DRIVER_STEP) as usize];
+            }
             if n == APPEND_FN {
                 return append_fn;
             }
@@ -1078,10 +1135,23 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 funcs.function(ty);
             }
         }
+        for (u, l) in self.drivers.iter().zip(&layouts) {
+            let d = &u.driver;
+            for (params, results) in &d.types {
+                types.ty().function(params.clone(), results.clone());
+            }
+            for imp in &d.imports {
+                funcs.function(l.type_base + imp.ty);
+            }
+            for &ty in &d.funcs {
+                funcs.function(l.type_base + ty);
+            }
+        }
 
         // A page (64 KB) is declared only by modules with strings; the master gives such a module only
         // the bytes it uses (`crab.mem`, `specs/mcu-memory`), not the whole page.
-        let has_memory = self.mem_top > MEM_START || self.hw.contains(&HW_TEXT);
+        let has_memory =
+            self.mem_top > MEM_START || self.hw.contains(&HW_TEXT) || !self.drivers.is_empty();
         let mem_need = if has_memory {
             ((self.mem_top + 15) & !15) + MEM_SPARE
         } else {
@@ -1110,6 +1180,24 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 },
                 &init,
             );
+        }
+        for u in &self.drivers {
+            for &(ty, mutable, value) in &u.driver.globals {
+                let init = match value {
+                    driver::ConstVal::I32(v) => ConstExpr::i32_const(v),
+                    driver::ConstVal::I64(v) => ConstExpr::i64_const(v),
+                    driver::ConstVal::F32(b) => ConstExpr::f32_const(f32::from_bits(b).into()),
+                    driver::ConstVal::F64(b) => ConstExpr::f64_const(f64::from_bits(b).into()),
+                };
+                globals.global(
+                    GlobalType {
+                        val_type: ty,
+                        mutable,
+                        shared: false,
+                    },
+                    &init,
+                );
+            }
         }
 
         let mut exports = ExportSection::new();
@@ -1256,6 +1344,22 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 })));
             }
         }
+        let bus = if self.hw.contains(&HW_BUS) {
+            target(HW_BUS)
+        } else {
+            0
+        };
+        let log = if self.hw.contains(&HW_LOG) {
+            target(HW_LOG)
+        } else {
+            0
+        };
+        let inits: Vec<Option<u32>> = layouts
+            .iter()
+            .zip(&self.drivers)
+            .map(|(l, u)| u.driver.init.map(|i| l.func_base + i))
+            .collect();
+        user_block::init_drivers(&mut init, &self.drivers, bus, &inits);
         init.instruction(&I::End);
 
         let mut code = CodeSection::new();
@@ -1291,6 +1395,26 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 code.function(&w);
             }
         }
+        for (u, l) in self.drivers.iter().zip(&layouts) {
+            for &shim in &u.shims {
+                code.function(&user_block::shim_body(shim, u, bus, log));
+            }
+            let place = driver::Place {
+                type_base: l.type_base,
+                import_map: (0..u.shims.len() as u32).map(|j| l.shim_base + j).collect(),
+                func_base: l.func_base,
+                global_base: l.global_base,
+                mem_base: u.base,
+                fuel: Some((GLOBAL_FUEL, target(YIELD))),
+            };
+            let bodies = u
+                .driver
+                .bodies(&place)
+                .expect("relocation was checked when the block was emitted");
+            for b in &bodies {
+                code.function(b);
+            }
+        }
 
         let mut module = Module::new();
         module
@@ -1301,10 +1425,20 @@ impl<'a, 'p> Emitter<'a, 'p> {
             .section(&globals)
             .section(&exports)
             .section(&code);
-        if !self.data.is_empty() {
+        let driver_data = self
+            .drivers
+            .iter()
+            .flat_map(|u| u.driver.data.iter().map(move |(at, b)| (u.base + at, b)));
+        let all_data: Vec<(u32, &Vec<u8>)> = self
+            .data
+            .iter()
+            .map(|(at, b)| (*at, b))
+            .chain(driver_data)
+            .collect();
+        if !all_data.is_empty() {
             let mut data = wasm_encoder::DataSection::new();
-            for (at, bytes) in &self.data {
-                data.active(0, &ConstExpr::i32_const(*at as i32), bytes.iter().copied());
+            for (at, bytes) in all_data {
+                data.active(0, &ConstExpr::i32_const(at as i32), bytes.iter().copied());
             }
             module.section(&data);
         }

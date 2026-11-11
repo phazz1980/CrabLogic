@@ -68,6 +68,13 @@ impl Manifest {
 /// is kept for the caller to read.
 #[derive(Debug, Clone, Default)]
 pub struct StubIo {
+    /// `crab.bus` calls of driver blocks, `[op, a, b, c, d]` in order.
+    pub bus_calls: Vec<[i32; 5]>,
+    /// Bytes an I²C read (`bus` op 22) puts into the module memory; the answer is their count.
+    pub i2c_in: Vec<u8>,
+    /// Registers of an I²C chip for `bus` op 23 (write the register number, read from it on):
+    /// the read gives `i2c_regs[reg..]`. Writes (op 21) succeed while this is not empty.
+    pub i2c_regs: Vec<u8>,
     pub gpio_in: HashMap<i32, i32>,
     pub adc_in: HashMap<i32, i32>,
     pub gpio_out: HashMap<i32, i32>,
@@ -347,12 +354,45 @@ impl Devices for StubIo {
             id::UART => int(self.uart(a(0), a(1), a(2), a(3), mem)),
             id::NATIVE => int(self.native(a(0), a(1), a(2), a(3), mem)),
             id::NET => int(self.net([a(0), a(1), a(2), a(3), a(4)], &mut mem)),
+            id::BUS => int(self.bus([a(0), a(1), a(2), a(3), a(4)], &mut mem)),
             _ => None,
         }
     }
 }
 
 impl StubIo {
+    /// `crab.bus` on the PC: claims and the lock succeed, an I²C read gives `i2c_in`, the rest
+    /// fails with "resource not claimed" (-1). Every call is kept in `bus_calls`.
+    fn bus(&mut self, call: [i32; 5], mem: &mut Mem<'_>) -> i32 {
+        self.bus_calls.push(call);
+        match call[0] {
+            0 | 1 => 0,
+            22 => {
+                let n = (call[3].max(0) as usize).min(self.i2c_in.len());
+                if mem.write(call[2], &self.i2c_in[..n]) {
+                    n as i32
+                } else {
+                    -4
+                }
+            }
+            21 if !self.i2c_regs.is_empty() => call[3],
+            23 if !self.i2c_regs.is_empty() => {
+                let Some(reg) = mem.read(call[2], 1, 1) else {
+                    return -4;
+                };
+                let rlen = (call[3] >> 16) as usize;
+                let from = usize::from(reg[0]).min(self.i2c_regs.len());
+                let to = (from + rlen).min(self.i2c_regs.len());
+                if mem.write(call[4], &self.i2c_regs[from..to]) {
+                    (to - from) as i32
+                } else {
+                    -4
+                }
+            }
+            _ => -1,
+        }
+    }
+
     fn retain_text(&mut self, op: i32, key: i32, ptr: i32, n: i32, mut mem: Mem<'_>) -> i32 {
         if op == 0 {
             let Some(text) = self.retain_text.get(&key) else {

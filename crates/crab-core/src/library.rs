@@ -17,6 +17,10 @@ pub const ESP32_CPP_TEMPLATE: &str = "esp32.cpp.tmpl";
 pub const DOCS_FILE: &str = "docs.md";
 /// WASM module that simulates the block on the PC (any source language).
 pub const WASM_FILE: &str = "block.wasm";
+/// `bus` of an int parameter that is the I²C address of a driver block.
+pub const BUS_I2C_ADDRESS: &str = "i2c-address";
+/// `bus` of an int parameter that is the UART port (1 or 2) of a driver block.
+pub const BUS_UART_PORT: &str = "uart-port";
 /// C translation of [`WASM_FILE`] for the firmware (made by `crab-build`).
 pub const FIRMWARE_C_FILE: &str = "block.wasm.c";
 /// Folder of user blocks, next to the built-in `library/`.
@@ -334,6 +338,10 @@ pub struct PortDef {
     pub when: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// Value of an output in the simulation on the PC for a block whose code runs only on the
+    /// board (a hardware driver, `specs/wasm-drivers`). Only outputs may have it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<ParamValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -375,7 +383,9 @@ pub struct ParamDef {
     #[serde(default, skip_serializing_if = "is_false")]
     pub shared: bool,
     /// For `pin` parameters: name of a bus (`i2c-sda`). Blocks of any type with the
-    /// same bus name may use one pin together (chips on one I²C bus).
+    /// same bus name may use one pin together (chips on one I²C bus). For `int` parameters of
+    /// driver blocks ([`BUS_I2C_ADDRESS`], [`BUS_UART_PORT`]): the resource the master lets the
+    /// block's `block.wasm` use (`specs/wasm-drivers`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bus: String,
     /// The value is set by the board (`[[device]]` of `board.toml`): it always equals
@@ -687,6 +697,12 @@ impl BlockDef {
                 p.name
             ));
         }
+        if let Some(p) = self.inputs.iter().find(|p| p.sim.is_some()) {
+            return Err(format!(
+                "значение для симуляции (sim) бывает только у выхода, а «{}» — вход",
+                p.name
+            ));
+        }
         if let Some(p) = self.outputs.iter().find(|p| p.default.is_some()) {
             return Err(format!(
                 "у выхода «{}» не может быть значения по умолчанию",
@@ -714,7 +730,14 @@ impl BlockDef {
                     c.label, p.name
                 ));
             }
-            if !p.bus.is_empty() && p.kind != ParamKind::Pin {
+            let resource = matches!(p.bus.as_str(), BUS_I2C_ADDRESS | BUS_UART_PORT);
+            if resource && p.kind != ParamKind::Int {
+                return Err(format!(
+                    "параметр «{}» с bus = \"{}\" должен быть целым (type = \"int\")",
+                    p.name, p.bus
+                ));
+            }
+            if !p.bus.is_empty() && !resource && p.kind != ParamKind::Pin {
                 return Err(format!(
                     "параметр «{}» с bus должен быть выводом (type = \"pin\")",
                     p.name
@@ -1199,6 +1222,7 @@ impl Library {
                     when: None,
                     label: param.label.clone(),
                     description: param.description.clone(),
+                    sim: None,
                 });
             }
             Box::leak(Box::new(derived))

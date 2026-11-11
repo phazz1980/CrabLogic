@@ -26,7 +26,7 @@ description = "Код последней ошибки клиента: 0 нет; 
 name = "net"
 type = "string"
 default = "wifi"
-description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet W5500»)"
+description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet»)"
 
 [[param.choice]]
 value = "wifi"

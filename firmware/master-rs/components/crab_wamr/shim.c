@@ -10,6 +10,11 @@
 #include "wasm_runtime_common.h"
 #include "wasm.h"
 #include "aot_runtime.h"
+#include "sdkconfig.h"
+#if CONFIG_IDF_TARGET_ESP32
+#include "esp_memory_utils.h"
+#include "spi_flash_mmap.h"
+#endif
 
 // ESP32-C3: the instruction and data buses share one MMU table, so flash mapped at
 // DROM 0x3C.. is also visible to the CPU at IROM 0x42.. with the same offset.
@@ -53,10 +58,21 @@ static int set_memory(wasm_module_t m, uint32_t bytes)
     return 1;
 }
 
+#if CONFIG_IDF_TARGET_ESP32
+// Classic ESP32: the two buses have separate MMU tables, so the text of each AOT module
+// (literal pool + code) is mapped once more, for the instruction bus, while the module lives.
+#define MAX_AOT 16
+static struct {
+    wasm_module_t module;
+    spi_flash_mmap_handle_t handle;
+} s_ibus[MAX_AOT];
+#endif
+
 // For an AOT module loaded in indirect (XIP) mode straight from flash: point the function
 // table at the instruction-bus alias of the text. Returns -1 if the text is not in DROM.
 static int aot_to_ibus(AOTModule *a)
 {
+#if CONFIG_IDF_TARGET_ESP32C3
     uint32_t i;
     if ((uint32_t)a->code < DROM_LOW || (uint32_t)a->code >= DROM_HIGH)
         return -1;
@@ -67,6 +83,55 @@ static int aot_to_ibus(AOTModule *a)
     }
     a->code = (void *)((uint32_t)a->code + IBUS_DELTA);
     return 0;
+#elif CONFIG_IDF_TARGET_ESP32
+    uint32_t i, slot, text_low, text_high;
+    size_t phys, page;
+    const void *ibus = NULL;
+    int32_t delta;
+    for (slot = 0; slot < MAX_AOT && s_ibus[slot].module; slot++)
+        ;
+    if (slot == MAX_AOT || !esp_ptr_in_drom(a->literal))
+        return -1;
+    // The literal pool sits right before the code: L32R reaches it pc-relative, so both go
+    // to the instruction bus together, with the same distance between them.
+    text_low = (uint32_t)a->literal;
+    text_high = (uint32_t)a->code + a->code_size;
+    phys = spi_flash_cache2phys(a->literal);
+    if (phys == SPI_FLASH_CACHE2PHYS_FAIL)
+        return -1;
+    page = phys & ~(size_t)(SPI_FLASH_MMU_PAGE_SIZE - 1);
+    if (spi_flash_mmap(page, phys - page + (text_high - text_low), SPI_FLASH_MMAP_INST, &ibus,
+                       &s_ibus[slot].handle)
+        != ESP_OK)
+        return -1;
+    delta = (int32_t)((uint32_t)ibus + (phys - page) - text_low);
+    for (i = 0; i < a->func_count; i++) {
+        uint32_t p = (uint32_t)a->func_ptrs[i];
+        if (p >= text_low && p < text_high)
+            a->func_ptrs[i] = (void *)(p + delta);
+    }
+    a->code = (void *)((uint32_t)a->code + delta);
+    s_ibus[slot].module = (wasm_module_t)a;
+    return 0;
+#else
+    (void)a;
+    return -1;
+#endif
+}
+
+// Unloads a module and, on the classic ESP32, drops its instruction-bus mapping.
+void crab_wamr_unload(wasm_module_t m)
+{
+#if CONFIG_IDF_TARGET_ESP32
+    uint32_t slot;
+    for (slot = 0; slot < MAX_AOT; slot++) {
+        if (s_ibus[slot].module == m) {
+            spi_flash_munmap(s_ibus[slot].handle);
+            s_ibus[slot].module = NULL;
+        }
+    }
+#endif
+    wasm_runtime_unload(m);
 }
 
 // Starts the runtime and registers the raw natives of the "crab" module. `natives` must stay
@@ -92,7 +157,7 @@ wasm_module_t crab_wamr_load(uint8_t *buf, uint32_t len, uint32_t memory, char *
         AOTModule *a = (AOTModule *)m;
         if (!a->is_indirect_mode || aot_to_ibus(a) < 0) {
             snprintf(err, err_len, "AOT image is not an XIP image in flash");
-            wasm_runtime_unload(m);
+            crab_wamr_unload(m);
             return NULL;
         }
     }

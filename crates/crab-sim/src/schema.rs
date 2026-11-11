@@ -260,13 +260,21 @@ impl Simulation {
                 .collect();
             let mut module = None;
             let mut wasm = None;
+            let mut driver = false;
             if let Some(path) = lb.wasm_path().filter(|p| p.is_file()) {
                 wasm = Some((path.clone(), modified(&path)));
                 match std::fs::read(&path)
                     .map_err(|e| format!("не удалось прочитать {}: {e}", path.display()))
-                    .and_then(|bytes| SimModule::load(&bytes, def.outputs.len()))
-                {
-                    Ok(m) => module = Some(m),
+                    .and_then(|bytes| {
+                        // A hardware driver runs only on the board: its outputs take `sim`.
+                        driver = crate::is_driver(&bytes);
+                        if driver {
+                            Ok(None)
+                        } else {
+                            SimModule::load(&bytes, def.outputs.len()).map(Some)
+                        }
+                    }) {
+                    Ok(m) => module = m,
                     Err(e) => notes.push(format!("{}: {e}", block.id)),
                 }
             }
@@ -275,6 +283,11 @@ impl Simulation {
                     .outputs
                     .iter()
                     .map(|o| part.sim.get(&o.name).map(plain_number))
+                    .collect(),
+                Ok(None) if driver => def
+                    .outputs
+                    .iter()
+                    .map(|o| o.sim.as_ref().map(plain_number))
                     .collect(),
                 Ok(None) => Vec::new(),
                 Err(e) => {

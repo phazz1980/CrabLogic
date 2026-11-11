@@ -244,7 +244,7 @@ pub fn module_image(
     info: &MasterInfo,
     wasm: &[u8],
     cache: &Path,
-    wamrc: &mut dyn FnMut() -> Result<PathBuf, WamrcError>,
+    wamrc: &mut dyn FnMut(AotTarget) -> Result<PathBuf, WamrcError>,
 ) -> Result<ModuleImage, WamrcError> {
     let plain = |warning| ModuleImage {
         bytes: wasm.to_vec(),
@@ -262,7 +262,7 @@ pub fn module_image(
     if let Some(bytes) = wamrc::cached(wasm, target, cache) {
         return Ok(aot(bytes));
     }
-    let built = wamrc().and_then(|exe| wamrc::compile(&exe, wasm, target, cache));
+    let built = wamrc(target).and_then(|exe| wamrc::compile(&exe, wasm, target, cache));
     match built {
         Ok(bytes) => Ok(aot(bytes)),
         Err(WamrcError::Cancelled) => Err(WamrcError::Cancelled),
@@ -303,7 +303,15 @@ impl MasterInfo {
     /// for another architecture is never built.
     pub fn aot_target(&self) -> Option<AotTarget> {
         let has = |cap: &str| self.caps.iter().any(|c| c == cap);
-        (has("aot") && has("rv32imc")).then_some(AotTarget::Riscv32Imc)
+        if !has("aot") {
+            None
+        } else if has("rv32imc") {
+            Some(AotTarget::Riscv32Imc)
+        } else if has("xtensa-esp32") {
+            Some(AotTarget::XtensaEsp32)
+        } else {
+            None
+        }
     }
 
     /// What of `needs` this master does not have, in the order of `needs`.
@@ -368,6 +376,9 @@ fn cap_title(cap: &str) -> &str {
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
         "abi4" => "модули нового формата (ABI 4)",
+        "bus" => {
+            "шины для драйверов (GPIO, I²C, SPI, UART, 1-Wire из block.wasm; только мастер на Rust)"
+        }
         other => other,
     }
 }
@@ -822,8 +833,13 @@ end
             info_with(&["aot", "rv32imc"]).aot_target(),
             Some(AotTarget::Riscv32Imc)
         );
+        assert_eq!(
+            info_with(&["aot", "xtensa-esp32"]).aot_target(),
+            Some(AotTarget::XtensaEsp32)
+        );
         assert_eq!(info_with(&["aot"]).aot_target(), None);
         assert_eq!(info_with(&["rv32imc"]).aot_target(), None);
+        assert_eq!(info_with(&["xtensa-esp32"]).aot_target(), None);
         assert_eq!(info_with(&[]).aot_target(), None);
     }
 
@@ -832,7 +848,7 @@ end
         let cache = temp_cache("noaot");
         for caps in [&["flashmod"][..], &["aot"][..]] {
             let mut asked = false;
-            let image = module_image(&info_with(caps), TINY_WASM, &cache, &mut || {
+            let image = module_image(&info_with(caps), TINY_WASM, &cache, &mut |_| {
                 asked = true;
                 Err(WamrcError::Cancelled)
             })
@@ -855,7 +871,7 @@ end
             &info_with(&["aot", "rv32imc"]),
             TINY_WASM,
             &cache,
-            &mut || {
+            &mut |_| {
                 asked = true;
                 Err(WamrcError::Cancelled)
             },
@@ -872,7 +888,7 @@ end
     fn image_falls_back_to_wasm_with_warning() {
         let cache = temp_cache("fallback");
         let info = info_with(&["aot", "rv32imc"]);
-        let image = module_image(&info, TINY_WASM, &cache, &mut || {
+        let image = module_image(&info, TINY_WASM, &cache, &mut |_| {
             Err(WamrcError::Download("нет сети".to_owned()))
         })
         .unwrap();
@@ -883,7 +899,7 @@ end
         assert!(warning.contains("медленнее"), "{warning}");
 
         let missing = cache.join("no-such-wamrc.exe");
-        let image = module_image(&info, TINY_WASM, &cache, &mut || Ok(missing.clone())).unwrap();
+        let image = module_image(&info, TINY_WASM, &cache, &mut |_| Ok(missing.clone())).unwrap();
         assert!(!image.aot);
         assert!(image.warning.is_some());
         let _ = std::fs::remove_dir_all(&cache);
@@ -896,7 +912,7 @@ end
             &info_with(&["aot", "rv32imc"]),
             TINY_WASM,
             &cache,
-            &mut || Err(WamrcError::Cancelled),
+            &mut |_| Err(WamrcError::Cancelled),
         );
         assert!(matches!(result, Err(WamrcError::Cancelled)));
         let _ = std::fs::remove_dir_all(&cache);

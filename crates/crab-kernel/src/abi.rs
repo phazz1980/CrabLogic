@@ -98,6 +98,7 @@ pub const IMPORTS: &[Import] = &[
     imp("tag_text", &[I32, I32, I32, I32], &[I32], Allow),
     imp("retain_text", &[I32, I32, I32, I32], &[I32], Allow),
     imp("yield", &[], &[I32], Always),
+    imp("bus", &[I32, I32, I32, I32, I32], &[I32], Allow),
 ];
 
 /// Import ids by name, for hosts that dispatch with `match`.
@@ -133,6 +134,73 @@ pub mod id {
     pub const TAG_TEXT: usize = 28;
     pub const RETAIN_TEXT: usize = 29;
     pub const YIELD: usize = 30;
+    pub const BUS: usize = 31;
+}
+
+/// Operation codes and error codes of `crab.bus(op, a, b, c, d)`: GPIO, I²C and UART of the board
+/// for driver blocks. Resources must be claimed (`CLAIM`) before `LOCK`; every other call is
+/// checked against the claims of the calling module.
+pub mod bus_op {
+    /// `CLAIM(kind, value)`: before `LOCK` only.
+    pub const CLAIM: i32 = 0;
+    /// Ends the claims of the module.
+    pub const LOCK: i32 = 1;
+    /// `GPIO_MODE(pin, mode)`; modes: 0 input, 1 output, 2 input pull-up, 3 input pull-down,
+    /// 4 open-drain output.
+    pub const GPIO_MODE: i32 = 10;
+    pub const GPIO_READ: i32 = 11;
+    pub const GPIO_WRITE: i32 = 12;
+    /// `I2C_OPEN(sda, scl, hz)`.
+    pub const I2C_OPEN: i32 = 20;
+    /// `I2C_WRITE(addr, ptr, len)`.
+    pub const I2C_WRITE: i32 = 21;
+    /// `I2C_READ(addr, ptr, len)`.
+    pub const I2C_READ: i32 = 22;
+    /// `I2C_WRITE_READ(addr, wptr, wlen | (rlen << 16), rptr)`.
+    pub const I2C_WRITE_READ: i32 = 23;
+    /// `UART_OPEN(port, tx, rx, baud)`, 8N1.
+    pub const UART_OPEN: i32 = 30;
+    /// `UART_WRITE(port, ptr, len)`.
+    pub const UART_WRITE: i32 = 31;
+    /// `UART_READ(port, ptr, cap)`: non-blocking.
+    pub const UART_READ: i32 = 32;
+    pub const UART_AVAILABLE: i32 = 33;
+    /// Microseconds since boot, wrapping.
+    pub const MICROS: i32 = 40;
+    /// `DELAY_US(us)`: busy wait, `us` clamped to 0..=100.
+    pub const DELAY_US: i32 = 41;
+    /// `SPI_OPEN(sck, mosi, miso, hz)`: `mosi` or `miso` may be -1 (not used); `hz` 0 means 1 MHz,
+    /// clamped to 80 MHz. One SPI controller per board for drivers (classic ESP32: SPI3, C3: SPI2,
+    /// which is not available when the Ethernet W5500 uses it). Same pins again: 0, other pins: -4.
+    pub const SPI_OPEN: i32 = 50;
+    /// `SPI_TRANSFER(cs, ptr, len, mode)`: full duplex in place, `mode` 0..=3 (CPOL/CPHA). `cs` is a
+    /// claimed GPIO the master holds low during the transfer (-1: no chip select). Returns `len`.
+    pub const SPI_TRANSFER: i32 = 51;
+    /// `OW_RESET(pin)`: 1-Wire reset; 1 if a presence pulse was seen, 0 if not.
+    pub const OW_RESET: i32 = 60;
+    /// `OW_WRITE(pin, ptr, len)`: bytes, least significant bit first. Returns `len`.
+    pub const OW_WRITE: i32 = 61;
+    /// `OW_READ(pin, ptr, len)`: bytes into the module memory. Returns `len`.
+    pub const OW_READ: i32 = 62;
+    /// `OW_READ_BIT(pin)`: 0 or 1.
+    pub const OW_READ_BIT: i32 = 63;
+    /// `OW_WRITE_BIT(pin, bit)`: returns 0.
+    pub const OW_WRITE_BIT: i32 = 64;
+
+    /// Claim kinds.
+    pub const KIND_PIN: i32 = 1;
+    pub const KIND_I2C_ADDR: i32 = 2;
+    pub const KIND_UART: i32 = 3;
+
+    /// Resource not claimed (or claims not locked yet, or the bus not opened by the module).
+    pub const ERR_NOT_CLAIMED: i32 = -1;
+    /// Bus error, NACK.
+    pub const ERR_BUS: i32 = -2;
+    pub const ERR_TIMEOUT: i32 = -3;
+    /// Bad arguments: pin not usable on the chip, length over `MAX_LEN`, pointer outside the memory.
+    pub const ERR_ARGS: i32 = -4;
+    /// Largest transfer of one call, bytes.
+    pub const MAX_LEN: i32 = 256;
 }
 
 /// The id of an import by name.
@@ -196,11 +264,12 @@ mod tests {
             (id::TEXT, "text"),
             (id::RETAIN_TEXT, "retain_text"),
             (id::YIELD, "yield"),
+            (id::BUS, "bus"),
         ];
         for (i, name) in named {
             assert_eq!(IMPORTS[i].name, name);
         }
-        assert_eq!(IMPORTS.len(), id::YIELD + 1);
+        assert_eq!(IMPORTS.len(), id::BUS + 1);
     }
 
     #[test]

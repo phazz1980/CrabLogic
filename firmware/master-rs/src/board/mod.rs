@@ -11,6 +11,7 @@
 //! Commands: `put`, `list`, `info`, `tick`, `del`, `swap`, `reset`, `rmax`, `log`; live
 //! data of a module: `in`, `param`, `out`, `ev`, `force`, `unforce`, `pins`.
 
+mod bus;
 mod devices;
 mod engine;
 mod eth;
@@ -61,7 +62,11 @@ const MAX_TICKS: u32 = 100_000;
 const JOURNAL: usize = 16;
 /// The CPU the AOT images must be built for, as `modcaps=` names it.
 #[cfg(target_arch = "riscv32")]
-const AOT_CPU: &str = "rv32imc";
+const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,rv32imc";
+/// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
+/// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
+#[cfg(not(target_arch = "riscv32"))]
+const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
@@ -255,7 +260,7 @@ impl Master {
             max_memory: MAX_MEMORY,
             ..Limits::default()
         };
-        let host = ModuleHost::new(BoardDevices, OUTPUTS);
+        let host = ModuleHost::new(BoardDevices::default(), OUTPUTS);
         let module = self
             .wamr
             .load_image(image, memory, &area.allow_list(), limits, host)?;
@@ -820,7 +825,7 @@ impl Master {
         // named next to it
         // (the editor does not compile for a CPU it does not see here).
         println!("caps=us,ev,bus");
-        println!("modcaps=flashmod,abi4,aot,sparkplug,{AOT_CPU}");
+        println!("modcaps={MODCAPS}");
         // The Rust master is not built per project: the editor reads this prefix as "current".
         println!("id=rs-{}", env!("CARGO_PKG_VERSION"));
         // Safe mode after a boot loop: the editor warns that the stored modules do not run.

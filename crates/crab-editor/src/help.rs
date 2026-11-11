@@ -69,6 +69,7 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../help/10-block-editor.md"),
     ),
     ("boards", include_str!("../../../help/11-boards.md")),
+    ("drivers", include_str!("../../../help/12-drivers.md")),
     ("build", include_str!("../../../help/05-build.md")),
     ("debug", include_str!("../../../help/06-debug.md")),
     ("ai", include_str!("../../../help/07-ai.md")),

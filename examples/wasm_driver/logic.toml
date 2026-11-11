@@ -1,0 +1,25 @@
+[[block]]
+id = "air"
+type = "bmp280"
+address = 118
+sda = 21
+scl = 22
+period = 1000
+
+[[block]]
+id = "hot"
+type = "greater"
+b = 30.0
+
+[[block]]
+id = "fan"
+type = "digital_out"
+pin = 4
+
+[[link]]
+from = "air.temperature"
+to = "hot.a"
+
+[[link]]
+from = "hot.out"
+to = "fan.in"

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crab_codegen::Program;
-use crab_core::{Library, Project, SignalType};
+use crab_core::{Library, ParamValue, Project, SignalType};
 use crab_sim::mcu::{Manifest, McuModule, Word};
 use crab_sim::schema::Simulation;
 
@@ -514,6 +514,45 @@ fn wifi_and_ntp_work_in_a_module() {
     assert_eq!(out(&module, "addr_len.out"), Word::int(12));
     assert_eq!(out(&module, "time_len.out"), Word::int(8));
     assert_eq!(out(&module, "work.out"), Word::int(1));
+}
+
+#[test]
+fn lan8720_settings_go_to_the_master() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/eth_lan8720")).unwrap();
+    let step = |project: &Project| {
+        let program = Program::build(project, &lib).unwrap();
+        let built = program.wasm_module_with(1, true).unwrap();
+        let manifest = Manifest::parse(&built.manifest).unwrap();
+        let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+        module.step(10).unwrap();
+        module.io().eth_num.clone()
+    };
+    // The preset "ESP32 + LAN8720 module": PHY 1, MDC 23, MDIO 18, no power pin, clock in on GPIO0.
+    let num = step(&project);
+    let got: Vec<i32> = (7..=12).map(|c| num[&c]).collect();
+    assert_eq!(got, [1, 1, 23, 18, -1, 0]);
+    assert!(!num.contains_key(&2) && !num.contains_key(&5) && !num.contains_key(&6));
+    assert_eq!(num[&1], 1);
+    assert!(num.contains_key(&63));
+    // Own pins.
+    let eth = project
+        .logic
+        .blocks
+        .iter_mut()
+        .find(|b| b.id == "eth")
+        .unwrap();
+    for (k, v) in [
+        ("preset", ParamValue::Text("custom".into())),
+        ("mdc", ParamValue::Int(32)),
+        ("power_pin", ParamValue::Int(33)),
+        ("clock", ParamValue::Int(3)),
+    ] {
+        eth.params.insert(k.into(), v);
+    }
+    let num = step(&project);
+    let got: Vec<i32> = (7..=12).map(|c| num[&c]).collect();
+    assert_eq!(got, [1, 1, 32, 18, 33, 3]);
 }
 
 #[test]

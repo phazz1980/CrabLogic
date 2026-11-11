@@ -9,6 +9,7 @@
 extern crate alloc;
 
 pub mod boot_guard;
+pub mod bus_cfg;
 pub mod eth_cfg;
 pub mod protocol;
 pub mod restart;

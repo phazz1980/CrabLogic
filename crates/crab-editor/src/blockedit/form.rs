@@ -30,6 +30,8 @@ pub(super) struct PortRow {
     pub(super) default: String,
     pub(super) when: String,
     pub(super) description: String,
+    /// Value in the simulation on the PC (outputs of drivers); empty: none.
+    pub(super) sim: String,
 }
 
 impl PortRow {
@@ -41,6 +43,7 @@ impl PortRow {
             default: String::new(),
             when: String::new(),
             description: String::new(),
+            sim: String::new(),
         }
     }
 
@@ -52,6 +55,7 @@ impl PortRow {
             default: p.default.as_ref().map(value_text).unwrap_or_default(),
             when: p.when.clone().unwrap_or_default(),
             description: p.description.clone(),
+            sim: p.sim.as_ref().map(value_text).unwrap_or_default(),
         }
     }
 
@@ -64,6 +68,8 @@ impl PortRow {
                 .map_err(|e| format!("«{}»: {e}", self.name))?,
             when: optional(&self.when),
             description: self.description.trim().to_owned(),
+            sim: parse_signal(self.ty, &self.sim)
+                .map_err(|e| format!("«{}», значение в симуляции: {e}", self.name))?,
         })
     }
 }

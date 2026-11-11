@@ -1,6 +1,17 @@
 # WAMR (classic interpreter + AOT loader) as an ESP-IDF component, with the same sources and
 # defines as the stage 0 prototype (specs/wasm-on-mcu/proto/wamr-c3), plus the CrabLogic shim.
-# RISC-V (ESP32-C3) only for now; Xtensa comes with task 3.5.
+# RISC-V (ESP32-C3) or Xtensa (classic ESP32): only the native call glue and the AOT relocations differ.
+if(CONFIG_IDF_TARGET_ARCH_XTENSA)
+  set(ARCH_INVOKE "invokeNative_xtensa.s")
+  # The editor pre-links the L32R of an XIP image and drops its text relocations
+  # (crates/crab-build/src/aot_xtensa.rs), so the stock relocation code is enough.
+  set(ARCH_RELOC "${CMAKE_CURRENT_LIST_DIR}/../../.deps/wamr/core/iwasm/aot/arch/aot_reloc_xtensa.c")
+  set(ARCH_TARGET "BUILD_TARGET_XTENSA")
+else()
+  set(ARCH_INVOKE "invokeNative_riscv.S")
+  set(ARCH_RELOC "${CMAKE_CURRENT_LIST_DIR}/../../.deps/wamr/core/iwasm/aot/arch/aot_reloc_riscv.c")
+  set(ARCH_TARGET "BUILD_TARGET_RISCV32_ILP32")
+endif()
 set(WAMR_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.deps/wamr")
 set(CORE "${WAMR_ROOT}/core")
 if(NOT EXISTS "${CORE}/iwasm/include/wasm_export.h")
@@ -20,7 +31,7 @@ idf_component_register(
     "${CORE}/iwasm/common/wasm_memory.c"
     "${CORE}/iwasm/common/wasm_native.c"
     "${CORE}/iwasm/common/wasm_runtime_common.c"
-    "${CORE}/iwasm/common/arch/invokeNative_riscv.S"
+    "${CORE}/iwasm/common/arch/${ARCH_INVOKE}"
     "${CORE}/iwasm/interpreter/wasm_loader.c"
     "${CORE}/iwasm/interpreter/wasm_runtime.c"
     # The fast interpreter corrupts the heap on thermostat17 (stage 0), so classic it is.
@@ -28,7 +39,7 @@ idf_component_register(
     "${CORE}/iwasm/aot/aot_intrinsic.c"
     "${CORE}/iwasm/aot/aot_loader.c"
     "${CORE}/iwasm/aot/aot_runtime.c"
-    "${CORE}/iwasm/aot/arch/aot_reloc_riscv.c"
+    "${ARCH_RELOC}"
     "${CORE}/shared/mem-alloc/mem_alloc.c"
     "${CORE}/shared/platform/esp-idf/espidf_clock.c"
     "${CORE}/shared/platform/esp-idf/espidf_malloc.c"
@@ -51,11 +62,11 @@ idf_component_register(
     "${CORE}/shared/platform/esp-idf"
     "${CORE}/shared/platform/include"
     "${CORE}/shared/platform/common/libc-util"
-  PRIV_REQUIRES pthread lwip esp_timer vfs freertos)
+  PRIV_REQUIRES pthread lwip esp_timer vfs freertos spi_flash)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
   BH_PLATFORM_ESP_IDF
-  BUILD_TARGET_RISCV32_ILP32
+  ${ARCH_TARGET}
   WASM_ENABLE_INTERP=1
   WASM_ENABLE_FAST_INTERP=0
   WASM_ENABLE_AOT=1

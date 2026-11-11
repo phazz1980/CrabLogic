@@ -95,5 +95,6 @@ pub fn check_project(project: &Project, lib: &Library) -> Report {
         check_board_pins(layout, &uart_pins, &own, &mut report);
         check_board_expanders(project, lib, layout, &mut report);
     }
+    check_lan8720(project, layout.as_ref().map(BoardLayout::chip), &mut report);
     report
 }
