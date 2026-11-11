@@ -14,6 +14,7 @@
 mod devices;
 mod engine;
 mod flash;
+mod net;
 mod usb;
 
 use std::collections::VecDeque;
@@ -932,6 +933,9 @@ impl Master {
                 }
             }
             self.upload_step();
+            for text in net::take_notes() {
+                self.log("net", &text);
+            }
             let dt = last_scan.elapsed().as_millis() as u32;
             if dt >= QUANTUM_MS {
                 last_scan += Duration::from_millis(dt as u64);

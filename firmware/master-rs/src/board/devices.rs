@@ -1,6 +1,7 @@
 //! The hardware of the ESP32-C3 as modules see it. So far: digital pins and the clock;
 //! the other imports answer 0 until their drivers move over from the C++ master.
 
+use super::net;
 use crab_kernel::abi::id;
 use crab_kernel::host::{Devices, Mem, Val};
 use crab_kernel::lease::{Fault, Hal, PinUse};
@@ -62,7 +63,7 @@ impl Devices for BoardDevices {
         BoardHal
     }
 
-    fn call(&mut self, import: usize, args: &[Val], _mem: Mem<'_>) -> Option<Val> {
+    fn call(&mut self, import: usize, args: &[Val], mem: Mem<'_>) -> Option<Val> {
         let a = |i: usize| args.get(i).map_or(0, |v| v.i());
         match import {
             id::GPIO_WRITE => {
@@ -79,6 +80,10 @@ impl Devices for BoardDevices {
                 }))
             }
             id::MILLIS => Some(Val::I32(millis())),
+            id::NET => {
+                let mut mem = mem;
+                Some(Val::I32(net::call(a(0), a(1), a(2), a(3), &mut mem)))
+            }
             _ => None,
         }
     }
