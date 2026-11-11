@@ -27,7 +27,7 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
 component_dirs = ["components/crab_wamr"]
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"

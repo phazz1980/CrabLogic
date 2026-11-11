@@ -78,6 +78,8 @@ const HW_MATH: u32 = HW_BASE + 12;
 const HW_RETAIN: u32 = HW_BASE + 13;
 const HW_TAG_TEXT: u32 = HW_BASE + 14;
 const HW_RETAIN_TEXT: u32 = HW_BASE + 15;
+/// Placeholder of the module's own text append function (see `Emitter::append`), defined last.
+const APPEND_FN: u32 = HW_BASE - 1;
 const HW_NAMES: [&str; 16] = [
     "gpio_read",
     "gpio_write",
@@ -130,6 +132,9 @@ pub const MASTER_CAPS: [&str; 10] = [
 pub struct WasmModule {
     pub name: String,
     pub wasm: Vec<u8>,
+    /// The same module with one wrapper function per import; every call goes through the wrappers.
+    /// Only for building the AOT image (the interpreter is slower with them).
+    pub wasm_aot: Vec<u8>,
     pub manifest: String,
     /// What the module needs from the master firmware beyond the first version of it (see
     /// `MASTER_CAPS`): a master that does not report all of these cannot run the module.
@@ -250,6 +255,8 @@ struct Emitter<'a, 'p> {
     watched: Vec<String>,
     /// Hardware imports the code calls (placeholders, see `HW_BASE`).
     hw: std::collections::BTreeSet<u32>,
+    /// The code calls the module's own append function (`APPEND_FN`).
+    uses_append: bool,
     /// Newer master features used by the code that are not whole imports (see `WasmModule::needs`).
     extras: std::collections::BTreeSet<&'static str>,
     /// Offsets in `code` where `step` is cut into separate functions (block boundaries only):
@@ -282,6 +289,69 @@ fn group_count(pieces: usize) -> usize {
     }
 }
 
+/// `append(out, cap, src, len, cur) -> cur + n`: copies `n = min(len, cap - cur)` bytes of `src`
+/// to `out + cur` in a byte loop. Text building calls it instead of the host (a host call costs
+/// microseconds on the board) and instead of an inline `memory.copy` (wamrc makes that slower and
+/// bigger on RISC-V, see `specs/wasm-kernel/tasks.md` 3.6в).
+fn append_function() -> Function {
+    use wasm_encoder::MemArg;
+    let byte = MemArg {
+        offset: 0,
+        align: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
+    };
+    let (out, cap, src, len, cur, n, i) = (0, 1, 2, 3, 4, 5, 6);
+    let mut f = Function::new([(2, ValType::I32)]);
+    for op in [
+        // n = min(len, cap - cur)
+        I::LocalGet(cap),
+        I::LocalGet(cur),
+        I::I32Sub,
+        I::LocalSet(n),
+        I::LocalGet(len),
+        I::LocalGet(n),
+        I::LocalGet(len),
+        I::LocalGet(n),
+        I::I32LtS,
+        I::Select,
+        I::LocalSet(n),
+        // out += cur
+        I::LocalGet(out),
+        I::LocalGet(cur),
+        I::I32Add,
+        I::LocalSet(out),
+        I::Block(BlockType::Empty),
+        I::Loop(BlockType::Empty),
+        I::LocalGet(i),
+        I::LocalGet(n),
+        I::I32GeS,
+        I::BrIf(1),
+        I::LocalGet(out),
+        I::LocalGet(i),
+        I::I32Add,
+        I::LocalGet(src),
+        I::LocalGet(i),
+        I::I32Add,
+        I::I32Load8U(byte),
+        I::I32Store8(byte),
+        I::LocalGet(i),
+        I::I32Const(1),
+        I::I32Add,
+        I::LocalSet(i),
+        I::Br(0),
+        I::End,
+        I::End,
+        I::LocalGet(cur),
+        I::LocalGet(n),
+        I::I32Add,
+        I::End,
+    ] {
+        f.instruction(&op);
+    }
+    f
+}
+
 impl<'a, 'p> Emitter<'a, 'p> {
     fn new(program: &'a Program<'p>, module: &'a SheetModule) -> Self {
         let mut em = Self {
@@ -309,6 +379,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             watch: false,
             watched: Vec::new(),
             hw: Default::default(),
+            uses_append: false,
             extras: Default::default(),
             cuts: Vec::new(),
             mem_top: MEM_START,
@@ -884,6 +955,22 @@ impl<'a, 'p> Emitter<'a, 'p> {
     }
 
     fn finish(self) -> WasmModule {
+        let (wasm, manifest, needs) = self.encode(false);
+        let (wasm_aot, _, _) = self.encode(true);
+        WasmModule {
+            name: self.module.name.clone(),
+            wasm,
+            wasm_aot,
+            manifest,
+            needs,
+            watched: self.watched,
+        }
+    }
+
+    /// Encodes the module. With `aot`, every import gets a defined wrapper function (appended after
+    /// all other defined functions) and every call goes through it: wamrc turns a call of an import
+    /// into a bulky argument-packing sequence at each call site, a call of a wrapper into a plain one.
+    fn encode(&self, aot: bool) -> (Vec<u8>, String, Vec<String>) {
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32], [ValType::I32]); // 0: tag_get_i, gpio_read, adc_read
         types.ty().function([ValType::I32], [ValType::F32]); // 1: tag_get_f
@@ -919,6 +1006,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
         imports.import("crab", "output_i", EntityType::Function(7));
         imports.import("crab", "output_f", EntityType::Function(8));
         imports.import("crab", "yield", EntityType::Function(4));
+        // Type index of every import, in import order (for the AOT wrappers).
+        let mut import_types: Vec<u32> = vec![0, 1, 2, 3, 7, 8, 4];
         // Hardware imports follow in placeholder order; defined functions come after them.
         let used: Vec<u32> = self.hw.iter().copied().collect();
         let mut allow = Vec::new();
@@ -937,12 +1026,30 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 _ => 2,
             };
             imports.import("crab", name, EntityType::Function(ty));
+            import_types.push(ty);
             allow.push(format!("\"{name}\""));
         }
         let first = FIXED_IMPORTS + used.len() as u32;
         let remap = |n: u32| match used.iter().position(|&h| h == n) {
             Some(k) => FIXED_IMPORTS + k as u32,
             None => n,
+        };
+        // The append function follows `abi`, `step`, `init`, pieces and groups; the wrapper of
+        // import `k` comes after it.
+        let groups = group_count(self.cuts.len());
+        let append_fn = first + 3 + self.cuts.len() as u32 + groups as u32;
+        let wrap_base = append_fn + u32::from(self.uses_append);
+        // Index to call for a call of import `n` (a fixed index or a hardware placeholder).
+        let target = |n: u32| {
+            if n == APPEND_FN {
+                return append_fn;
+            }
+            let n = if n >= HW_BASE { remap(n) } else { n };
+            if aot && n < first {
+                wrap_base + n
+            } else {
+                n
+            }
         };
         let peak_i = self.peak_i;
         let local = |n: u32| {
@@ -960,9 +1067,16 @@ impl<'a, 'p> Emitter<'a, 'p> {
         for _ in &self.cuts {
             funcs.function(5);
         }
-        let groups = group_count(self.cuts.len());
         for _ in 0..groups {
             funcs.function(5);
+        }
+        if self.uses_append {
+            funcs.function(11);
+        }
+        if aot {
+            for &ty in &import_types {
+                funcs.function(ty);
+            }
         }
 
         // A page (64 KB) is declared only by modules with strings; the master gives such a module only
@@ -1019,7 +1133,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             let mut f = Function::new_with_locals_types(locals.clone());
             for i in &self.code[w[0]..w[1]] {
                 match i {
-                    I::Call(n) if *n >= HW_BASE => f.instruction(&I::Call(remap(*n))),
+                    I::Call(n) => f.instruction(&I::Call(target(*n))),
                     I::LocalGet(n) => f.instruction(&I::LocalGet(local(*n))),
                     I::LocalSet(n) => f.instruction(&I::LocalSet(local(*n))),
                     I::LocalTee(n) => f.instruction(&I::LocalTee(local(*n))),
@@ -1065,7 +1179,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             init.instruction(&I::I32Const(r.key));
             init.instruction(&I::I32Const(r.buf.ptr as i32));
             init.instruction(&I::I32Const(r.buf.cap as i32));
-            init.instruction(&I::Call(remap(HW_RETAIN_TEXT)));
+            init.instruction(&I::Call(target(HW_RETAIN_TEXT)));
             init.instruction(&I::LocalTee(0));
             init.instruction(&I::I32Const(0));
             init.instruction(&I::I32GeS);
@@ -1079,7 +1193,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             init.instruction(&I::GlobalGet(r.buf.len));
             init.instruction(&I::I32Const(0));
             init.instruction(&I::I32Const(0));
-            init.instruction(&I::Call(remap(HW_TEXT)));
+            init.instruction(&I::Call(target(HW_TEXT)));
             init.instruction(&I::GlobalSet(r.saved.len));
         }
         for r in &self.retained {
@@ -1087,7 +1201,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             init.instruction(&I::I32Const(0));
             init.instruction(&I::I32Const(r.key));
             init.instruction(&I::I32Const(r.default));
-            init.instruction(&I::Call(remap(HW_RETAIN)));
+            init.instruction(&I::Call(target(HW_RETAIN)));
             init.instruction(&I::LocalTee(0));
             init.instruction(&I::GlobalSet(r.saved));
             match r.tag {
@@ -1097,7 +1211,11 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     if r.ty == Ty::F {
                         init.instruction(&I::F32ReinterpretI32);
                     }
-                    init.instruction(&I::Call(if r.ty == Ty::F { TAG_SET_F } else { TAG_SET_I }));
+                    init.instruction(&I::Call(target(if r.ty == Ty::F {
+                        TAG_SET_F
+                    } else {
+                        TAG_SET_I
+                    })));
                 }
                 None => {
                     init.instruction(&I::LocalGet(0));
@@ -1116,7 +1234,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                         init.instruction(&I::I32Const(v));
                     }
                     init.instruction(&I::GlobalGet(buf.len));
-                    init.instruction(&I::Call(remap(HW_TAG_TEXT)));
+                    init.instruction(&I::Call(target(HW_TAG_TEXT)));
                     init.instruction(&I::Drop);
                 }
                 continue;
@@ -1131,7 +1249,11 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     Ty::I => init.instruction(&I::I32Const(pv(value) as i32)),
                     Ty::F => init.instruction(&I::F32Const((pv(value) as f32).into())),
                 };
-                init.instruction(&I::Call(if ty == Ty::F { TAG_SET_F } else { TAG_SET_I }));
+                init.instruction(&I::Call(target(if ty == Ty::F {
+                    TAG_SET_F
+                } else {
+                    TAG_SET_I
+                })));
             }
         }
         init.instruction(&I::End);
@@ -1145,6 +1267,29 @@ impl<'a, 'p> Emitter<'a, 'p> {
         }
         for g in &group_fns {
             code.function(g);
+        }
+        if self.uses_append {
+            code.function(&append_function());
+        }
+        if aot {
+            for (k, &ty) in import_types.iter().enumerate() {
+                let nparams = match ty {
+                    0 | 1 | 5 => 1,
+                    2 | 3 | 7 | 8 => 2,
+                    4 | 6 => 0,
+                    9 | 10 | 14 => 3,
+                    11 => 5,
+                    12 => 4,
+                    _ => 7,
+                };
+                let mut w = Function::new([]);
+                for p in 0..nparams {
+                    w.instruction(&I::LocalGet(p));
+                }
+                w.instruction(&I::Call(k as u32));
+                w.instruction(&I::End);
+                code.function(&w);
+            }
         }
 
         let mut module = Module::new();
@@ -1193,12 +1338,6 @@ impl<'a, 'p> Emitter<'a, 'p> {
         needs.extend(self.extras.iter().map(|n| (*n).to_owned()));
         needs.push("abi4".to_owned());
         needs.sort();
-        WasmModule {
-            name: self.module.name.clone(),
-            wasm: module.finish(),
-            manifest,
-            needs,
-            watched: self.watched,
-        }
+        (module.finish(), manifest, needs)
     }
 }

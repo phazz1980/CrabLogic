@@ -246,14 +246,12 @@
     global.set 7
     global.get 6
     local.set 5
-    i32.const 1
     i32.const 48
     i32.const 128
     i32.const 340
     i32.const 2
     i32.const 0
-    i32.const 0
-    call 8
+    call 12
     local.set 1
     i32.const 2
     i32.const 48
@@ -265,34 +263,28 @@
     i32.const 0
     call 8
     local.set 1
-    i32.const 1
     i32.const 48
     i32.const 128
     i32.const 344
     i32.const 1
     local.get 1
-    i32.const 0
-    call 8
+    call 12
     local.set 1
     local.get 1
     global.set 8
-    i32.const 1
     i32.const 176
     i32.const 128
     i32.const 348
     i32.const 15
     i32.const 0
-    i32.const 0
-    call 8
+    call 12
     local.set 1
-    i32.const 1
     i32.const 176
     i32.const 128
     i32.const 16
     global.get 3
     local.get 1
-    i32.const 0
-    call 8
+    call 12
     local.set 1
     local.get 1
     global.set 9
@@ -372,23 +364,19 @@
     local.set 3
     local.get 1
     if ;; label = @1
-      i32.const 1
       i32.const 364
       i32.const 130
       i32.const 48
       global.get 8
       i32.const 0
-      i32.const 0
-      call 8
+      call 12
       local.set 4
-      i32.const 1
       i32.const 364
       i32.const 130
       i32.const 496
       i32.const 2
       local.get 4
-      i32.const 0
-      call 8
+      call 12
       local.set 4
       i32.const 6
       i32.const 2
@@ -498,6 +486,48 @@
   )
   (func (;11;) (type 6)
     (local i32)
+  )
+  (func (;12;) (type 11) (param i32 i32 i32 i32 i32) (result i32)
+    (local i32 i32)
+    local.get 1
+    local.get 4
+    i32.sub
+    local.set 5
+    local.get 3
+    local.get 5
+    local.get 3
+    local.get 5
+    i32.lt_s
+    select
+    local.set 5
+    local.get 0
+    local.get 4
+    i32.add
+    local.set 0
+    block ;; label = @1
+      loop ;; label = @2
+        local.get 6
+        local.get 5
+        i32.ge_s
+        br_if 1 (;@1;)
+        local.get 0
+        local.get 6
+        i32.add
+        local.get 2
+        local.get 6
+        i32.add
+        i32.load8_u
+        i32.store8
+        local.get 6
+        i32.const 1
+        i32.add
+        local.set 6
+        br 0 (;@2;)
+      end
+    end
+    local.get 4
+    local.get 5
+    i32.add
   )
   (data (;0;) (i32.const 336) "on")
   (data (;1;) (i32.const 340) "T=")

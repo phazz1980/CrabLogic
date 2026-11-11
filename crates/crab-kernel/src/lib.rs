@@ -20,6 +20,7 @@ pub mod handle;
 pub mod host;
 pub mod kernel;
 pub mod lease;
+mod numfmt;
 #[cfg(feature = "engine-wasmi")]
 pub mod wasmi;
 

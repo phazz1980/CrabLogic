@@ -132,6 +132,9 @@ pub struct ModuleMemory {
     pub code: u32,
     /// The module itself, bytes.
     pub wasm: u32,
+    /// `mode=` of the Rust master: `Some(true)` for an accelerated (AOT) module, `Some(false)` for
+    /// one run by the interpreter; `None` for a master that does not tell (the C++ one).
+    pub accelerated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

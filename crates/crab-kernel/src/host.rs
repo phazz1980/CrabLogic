@@ -6,7 +6,7 @@
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -400,30 +400,46 @@ pub fn text_op(m: &mut [u8], args: [i32; 7]) -> i32 {
     };
     match op {
         1 => {
-            let s = slice(m, a, alen);
-            put(m, b, &s)
+            let cur = b.clamp(0, cap);
+            let n = alen.min(cap - cur) as usize;
+            m.copy_within(a as usize..a as usize + n, (out + cur) as usize);
+            cur + n as i32
         }
         2 => {
-            let t = format!(
-                "{:.*}",
-                alen.clamp(0, 9) as usize,
-                f64::from(f32::from_bits(a as u32))
-            );
-            put(m, b, &t.as_bytes()[..t.len().min(47)])
+            let mut t = [0u8; crate::numfmt::FIXED_MAX];
+            let n =
+                crate::numfmt::fixed(f32::from_bits(a as u32), alen.clamp(0, 9) as usize, &mut t);
+            put(m, b, &t[..n.min(47)])
         }
-        3 => put(m, b, a.to_string().as_bytes()),
+        3 => {
+            let mut t = [0u8; 11];
+            let n = crate::numfmt::int(a, &mut t);
+            put(m, b, &t[..n])
+        }
         4 => put(m, b, &[(a & 0xFF) as u8]),
         5 => {
             let (x, y) = (slice(m, a, alen), slice(m, b, blen));
             i32::from(text_match(&x, &y, out, cap != 0))
         }
         6 => {
-            let n = (alen as usize).min(47);
-            let t = String::from_utf8_lossy(&m[a as usize..a as usize + n]).replace(',', ".");
-            let t = t.trim_matches([' ', '\t', '\r', '\n']);
-            match t.parse::<f64>() {
-                Ok(v) if !t.is_empty() && alen < 48 && v.is_finite() => {
-                    m[out as usize..out as usize + 4].copy_from_slice(&(v as f32).to_le_bytes());
+            // Straight to f32 in a stack copy (decimal comma as point); too long text is not a number.
+            if alen >= 48 {
+                return 0;
+            }
+            let n = alen as usize;
+            let mut t = [0u8; 47];
+            t[..n].copy_from_slice(&m[a as usize..a as usize + n]);
+            for c in &mut t[..n] {
+                if *c == b',' {
+                    *c = b'.';
+                }
+            }
+            let Ok(s) = core::str::from_utf8(&t[..n]) else {
+                return 0;
+            };
+            match s.trim_matches([' ', '\t', '\r', '\n']).parse::<f32>() {
+                Ok(v) if v.is_finite() => {
+                    m[out as usize..out as usize + 4].copy_from_slice(&v.to_le_bytes());
                     1
                 }
                 _ => 0,
@@ -436,8 +452,10 @@ pub fn text_op(m: &mut [u8], args: [i32; 7]) -> i32 {
             } else {
                 start + blen
             };
-            let s = slice(m, a + start, end - start);
-            put(m, 0, &s)
+            let n = (end - start).min(cap) as usize;
+            let from = (a + start) as usize;
+            m.copy_within(from..from + n, out as usize);
+            n as i32
         }
         8 => {
             let from = out.max(0);
@@ -649,5 +667,38 @@ mod tests {
         assert_eq!(events.len(), MAX_EVENTS);
         assert_eq!(lost, 5);
         assert_eq!(h.take_events().1, 0);
+    }
+
+    /// Runs text op 6 on `text`, returns (ok, number).
+    fn to_num(text: &[u8]) -> (i32, f32) {
+        let mut m = [0u8; 128];
+        m[8..8 + text.len()].copy_from_slice(text);
+        let ok = text_op(&mut m, [6, 0, 0, 8, text.len() as i32, 0, 0]);
+        (ok, f32::from_le_bytes([m[0], m[1], m[2], m[3]]))
+    }
+
+    #[test]
+    fn text_to_num_parses_like_docs() {
+        assert_eq!(to_num(b"21.5"), (1, 21.5));
+        assert_eq!(to_num(b" -3 "), (1, -3.0));
+        assert_eq!(to_num(b"1e3"), (1, 1000.0));
+        assert_eq!(to_num(b"21,5"), (1, 21.5));
+        assert_eq!(to_num(b"\t+0.1\r\n"), (1, 0.1));
+        assert_eq!(to_num(b".5"), (1, 0.5));
+        for bad in [
+            &b"abc"[..],
+            b"",
+            b"  ",
+            b"12kg",
+            b"1e39",
+            b"inf",
+            b"NaN",
+            b"\xff1",
+        ] {
+            assert_eq!(to_num(bad).0, 0, "{bad:?}");
+        }
+        let long = [b'0'; 48];
+        assert_eq!(to_num(&long).0, 0);
+        assert_eq!(to_num(&long[..47]).0, 1);
     }
 }

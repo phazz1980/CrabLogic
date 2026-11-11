@@ -723,6 +723,7 @@ fn upload_sheets(
             sheet,
             name: &m.name,
             wasm: &m.wasm,
+            wasm_aot: &m.wasm_aot,
             speed: project
                 .logic
                 .sheets

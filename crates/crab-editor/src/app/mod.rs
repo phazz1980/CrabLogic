@@ -132,6 +132,15 @@ enum BlockPick {
     Undecided,
 }
 
+/// Result of the board check: what the remembered board says about the current schema.
+struct BoardCheck {
+    revision: u64,
+    project: PathBuf,
+    /// Modification time of the memo file the lines were computed from.
+    memo_time: Option<SystemTime>,
+    lines: Vec<String>,
+}
+
 pub struct EditorApp {
     pub lib: Library,
     pub lib_dir: Option<PathBuf>,
@@ -210,6 +219,12 @@ pub struct EditorApp {
     precompiled: Option<MasterKey>,
     /// Last seen master key and when it changed: precompile after a pause.
     seen_rev: Option<(MasterKey, Instant)>,
+    /// Warnings about the sheets that would not go accelerated on the remembered board.
+    board_check: Option<BoardCheck>,
+    /// When the project last changed and when the memo file was last looked at.
+    board_changed: Instant,
+    board_seen: Option<(u64, PathBuf)>,
+    board_polled: Instant,
     pending: Option<Pending>,
     allow_close: bool,
     /// Autosave period in minutes; 0 means off.
@@ -345,6 +360,10 @@ impl EditorApp {
             queued: None,
             precompiled: None,
             seen_rev: None,
+            board_check: None,
+            board_changed: Instant::now(),
+            board_seen: None,
+            board_polled: Instant::now(),
             local: LocalValues::default(),
             update_check: theme::update_check(),
             update_beta: theme::update_beta(),
@@ -505,6 +524,7 @@ impl eframe::App for EditorApp {
         self.sync_comment_lang();
         self.poll_job(&ctx);
         self.precompile(&ctx);
+        self.update_board_check(&ctx);
         self.poll_debug();
         // Wires of fast 0/1 signals follow the history of the board: redraw about 30 times a second.
         if self.debug.as_ref().is_some_and(|d| d.animating()) {

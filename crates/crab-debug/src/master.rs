@@ -420,7 +420,7 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
         ..ModStat::default()
     };
     let num = |v: &str| v.parse::<u32>().ok();
-    let (mut mem, mut code, mut wasm) = (None, None, None);
+    let (mut mem, mut code, mut wasm, mut accelerated) = (None, None, None, None);
     for word in head.split_whitespace().skip(1) {
         if let Some(v) = word.strip_prefix("mem=") {
             mem = num(v);
@@ -428,6 +428,12 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
             code = num(v);
         } else if let Some(v) = word.strip_prefix("wasm=") {
             wasm = num(v);
+        } else if let Some(v) = word.strip_prefix("mode=") {
+            accelerated = match v {
+                "aot" => Some(true),
+                "interp" => Some(false),
+                _ => None,
+            };
         } else if let Some(v) = word.strip_prefix("steps=") {
             m.steps = v.parse().unwrap_or(0);
         } else if let Some(v) = word.strip_prefix("qlost=") {
@@ -445,6 +451,7 @@ fn parse_module_stat(name: &str, head: &str) -> ModStat {
             mem,
             code,
             wasm,
+            accelerated,
         });
     }
     m
@@ -963,7 +970,7 @@ mod tests {
         let mut aux = Aux::default();
         let crc = format!("{:08x}", 5);
         for text in [
-            format!("sheet1 run steps=1 restarts=0 out0=0 qlost=0 mem=4096 code=9216 wasm=5120 crc={crc}"),
+            format!("sheet1 run steps=1 restarts=0 out0=0 qlost=0 mem=4096 code=9216 wasm=5120 mode=aot crc={crc}"),
             "free=50000 largest=31000 min=42000".to_owned(),
             "stack=loop:5000,hardware:1200,sheet1:2300".to_owned(),
             "end".to_owned(),
@@ -991,9 +998,23 @@ mod tests {
                 name: "sheet1".into(),
                 mem: 4096,
                 code: 9216,
-                wasm: 5120
+                wasm: 5120,
+                accelerated: Some(true),
             }]
         );
+    }
+
+    #[test]
+    fn module_mode_comes_from_the_list_line() {
+        let mode = |head: &str| {
+            parse_module_stat("s", head)
+                .memory
+                .and_then(|m| m.accelerated)
+        };
+        assert_eq!(mode("s run mem=1 code=2 wasm=3 mode=aot"), Some(true));
+        assert_eq!(mode("s run mem=1 code=2 wasm=3 mode=interp"), Some(false));
+        // The C++ master does not tell the mode.
+        assert_eq!(mode("s run mem=1 code=2 wasm=3"), None);
     }
 
     #[test]

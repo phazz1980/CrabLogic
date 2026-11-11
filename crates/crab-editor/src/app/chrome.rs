@@ -948,6 +948,17 @@ impl EditorApp {
                             .color(self.theme.palette.error),
                     );
                 }
+                if let Some(check) = self.board_check.as_ref().filter(|c| !c.lines.is_empty()) {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(crate::i18n::tr("Плата: не всё ускорено"))
+                            .color(self.theme.palette.warning),
+                    )
+                    .on_hover_text(check.lines.join(
+                        "
+",
+                    ));
+                }
                 if doc.dirty {
                     ui.separator();
                     ui.label(crate::i18n::tr("Есть несохранённые изменения"));

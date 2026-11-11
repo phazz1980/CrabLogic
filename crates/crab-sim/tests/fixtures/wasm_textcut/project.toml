@@ -1,0 +1,6 @@
+[project]
+name = "wasm_textcut"
+description = "Обрезка длинной строки в модуле WASM (буфер 128 байт)"
+
+[board]
+fqbn = "esp32:esp32:esp32"

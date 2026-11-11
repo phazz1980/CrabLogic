@@ -454,6 +454,22 @@ fn text_blocks_match_the_simulation() {
     compare("crates/crab-sim/tests/fixtures/wasm_text", 19, 3, 100);
 }
 
+/// The simulation does not limit text length, the module cuts it at its buffer (128 bytes).
+#[test]
+fn long_text_is_cut_at_the_buffer_end() {
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_textcut")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    assert_eq!(built.watched, ["len.out", "last.code"]);
+    module.step(100).unwrap();
+    // 4 copies of 26 bytes, then 24 of the fifth: the last byte is its last character `n`.
+    assert_eq!(module.outputs()[0], Word::int(128));
+    assert_eq!(module.outputs()[1], Word::int(i32::from(b'n')));
+}
+
 #[test]
 fn wifi_and_ntp_work_in_a_module() {
     let lib = library();

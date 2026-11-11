@@ -29,6 +29,15 @@ impl EditorApp {
         }
         let errors = doc.report.errors().count();
         self.log.extend(lines);
+        self.update_board_check_now();
+        let board_lines = self
+            .board_check
+            .as_ref()
+            .map(|c| c.lines.clone())
+            .unwrap_or_default();
+        for text in board_lines {
+            self.info(LogLevel::Warning, text);
+        }
         if errors == 0 {
             self.info(LogLevel::Ok, crate::i18n::tr("Проверка: ошибок нет"));
         } else {
@@ -150,6 +159,116 @@ impl EditorApp {
         // Mark it tried even if the build fails, so a broken build is not repeated in a loop.
         self.precompiled = Some(key);
         self.start_job(JobKind::Precompile, ctx);
+    }
+
+    /// Lines of the board check for the current schema (empty when everything goes accelerated
+    /// or nothing is known about the board).
+    fn compute_board_check(&self) -> BoardCheck {
+        let doc = self.doc.as_ref().expect("the caller checked the document");
+        let work_dir = doc.project.work_dir();
+        let memo = crab_build::board_memo::load(&work_dir);
+        let mut check = BoardCheck {
+            revision: doc.revision,
+            project: doc.project.path.clone(),
+            memo_time: memo.as_ref().map(|(_, t)| *t),
+            lines: Vec::new(),
+        };
+        let Some((memo, time)) = memo else {
+            return check;
+        };
+        if doc.report.errors().next().is_some() {
+            return check;
+        }
+        let project = doc.project.with_local(&self.lib, &self.local);
+        // A build error is not repeated here: the schema check reports it.
+        let Ok((project, modules, numbers)) = crate::job::build_sheets(&project, &self.lib, false)
+        else {
+            return check;
+        };
+        let sheets = crate::job::sheet_modules(&project, &modules, &numbers);
+        let cache = work_dir.join("aot");
+        match crab_build::upload_plan::preview(&memo, &sheets, &cache) {
+            Ok(demoted) => {
+                for d in demoted
+                    .iter()
+                    .filter(|d| d.reason == crab_build::placement::DemoteReason::NoSpace)
+                {
+                    let mut line = crate::i18n::fmt(
+                        "Лист {0} («{1}») не поместится ускоренным: шаг ≈ {2} мкс вместо ≈ {3} мкс",
+                        &[&d.sheet, &d.name, &d.step_us, &d.fast_step_us],
+                    );
+                    if d.exceeds_period {
+                        line.push_str(crate::i18n::tr(
+                            " — длиннее периода, таймеры и импульсы будут неточными",
+                        ));
+                    }
+                    check.lines.push(line);
+                }
+            }
+            Err(e) => check.lines.push(e.to_string()),
+        }
+        if !check.lines.is_empty() {
+            let date = chrono::DateTime::<chrono::Local>::from(time).format("%d.%m.%Y %H:%M");
+            check.lines.push(crate::i18n::fmt(
+                "По данным платы с последней заливки модулей ({0}). Как исправить: удалите ненужные модули с платы, разделите лист или поставьте ему скорость «Фоновая».",
+                &[&date],
+            ));
+        }
+        check
+    }
+
+    /// Keeps `board_check` fresh: after a second of quiet since the last edit, and when the
+    /// memo file changed (a module upload finished).
+    pub(super) fn update_board_check(&mut self, ctx: &egui::Context) {
+        const PAUSE: Duration = Duration::from_secs(1);
+        let Some(doc) = &self.doc else {
+            self.board_check = None;
+            self.board_seen = None;
+            return;
+        };
+        let now = Instant::now();
+        let key = (doc.revision, doc.project.path.clone());
+        if self.board_seen.as_ref() != Some(&key) {
+            self.board_seen = Some(key);
+            self.board_changed = now;
+        }
+        let stale = self
+            .board_check
+            .as_ref()
+            .is_none_or(|c| c.revision != doc.revision || c.project != doc.project.path);
+        if stale {
+            if now - self.board_changed < PAUSE {
+                ctx.request_repaint_after(PAUSE);
+                return;
+            }
+        } else if now - self.board_polled >= PAUSE {
+            self.board_polled = now;
+            let file = doc.project.work_dir().join(crab_build::board_memo::FILE);
+            let time = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+            if self
+                .board_check
+                .as_ref()
+                .is_none_or(|c| c.memo_time == time)
+            {
+                return;
+            }
+        } else {
+            return;
+        }
+        self.board_polled = now;
+        self.board_check = Some(self.compute_board_check());
+    }
+
+    /// Recomputes `board_check` right away when it is out of date.
+    fn update_board_check_now(&mut self) {
+        let Some(doc) = &self.doc else { return };
+        let stale = self
+            .board_check
+            .as_ref()
+            .is_none_or(|c| c.revision != doc.revision || c.project != doc.project.path);
+        if stale {
+            self.board_check = Some(self.compute_board_check());
+        }
     }
 
     pub(super) fn poll_job(&mut self, ctx: &egui::Context) {

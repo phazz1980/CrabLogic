@@ -818,9 +818,11 @@ const AXIS_H: f32 = 13.0;
 fn debug_memory(ui: &mut Ui, m: &crab_debug::protocol::MasterMemory) {
     let kb = |v: u32| format!("{:.1}", f64::from(v) / 1024.0);
     if !m.modules.is_empty() {
+        // The Rust master tells whether each module is accelerated; the C++ one does not.
+        let modes = m.modules.iter().any(|module| module.accelerated.is_some());
         ui.separator();
         egui::Grid::new("diag_mem_modules")
-            .num_columns(4)
+            .num_columns(if modes { 5 } else { 4 })
             .striped(true)
             .show(ui, |ui| {
                 ui.strong(crate::i18n::tr("Модуль"));
@@ -829,12 +831,24 @@ fn debug_memory(ui: &mut Ui, m: &crab_debug::protocol::MasterMemory) {
                 ui.strong(crate::i18n::tr("Код, КБ"))
                     .on_hover_text(crate::i18n::tr("Код, скомпилированный wasm3"));
                 ui.strong(crate::i18n::tr("Файл, КБ"));
+                if modes {
+                    ui.strong(crate::i18n::tr("Режим")).on_hover_text(crate::i18n::tr(
+                        "Ускорен: лист заранее скомпилирован в код процессора (AOT). Без ускорения: лист выполняет интерпретатор, медленнее",
+                    ));
+                }
                 ui.end_row();
                 for module in &m.modules {
                     ui.label(&module.name);
                     ui.monospace(kb(module.mem));
                     ui.monospace(kb(module.code));
                     ui.monospace(kb(module.wasm));
+                    if modes {
+                        ui.label(match module.accelerated {
+                            Some(true) => crate::i18n::tr("ускорен"),
+                            Some(false) => crate::i18n::tr("без ускорения"),
+                            None => "",
+                        });
+                    }
                     ui.end_row();
                 }
             });

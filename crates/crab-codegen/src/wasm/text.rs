@@ -222,9 +222,18 @@ impl Emitter<'_, '_> {
     }
 
     /// Appends `s` to `out` at the length in local `at` (0 when `None`); the new length stays on the stack.
+    /// Calls the module's own copy function, not the host (see `append_function`).
     pub(super) fn append(&mut self, out: Buf, s: Str, at: Option<u32>) {
         let cur = at.map_or(A::C(0), A::L);
-        self.text_call(1, [out.ptr(), out.cap(), s.ptr(), s.len(), cur, A::C(0)]);
+        if let Len::Const(0) = s.len {
+            self.push_arg(cur);
+            return;
+        }
+        for a in [out.ptr(), out.cap(), s.ptr(), s.len(), cur] {
+            self.push_arg(a);
+        }
+        self.uses_append = true;
+        self.op(I::Call(APPEND_FN));
     }
 
     pub(super) fn in_pos(inst: &Instance, name: &str) -> usize {

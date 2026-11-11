@@ -7,7 +7,7 @@ target-dir = "../../.m"
 
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
-runner = "espflash flash --monitor --partition-table partitions.csv"
+runner = "espflash flash --monitor --flash-mode qio --partition-table partitions.csv"
 rustflags = ["--cfg", "espidf_time64"]
 
 [unstable]

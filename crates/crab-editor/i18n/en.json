@@ -1293,5 +1293,13 @@
  "Листы остановятся на время заливки": "Sheets will stop during the upload",
  "Залить": "Upload",
  "Модуль «{0}» остановлен для замены на месте": "Module “{0}” stopped to be replaced in place",
- "Мастер в безопасном режиме: после {0} сбоев подряд сохранённые модули не запущены. Залейте исправленные листы или сбросьте плату кнопкой": "The master is in safe mode: after {0} failures in a row the stored modules were not started. Upload fixed sheets or reset the board with its button"
+ "Мастер в безопасном режиме: после {0} сбоев подряд сохранённые модули не запущены. Залейте исправленные листы или сбросьте плату кнопкой": "The master is in safe mode: after {0} failures in a row the stored modules were not started. Upload fixed sheets or reset the board with its button",
+ "Ускорен: лист заранее скомпилирован в код процессора (AOT). Без ускорения: лист выполняет интерпретатор, медленнее": "Accelerated: the sheet is compiled ahead into processor code (AOT). Not accelerated: the interpreter runs the sheet, slower",
+ "ускорен": "accelerated",
+ "без ускорения": "not accelerated",
+ "Лист {0} («{1}») не поместится ускоренным: шаг ≈ {2} мкс вместо ≈ {3} мкс": "Sheet {0} (“{1}”) will not fit accelerated: step ≈ {2} µs instead of ≈ {3} µs",
+ " — длиннее периода, таймеры и импульсы будут неточными": " — longer than the period, timers and pulses will be inaccurate",
+ "По данным платы с последней заливки модулей ({0}). Как исправить: удалите ненужные модули с платы, разделите лист или поставьте ему скорость «Фоновая».": "Based on the board as of the last module upload ({0}). To fix: remove unneeded modules from the board, split the sheet or set its speed to “Background”.",
+ "Плата: не всё ускорено": "Board: not everything accelerated",
+ "Не удалось запомнить состояние платы: {0}": "Could not remember the board state: {0}"
 }

@@ -1,0 +1,65 @@
+[[block]]
+id = "t"
+type = "text_const"
+value = "0123456789abcdefghijklmn"
+
+# Nine copies with separators make 232 bytes: the module keeps the first 128. The fifth copy
+# ends exactly at the buffer end, so the separator after it gets no room.
+[[block]]
+id = "long"
+type = "text_concat"
+count = 9
+separator = "; "
+
+[[block]]
+id = "len"
+type = "text_length"
+
+[[block]]
+id = "last"
+type = "text_char"
+const = { index = 127 }
+
+[[link]]
+from = "t.out"
+to   = "long.a"
+
+[[link]]
+from = "t.out"
+to   = "long.b"
+
+[[link]]
+from = "t.out"
+to   = "long.c"
+
+[[link]]
+from = "t.out"
+to   = "long.d"
+
+[[link]]
+from = "t.out"
+to   = "long.e"
+
+[[link]]
+from = "t.out"
+to   = "long.f"
+
+[[link]]
+from = "t.out"
+to   = "long.g"
+
+[[link]]
+from = "t.out"
+to   = "long.h"
+
+[[link]]
+from = "t.out"
+to   = "long.i"
+
+[[link]]
+from = "long.out"
+to   = "len.in"
+
+[[link]]
+from = "long.out"
+to   = "last.text"

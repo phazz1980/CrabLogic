@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crab_core::logic::SheetSpeed;
 
+use crate::board_memo::BoardMemo;
 use crate::mcu_module::{read_line, MasterInfo, ModuleImage, ModuleUploadError};
 use crate::placement::{self, DemoteReason, Mode, PlacementError, SheetImage};
 use crate::wamrc::{self, WamrcError};
@@ -244,6 +245,8 @@ pub struct SheetModule<'a> {
     pub sheet: u32,
     pub name: &'a str,
     pub wasm: &'a [u8],
+    /// The module built for AOT, see `WasmModule::wasm_aot`; the AOT image is made from it.
+    pub wasm_aot: &'a [u8],
     pub speed: SheetSpeed,
 }
 
@@ -449,6 +452,83 @@ fn finish(
     })
 }
 
+/// The input of the placement for one sheet; `aot_bytes` is the area of its accelerated image.
+fn sheet_image(m: &SheetModule, aot_bytes: Option<usize>) -> SheetImage {
+    let (step_interp_us, step_aot_us) = step_estimate(m.wasm.len());
+    SheetImage {
+        number: m.sheet,
+        speed: m.speed,
+        wasm_bytes: area_bytes(m.wasm.len()),
+        aot_bytes,
+        period_ms: MASTER_PERIOD_MS,
+        step_interp_us,
+        step_aot_us,
+    }
+}
+
+/// The report entry of a sheet that was moved to the interpreter.
+fn demoted_sheet(m: &SheetModule, placed: &placement::Placed) -> Option<DemotedSheet> {
+    let reason = placed.demoted?;
+    let (_, fast_step_us) = step_estimate(m.wasm.len());
+    Some(DemotedSheet {
+        sheet: m.sheet,
+        name: m.name.to_owned(),
+        reason,
+        step_us: placed.step_us,
+        fast_step_us,
+        exceeds_period: placed.exceeds_period,
+    })
+}
+
+/// Size of an AOT image estimated from the size of the `.wasm` it is built from (`wasm_aot`, with
+/// import wrappers) when it is not built yet. Measured on C3: blink 569 -> 2628 bytes, a 94-block
+/// self test 7642 -> 18096 (without wrappers 46064); kept a little above both.
+pub fn estimated_aot_len(wasm_len: usize) -> usize {
+    wasm_len * 9 / 4 + 1536
+}
+
+/// Placement of the sheets on the board as remembered in `memo`, for the check panel: no wamrc
+/// run; an AOT image not in `cache` is estimated from the `.wasm` size.
+pub fn preview(
+    memo: &BoardMemo,
+    modules: &[SheetModule],
+    cache: &Path,
+) -> Result<Vec<DemotedSheet>, PlacementError> {
+    let info = memo.info();
+    let space = memo.space();
+    let target = info.aot_target();
+    if target.is_none() {
+        if let Some(m) = modules.iter().find(|m| m.speed == SheetSpeed::Fast) {
+            return Err(PlacementError::FastWithoutAot { number: m.sheet });
+        }
+    }
+    let sheets: Vec<SheetImage> = modules
+        .iter()
+        .map(|m| {
+            let aot = match target {
+                Some(target) if m.speed != SheetSpeed::Background => {
+                    let len = wamrc::cached(m.wasm_aot, target, cache)
+                        .map_or_else(|| estimated_aot_len(m.wasm_aot.len()), |b| b.len());
+                    Some(area_bytes(len))
+                }
+                _ => None,
+            };
+            sheet_image(m, aot)
+        })
+        .collect();
+    let names: Vec<&str> = modules.iter().map(|m| m.name).collect();
+    let placement = placement::place(&sheets, space.free_for(&names))?;
+    if target.is_none() {
+        // Everything runs in the interpreter: nothing is "demoted", only the fit is checked.
+        return Ok(Vec::new());
+    }
+    Ok(modules
+        .iter()
+        .zip(&placement.sheets)
+        .filter_map(|(m, placed)| demoted_sheet(m, placed))
+        .collect())
+}
+
 /// Decides the image of every sheet for `info`. `space` is what the master reports about its
 /// flash (`None`: unknown, no limit). `wamrc` is asked for the compiler at most once, and only
 /// when some image is not in `cache` yet.
@@ -479,7 +559,7 @@ pub fn plan_upload(
             aot_images.push(None);
             continue;
         }
-        if let Some(bytes) = wamrc::cached(m.wasm, target, cache) {
+        if let Some(bytes) = wamrc::cached(m.wasm_aot, target, cache) {
             aot_images.push(Some(bytes));
             continue;
         }
@@ -491,7 +571,7 @@ pub fn plan_upload(
             });
         }
         let built = match compiler.as_ref() {
-            Some(Ok(exe)) => wamrc::compile(exe, m.wasm, target, cache),
+            Some(Ok(exe)) => wamrc::compile(exe, m.wasm_aot, target, cache),
             Some(Err(text)) => Err(WamrcError::Failed(text.clone())),
             None => unreachable!("the compiler was looked for above"),
         };
@@ -511,18 +591,7 @@ pub fn plan_upload(
     let sheets: Vec<SheetImage> = modules
         .iter()
         .zip(&aot_images)
-        .map(|(m, aot)| {
-            let (step_interp_us, step_aot_us) = step_estimate(m.wasm.len());
-            SheetImage {
-                number: m.sheet,
-                speed: m.speed,
-                wasm_bytes: area_bytes(m.wasm.len()),
-                aot_bytes: aot.as_ref().map(|b| area_bytes(b.len())),
-                period_ms: MASTER_PERIOD_MS,
-                step_interp_us,
-                step_aot_us,
-            }
-        })
+        .map(|(m, aot)| sheet_image(m, aot.as_ref().map(|b| area_bytes(b.len()))))
         .collect();
     let names: Vec<&str> = modules.iter().map(|m| m.name).collect();
     let free = space.map_or(usize::MAX, |s| s.free_for(&names));
@@ -535,17 +604,7 @@ pub fn plan_upload(
             (Mode::Aot, Some(bytes)) => images.push(image(bytes, true)),
             _ => images.push(image(m.wasm.to_vec(), false)),
         }
-        if let Some(reason) = placed.demoted {
-            let (_, fast_step_us) = step_estimate(m.wasm.len());
-            demoted.push(DemotedSheet {
-                sheet: m.sheet,
-                name: m.name.to_owned(),
-                reason,
-                step_us: placed.step_us,
-                fast_step_us,
-                exceeds_period: placed.exceeds_period,
-            });
-        }
+        demoted.extend(demoted_sheet(m, placed));
     }
     let report = (!demoted.is_empty()).then(|| UploadReport {
         demoted,
@@ -649,8 +708,80 @@ mod tests {
             sheet,
             name: if sheet == 2 { "sheet2" } else { "sheet3" },
             wasm,
+            wasm_aot: wasm,
             speed,
         }
+    }
+
+    fn memo(caps: &str, free: usize) -> BoardMemo {
+        BoardMemo::new(
+            &info(caps),
+            &CrabmodSpace {
+                free,
+                capacity: 131072,
+                areas: Vec::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn preview_fits_reports_nothing() {
+        let dir = TempDir::new("pv-fits");
+        let w = wasm(1, 300);
+        let m = [module(2, &w, SheetSpeed::Normal)];
+        let r = preview(&memo("flashmod,abi4,aot,rv32imc", 65536), &m, &dir.0).unwrap();
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn preview_short_flash_demotes_normal_sheet() {
+        let dir = TempDir::new("pv-short");
+        let w = wasm(1, 2000);
+        let m = [module(2, &w, SheetSpeed::Normal)];
+        // Room for the .wasm area only; the estimated AOT image takes two sectors.
+        let r = preview(&memo("aot,rv32imc", 4096), &m, &dir.0);
+        let r = r.unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].sheet, 2);
+        assert_eq!(r[0].reason, DemoteReason::NoSpace);
+    }
+
+    #[test]
+    fn preview_fast_too_big() {
+        let dir = TempDir::new("pv-fast");
+        let w = wasm(1, 2000);
+        let m = [module(2, &w, SheetSpeed::Fast)];
+        let err = preview(&memo("aot,rv32imc", 4096), &m, &dir.0).unwrap_err();
+        assert!(matches!(err, PlacementError::FastDoesNotFit { .. }));
+    }
+
+    #[test]
+    fn preview_fast_without_aot() {
+        let dir = TempDir::new("pv-noaot");
+        let w = wasm(1, 300);
+        let m = [module(2, &w, SheetSpeed::Fast)];
+        let err = preview(&memo("flashmod", 65536), &m, &dir.0).unwrap_err();
+        assert_eq!(err, PlacementError::FastWithoutAot { number: 2 });
+        let normal = [module(2, &w, SheetSpeed::Normal)];
+        assert!(preview(&memo("flashmod", 65536), &normal, &dir.0)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn preview_prefers_cached_image_size() {
+        let dir = TempDir::new("pv-cache");
+        let w = wasm(1, 300);
+        let m = [module(2, &w, SheetSpeed::Normal)];
+        // The estimate (about 2200 bytes) takes one sector; both images fit in two sectors.
+        let free = 8192;
+        assert!(preview(&memo("aot,rv32imc", free), &m, &dir.0)
+            .unwrap()
+            .is_empty());
+        // A cached image of 9000 bytes takes three sectors: the sheet is demoted now.
+        prefill(&dir.0, &w, 9000);
+        let r = preview(&memo("aot,rv32imc", free), &m, &dir.0).unwrap();
+        assert_eq!(r.len(), 1);
     }
 
     #[test]

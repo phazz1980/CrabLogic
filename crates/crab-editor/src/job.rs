@@ -633,6 +633,51 @@ fn upload_progress(line: &str) -> Option<u32> {
         .ok()
 }
 
+/// Builds the WASM module of every sheet of the prepared project; returns the prepared project
+/// too, with the modules and the sheet numbers in the same order.
+pub fn build_sheets(
+    project: &Project,
+    lib: &Library,
+    watch: bool,
+) -> Result<(Project, Vec<crab_codegen::WasmModule>, Vec<u32>), String> {
+    let project = crab_codegen::prepare(project, lib);
+    let program = Program::build(&project, lib).map_err(|e| e.to_string())?;
+    let mut modules = Vec::new();
+    let mut numbers = Vec::new();
+    for sheet in program.sheets() {
+        let module = program
+            .wasm_module_with(sheet, watch)
+            .map_err(|e| crate::i18n::fmt("лист {0}: {1}", &[&sheet, &e]))?;
+        modules.push(module);
+        numbers.push(sheet);
+    }
+    Ok((project, modules, numbers))
+}
+
+/// Modules with their sheet numbers and speeds for the upload planning.
+pub fn sheet_modules<'a>(
+    project: &Project,
+    modules: &'a [crab_codegen::WasmModule],
+    numbers: &[u32],
+) -> Vec<crab_build::upload_plan::SheetModule<'a>> {
+    modules
+        .iter()
+        .zip(numbers)
+        .map(|(module, &sheet)| crab_build::upload_plan::SheetModule {
+            sheet,
+            name: &module.name,
+            wasm: &module.wasm,
+            wasm_aot: &module.wasm_aot,
+            speed: project
+                .logic
+                .sheets
+                .iter()
+                .find(|s| s.number == sheet)
+                .map_or(crab_core::SheetSpeed::Normal, |s| s.speed),
+        })
+        .collect()
+}
+
 /// Builds every sheet as a WASM module and sends it to the master firmware on the board.
 /// With `watch` the modules report every block output, so the debugger can show them.
 fn upload_modules(
@@ -644,17 +689,8 @@ fn upload_modules(
     out: &mut dyn FnMut(LogLevel, &str),
     ask: &mut dyn FnMut(UploadQuestion) -> bool,
 ) -> Result<Done, String> {
-    let project = &crab_codegen::prepare(project, lib);
-    let program = Program::build(project, lib).map_err(|e| e.to_string())?;
-    let mut modules = Vec::new();
-    let mut numbers = Vec::new();
-    for sheet in program.sheets() {
-        let module = program
-            .wasm_module_with(sheet, watch)
-            .map_err(|e| crate::i18n::fmt("лист {0}: {1}", &[&sheet, &e]))?;
-        modules.push(module);
-        numbers.push(sheet);
-    }
+    let (project, modules, numbers) = build_sheets(project, lib, watch)?;
+    let project = &project;
     let cli = ArduinoCli::locate().map_err(|e| e.to_string())?;
     let port = cli
         .choose_port(port, &project.config.board)
@@ -709,21 +745,7 @@ fn upload_modules(
     } else {
         None
     };
-    let sheets: Vec<_> = modules
-        .iter()
-        .zip(&numbers)
-        .map(|(module, &sheet)| crab_build::upload_plan::SheetModule {
-            sheet,
-            name: &module.name,
-            wasm: &module.wasm,
-            speed: project
-                .logic
-                .sheets
-                .iter()
-                .find(|s| s.number == sheet)
-                .map_or(crab_core::SheetSpeed::Normal, |s| s.speed),
-        })
-        .collect();
+    let sheets = sheet_modules(project, &modules, &numbers);
     let plan = crab_build::upload_plan::plan_upload(
         &info,
         space.as_ref(),
@@ -814,6 +836,25 @@ fn upload_modules(
         }
         crab_build::mcu_module::upload_image(&mut serial, &module.name, &image.bytes, mem, &allow)
             .map_err(|e| e.to_string())?;
+    }
+    // Remember the board for the check panel; a failure here never fails the upload.
+    if info.takes_aot() {
+        match crab_build::upload_plan::read_crabmod_space(&mut serial) {
+            Ok(Some(space)) => {
+                let memo = crab_build::board_memo::BoardMemo::new(&info, &space);
+                if let Err(e) = crab_build::board_memo::save(&project.work_dir(), &memo) {
+                    out(
+                        LogLevel::Info,
+                        &crate::i18n::fmt("Не удалось запомнить состояние платы: {0}", &[&e]),
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(e) => out(
+                LogLevel::Info,
+                &crate::i18n::fmt("Не удалось запомнить состояние платы: {0}", &[&e]),
+            ),
+        }
     }
     Ok(Done {
         message: crate::i18n::fmt("Модули залиты на {0}", &[&port]),
