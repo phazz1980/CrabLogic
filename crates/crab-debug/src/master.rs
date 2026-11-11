@@ -368,6 +368,13 @@ fn handle_line(
         l.master_id = Some(id);
         return changed;
     }
+    // `list` answer of a master in safe mode: how many bad resets in a row stopped its modules.
+    if let Some(n) = text.strip_prefix("safe=") {
+        let n = n.trim().parse().ok();
+        let changed = l.master_safe != n;
+        l.master_safe = n;
+        return changed;
+    }
     if let Some(list) = text.strip_prefix("native=") {
         l.master_natives = list
             .split(',')
@@ -733,7 +740,9 @@ mod tests {
         assert!(line("id=00ab12cd34ef5678"));
         assert!(!line("id=00ab12cd34ef5678"), "the same id is not a change");
         assert!(line("native=bmp:2,twice:1"));
+        assert!(line("safe=3"));
         let l = live.lock().unwrap();
+        assert_eq!(l.master_safe, Some(3));
         assert_eq!(l.master_id.as_deref(), Some("00ab12cd34ef5678"));
         assert_eq!(
             l.master_natives,

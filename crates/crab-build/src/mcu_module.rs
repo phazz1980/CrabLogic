@@ -282,6 +282,9 @@ pub struct MasterInfo {
     /// `modcaps=`: features of modules this master has beyond its first version; empty for a
     /// master that does not report any (an old one).
     pub caps: Vec<String>,
+    /// `safe=`: resets by a watchdog or a panic in a row that put the master into safe mode (its
+    /// stored modules not started); 0 when it runs normally.
+    pub safe_boots: u32,
 }
 
 impl MasterInfo {
@@ -316,6 +319,8 @@ impl MasterInfo {
     fn take_line(&mut self, line: &str) {
         if let Some(id) = line.strip_prefix("id=") {
             self.id = Some(id.trim().to_owned());
+        } else if let Some(n) = line.strip_prefix("safe=") {
+            self.safe_boots = n.trim().parse().unwrap_or(0);
         } else if let Some(list) = line.strip_prefix("modcaps=") {
             self.caps = list
                 .split(',')
@@ -627,6 +632,7 @@ mod tests {
             answer: b"blink run steps=5 restarts=0 out0=00000000 crc=00000000
 id=00ab12cd34ef5678
 native=bmp:2,twice:1
+safe=3
 free=1 largest=1
 end
 "
@@ -635,6 +641,7 @@ end
         };
         let info = wait_for_master_info(&mut port, Duration::from_secs(2)).unwrap();
         assert_eq!(info.id.as_deref(), Some("00ab12cd34ef5678"));
+        assert_eq!(info.safe_boots, 3);
         assert_eq!(
             info.natives,
             [("bmp".to_owned(), 2), ("twice".to_owned(), 1)]

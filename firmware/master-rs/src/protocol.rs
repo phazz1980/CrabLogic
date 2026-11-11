@@ -84,7 +84,27 @@ pub enum Command {
     },
     /// The held pins.
     Pins,
+    /// `topic <name> <state|event> <maxlen>`: declares a bus topic.
+    Topic {
+        name: String,
+        state: bool,
+        max_len: usize,
+    },
+    /// `queue <module> <n>`: the event queue of a module.
+    Queue {
+        name: String,
+        cap: usize,
+    },
+    /// `bus`: the queues of the modules and the topics.
+    Bus,
 }
+
+/// Longest topic name, exclusive (as in the C++ master).
+pub const MAX_TOPIC_NAME: usize = 24;
+/// Longest message of a topic.
+pub const MAX_TOPIC_LEN: usize = 64;
+/// Longest queue of a module.
+pub const MAX_QUEUE: usize = 16;
 
 /// Inputs and parameters per module.
 pub const MAX_SLOTS: usize = 8;
@@ -105,6 +125,8 @@ pub enum ParseError {
     BadIndexOrType,
     BadIndex,
     BadCount,
+    /// A malformed `topic`, `queue` or `bus` line.
+    BadBus,
 }
 
 impl fmt::Display for ParseError {
@@ -122,6 +144,7 @@ impl fmt::Display for ParseError {
             Self::BadIndexOrType => "bad index or type",
             Self::BadIndex => "bad index",
             Self::BadCount => "bad count",
+            Self::BadBus => "bad bus command",
         };
         f.write_str(text)
     }
@@ -198,6 +221,54 @@ fn typed_word<'a>(
 fn is_integer(value: &str) -> bool {
     let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
     !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `bus`, `topic <name> <state|event> <maxlen>` and `queue <module> <n>`; any slip is `BadBus`.
+fn parse_bus<'a>(
+    command: &str,
+    mut args: impl Iterator<Item = &'a str>,
+) -> Result<Command, ParseError> {
+    let bad = ParseError::BadBus;
+    let parsed = match command {
+        "bus" => Command::Bus,
+        "topic" => {
+            let topic = args.next().filter(|n| ident(n)).ok_or(bad.clone())?;
+            let state = match args.next() {
+                Some("state") => true,
+                Some("event") => false,
+                _ => return Err(bad),
+            };
+            let max_len: usize = args
+                .next()
+                .and_then(|v| v.parse().ok())
+                .filter(|n| (1..=MAX_TOPIC_LEN).contains(n))
+                .ok_or(bad.clone())?;
+            if topic.len() >= MAX_TOPIC_NAME {
+                return Err(bad);
+            }
+            Command::Topic {
+                name: String::from(topic),
+                state,
+                max_len,
+            }
+        }
+        _ => {
+            let module = args.next().filter(|n| ident(n)).ok_or(bad.clone())?;
+            let cap: usize = args
+                .next()
+                .and_then(|v| v.parse().ok())
+                .filter(|n| (1..=MAX_QUEUE).contains(n))
+                .ok_or(bad.clone())?;
+            Command::Queue {
+                name: String::from(module),
+                cap,
+            }
+        }
+    };
+    if args.next().is_some() {
+        return Err(bad);
+    }
+    Ok(parsed)
 }
 
 /// Parses one command line (without its newline). The image of a `put` is not a line: see
@@ -308,6 +379,7 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
             name: name(one(&mut args)?)?,
         },
         "pins" => Command::Pins,
+        "bus" | "topic" | "queue" => parse_bus(command, &mut args)?,
         _ => return Err(ParseError::UnknownCommand),
     };
     no_more(&mut args)?;
@@ -339,6 +411,39 @@ pub fn format_pin(pin: u8, module: &str, use_: &str, fault: &str, level: Option<
     let _ = write!(line, "{pin} {module} {use_} fault={fault}");
     if let Some(level) = level {
         let _ = write!(line, " level={}", u8::from(level));
+    }
+    line
+}
+
+/// `bus <module> queue=<cap> lost=<n>`
+pub fn format_bus_module(name: &str, cap: usize, lost: u32) -> String {
+    let mut line = String::new();
+    let _ = write!(line, "bus {name} queue={cap} lost={lost}");
+    line
+}
+
+/// `topic <name> <state|event> max=<n> refused=<n> last=<hex|->`; the value is shown for a
+/// state topic only.
+pub fn format_topic(
+    name: &str,
+    state: bool,
+    max_len: usize,
+    refused: u32,
+    last: Option<&[u8]>,
+) -> String {
+    let mut line = String::new();
+    let kind = if state { "state" } else { "event" };
+    let _ = write!(
+        line,
+        "topic {name} {kind} max={max_len} refused={refused} last="
+    );
+    match last.filter(|_| state) {
+        Some(bytes) => {
+            for b in bytes {
+                let _ = write!(line, "{b:02x}");
+            }
+        }
+        None => line.push('-'),
     }
     line
 }
@@ -693,5 +798,61 @@ mod tests {
         assert_eq!(input.next_event(), None);
         input.push(b"info\n");
         assert_eq!(input.next_event(), Some(Event::Line(String::from("info"))));
+    }
+
+    #[test]
+    fn bus_commands_parse() {
+        assert_eq!(parse_command("bus"), Ok(Command::Bus));
+        assert_eq!(
+            parse_command("topic temp state 4"),
+            Ok(Command::Topic {
+                name: "temp".into(),
+                state: true,
+                max_len: 4
+            })
+        );
+        assert_eq!(
+            parse_command("queue pump 16"),
+            Ok(Command::Queue {
+                name: "pump".into(),
+                cap: 16
+            })
+        );
+        for bad in [
+            "bus x",
+            "topic",
+            "topic t",
+            "topic t flag 4",
+            "topic t state 0",
+            "topic t state 65",
+            "topic t state 4 5",
+            "topic aaaaaaaaaaaaaaaaaaaaaaaa event 4",
+            "topic bad-name event 4",
+            "queue",
+            "queue m",
+            "queue m 0",
+            "queue m 17",
+            "queue m 2 3",
+        ] {
+            assert_eq!(parse_command(bad), Err(ParseError::BadBus), "{bad}");
+        }
+        assert_eq!(ParseError::BadBus.to_string(), "bad bus command");
+    }
+
+    #[test]
+    fn bus_lines_format() {
+        assert_eq!(format_bus_module("pump", 8, 3), "bus pump queue=8 lost=3");
+        assert_eq!(
+            format_topic("t", true, 4, 1, Some(&[0x0a, 0xff])),
+            "topic t state max=4 refused=1 last=0aff"
+        );
+        assert_eq!(
+            format_topic("t", true, 4, 0, None),
+            "topic t state max=4 refused=0 last=-"
+        );
+        assert_eq!(
+            format_topic("e", false, 8, 0, Some(&[1])),
+            "topic e event max=8 refused=0 last=-"
+        );
     }
 }

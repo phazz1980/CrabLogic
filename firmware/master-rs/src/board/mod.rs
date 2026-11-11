@@ -19,14 +19,16 @@ mod usb;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crab_kernel::bus::TopicKind;
 use crab_kernel::engine::{Instance, Limits};
 use crab_kernel::handle::Handle;
 use crab_kernel::host::{ModuleHost, Word};
 use crab_kernel::lease::{Fault, PinUse};
 use crab_kernel::Kernel;
+use crab_master_rs::boot_guard::{self, Counter, Reset};
 use crab_master_rs::protocol::{
-    format_events, format_outputs, format_pin, parse_command, Command, Event, Input, ParseError,
-    MAX_SLOTS,
+    format_bus_module, format_events, format_outputs, format_pin, format_topic, parse_command,
+    Command, Event, Input, ParseError, MAX_SLOTS,
 };
 use crab_master_rs::restart::Restart;
 use crab_master_rs::storage::{crc32_update, Area, Meta, Storage, SECTOR};
@@ -87,6 +89,8 @@ struct Slot {
     restart: Restart,
     /// Pins already reported as held by another module (once per pin).
     shared_pins: Vec<u8>,
+    /// Event queue length set by `queue`; 0 for the default.
+    queue: usize,
 }
 
 impl Slot {
@@ -106,6 +110,7 @@ impl Slot {
             heap,
             restart: Restart::new(),
             shared_pins: Vec::new(),
+            queue: 0,
         }
     }
 }
@@ -131,6 +136,7 @@ fn fallback(line: &str) -> &'static str {
         "in" | "param" | "force" if line.contains(' ') => "bad index or type",
         "unforce" if line.contains(' ') => "bad index",
         "out" if line.contains(' ') => "bad count",
+        "topic" | "queue" | "bus" => "bad bus command",
         "ev" | "reset" if line.contains(' ') => "no such module",
         _ => "unknown command",
     }
@@ -146,6 +152,28 @@ struct Master {
     /// Module errors and `log` lines of modules: (milliseconds since start, text).
     journal: VecDeque<(u32, String)>,
     started: Instant,
+    /// Bad resets in a row before this start; at [`boot_guard::SAFE_AFTER`] the stored modules
+    /// are not started (safe mode).
+    bad_boots: u32,
+}
+
+/// The boot loop counter: in RTC memory, which keeps its contents over every reset but a power-on.
+#[link_section = ".rtc_noinit.crab_boot"]
+static mut BOOT_COUNTER: Counter = Counter { magic: 0, bad: 0 };
+
+/// Counts this start in [`BOOT_COUNTER`]; returns the bad resets in a row.
+fn count_boot() -> u32 {
+    // SAFETY: a plain query of ESP-IDF.
+    let why = match unsafe { sys::esp_reset_reason() } {
+        sys::esp_reset_reason_t_ESP_RST_POWERON => Reset::PowerOn,
+        sys::esp_reset_reason_t_ESP_RST_TASK_WDT
+        | sys::esp_reset_reason_t_ESP_RST_INT_WDT
+        | sys::esp_reset_reason_t_ESP_RST_WDT
+        | sys::esp_reset_reason_t_ESP_RST_PANIC => Reset::Bad,
+        _ => Reset::Other,
+    };
+    // SAFETY: called once, from the runtime thread, before anything else touches the counter.
+    unsafe { (*core::ptr::addr_of_mut!(BOOT_COUNTER)).boot(why) }
 }
 
 impl Master {
@@ -161,7 +189,15 @@ impl Master {
             upload: None,
             journal: VecDeque::new(),
             started: Instant::now(),
+            bad_boots: count_boot(),
         };
+        let safe = boot_guard::safe(master.bad_boots);
+        if safe {
+            println!(
+                "safe mode: reset by watchdog {} times, modules are not started",
+                master.bad_boots
+            );
+        }
         let stored: Vec<(String, usize)> = master
             .storage
             .areas()
@@ -169,6 +205,10 @@ impl Master {
             .map(|a| (a.meta.name.clone(), a.at))
             .collect();
         for (name, at) in stored {
+            if safe {
+                master.slots.push(Slot::new(name, at, None, 0));
+                continue;
+            }
             if let Err(e) = master.start(at, true) {
                 master.log(&name, &e);
                 master.slots.push(Slot::new(name, at, None, 0));
@@ -275,13 +315,17 @@ impl Master {
             .ok_or_else(|| "образ модуля не найден".to_owned())?;
         let index = self.slot(&area.meta.name);
         let running = index.and_then(|i| self.slots[i].handle);
+        let queue = index.map_or(0, |i| self.slots[i].queue);
         let (handle, heap) = match (self.load(&area), running, index) {
-            (Ok((module, heap)), Some(old), _) => (self.kernel.swap(old, module, &[], 0)?, heap),
-            (Ok((module, heap)), None, _) => (self.kernel.add(module, &[], 0)?, heap),
+            (Ok((module, heap)), Some(old), _) => {
+                (self.kernel.swap(old, module, &[], queue)?, heap)
+            }
+            (Ok((module, heap)), None, _) => (self.kernel.add(module, &[], queue)?, heap),
             (Err(e), Some(old), Some(i)) => self.load_without_old(old, i, &area, e)?,
             (Err(e), _, _) => return Err(e),
         };
         let mut slot = Slot::new(area.meta.name, at, Some(handle), heap);
+        slot.queue = queue;
         let now = devices::uptime_ms();
         if let Some(old) = index.map(|i| &mut self.slots[i]) {
             slot.restart = core::mem::take(&mut old.restart);
@@ -684,6 +728,53 @@ impl Master {
         println!("{}", if ok { "ok" } else { "err step failed" });
     }
 
+    /// `bus`: the queues of the modules, then the topics.
+    fn bus(&self) {
+        let bus = self.kernel.bus();
+        for s in &self.slots {
+            let Some(h) = s.handle else { continue };
+            let cap = bus.queue_cap(h).unwrap_or(0);
+            println!("{}", format_bus_module(&s.name, cap, bus.lost(h)));
+        }
+        for t in bus.topics() {
+            println!(
+                "{}",
+                format_topic(
+                    t.name,
+                    t.kind == TopicKind::State,
+                    t.max_len,
+                    t.refused,
+                    t.last
+                )
+            );
+        }
+        println!("ok");
+    }
+
+    fn topic(&mut self, name: &str, state: bool, max_len: usize) {
+        let kind = if state {
+            TopicKind::State
+        } else {
+            TopicKind::Event
+        };
+        match self.kernel.bus_mut().configure(name, kind, max_len) {
+            Ok(()) => println!("ok"),
+            Err(_) => println!("err too many topics"),
+        }
+    }
+
+    fn queue(&mut self, name: &str, cap: usize) {
+        let Some(index) = self.slot(name) else {
+            println!("err no such module");
+            return;
+        };
+        self.slots[index].queue = cap;
+        if let Some(h) = self.slots[index].handle {
+            self.kernel.bus_mut().set_queue(h, cap);
+        }
+        println!("ok");
+    }
+
     fn list(&self) {
         for s in &self.slots {
             let module = s.handle.and_then(|h| self.kernel.get(h));
@@ -723,8 +814,14 @@ impl Master {
         // ABI 4, output events (`ev`); `aot` is its own: it takes XIP AOT images, built for the CPU
         // named next to it
         // (the editor does not compile for a CPU it does not see here).
-        println!("caps=us,ev");
+        println!("caps=us,ev,bus");
         println!("modcaps=flashmod,abi4,aot,{AOT_CPU}");
+        // The Rust master is not built per project: the editor reads this prefix as "current".
+        println!("id=rs-{}", env!("CARGO_PKG_VERSION"));
+        // Safe mode after a boot loop: the editor warns that the stored modules do not run.
+        if boot_guard::safe(self.bad_boots) {
+            println!("safe={}", self.bad_boots);
+        }
         // SAFETY: plain queries of the heap.
         let (largest, min) = unsafe {
             (
@@ -792,6 +889,13 @@ impl Master {
             Ok(Command::Unforce { name, index }) => self.unforce(&name, index),
             Ok(Command::Reset { name }) => self.reset(&name),
             Ok(Command::Pins) => self.pins(),
+            Ok(Command::Topic {
+                name,
+                state,
+                max_len,
+            }) => self.topic(&name, state, max_len),
+            Ok(Command::Queue { name, cap }) => self.queue(&name, cap),
+            Ok(Command::Bus) => self.bus(),
             Ok(Command::Log) => {
                 for (ms, text) in &self.journal {
                     println!("{ms} {text}");
@@ -799,7 +903,12 @@ impl Master {
                 println!("end");
             }
             // The answers the editor knows from the C++ master.
-            Err(e @ (ParseError::BadIndexOrType | ParseError::BadIndex | ParseError::BadCount)) => {
+            Err(
+                e @ (ParseError::BadIndexOrType
+                | ParseError::BadIndex
+                | ParseError::BadCount
+                | ParseError::BadBus),
+            ) => {
                 println!("err {e}")
             }
             Err(_) => println!("err {}", fallback(line)),

@@ -1292,5 +1292,6 @@
  "Заливка отменена": "Upload cancelled",
  "Листы остановятся на время заливки": "Sheets will stop during the upload",
  "Залить": "Upload",
- "Модуль «{0}» остановлен для замены на месте": "Module “{0}” stopped to be replaced in place"
+ "Модуль «{0}» остановлен для замены на месте": "Module “{0}” stopped to be replaced in place",
+ "Мастер в безопасном режиме: после {0} сбоев подряд сохранённые модули не запущены. Залейте исправленные листы или сбросьте плату кнопкой": "The master is in safe mode: after {0} failures in a row the stored modules were not started. Upload fixed sheets or reset the board with its button"
 }

@@ -225,6 +225,11 @@ pub enum MasterState {
     MissingNative(Vec<(String, u32)>),
 }
 
+/// Start of the `id=` of the Rust master. That master is not built per project, so it counts as
+/// current whenever it has the native parts a project needs (it has none, so only projects
+/// without native blocks).
+pub const RUST_MASTER_ID_PREFIX: &str = "rs-";
+
 /// Compares what the master reported in `stats` with the master the project needs.
 pub fn master_state(info: &crate::mcu_module::MasterInfo, needed: &MasterFeatures) -> MasterState {
     let Some(id) = &info.id else {
@@ -243,7 +248,7 @@ pub fn master_state(info: &crate::mcu_module::MasterInfo, needed: &MasterFeature
         .collect();
     if !missing.is_empty() {
         MasterState::MissingNative(missing)
-    } else if *id == master_id_text(needed) {
+    } else if id.starts_with(RUST_MASTER_ID_PREFIX) || *id == master_id_text(needed) {
         MasterState::Current
     } else {
         MasterState::Differs
@@ -574,6 +579,15 @@ CRAB_STEP(State& s, In in, Out& out) {}
         assert_eq!(
             master_state(&info(Some("0"), &[("bmp", 3)]), &needed),
             MasterState::Differs
+        );
+        // The Rust master is never rebuilt per project; missing natives still count.
+        assert_eq!(
+            master_state(&info(Some("rs-0.1.0"), &[]), &MasterFeatures::default()),
+            MasterState::Current
+        );
+        assert_eq!(
+            master_state(&info(Some("rs-0.1.0"), &[]), &needed),
+            MasterState::MissingNative(vec![("bmp".into(), 2)])
         );
         // The sketch carries what the master will report.
         let text = sketch_text(&needed);

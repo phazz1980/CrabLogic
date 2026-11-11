@@ -313,4 +313,8 @@ where
     pub fn bus(&self) -> &Bus {
         &self.bus
     }
+
+    pub fn bus_mut(&mut self) -> &mut Bus {
+        &mut self.bus
+    }
 }

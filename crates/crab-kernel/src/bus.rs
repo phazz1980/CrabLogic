@@ -21,6 +21,8 @@ use crate::handle::Handle;
 /// Default size of a module queue and longest message when the manifest says nothing.
 pub const DEFAULT_QUEUE: usize = 8;
 pub const DEFAULT_MAX_LEN: usize = 64;
+/// Most topics one board keeps.
+pub const MAX_TOPICS: usize = 32;
 
 /// The kind of a topic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -62,6 +64,17 @@ impl Topic {
             refused: 0,
         }
     }
+}
+
+/// A read-only view of one topic, for listings.
+#[derive(Debug, Clone, Copy)]
+pub struct TopicView<'a> {
+    pub name: &'a str,
+    pub kind: TopicKind,
+    pub max_len: usize,
+    pub refused: u32,
+    /// The last value of a state topic.
+    pub last: Option<&'a [u8]>,
 }
 
 struct Mailbox {
@@ -133,6 +146,56 @@ impl Bus {
             }
         }
         Ok(())
+    }
+
+    /// Sets (overwrites) the kind and the longest message of a topic, creating it if needed.
+    /// The last value stays only if the topic remains a state topic.
+    pub fn configure(&mut self, name: &str, kind: TopicKind, max_len: usize) -> Result<(), String> {
+        match self.topics.get_mut(name) {
+            Some(t) => {
+                if t.kind != kind || kind != TopicKind::State {
+                    t.last = None;
+                }
+                t.kind = kind;
+                t.max_len = max_len;
+            }
+            None => {
+                if self.topics.len() >= MAX_TOPICS {
+                    return Err("слишком много топиков".to_owned());
+                }
+                self.topics
+                    .insert(name.to_owned(), Topic::new(kind, max_len));
+            }
+        }
+        Ok(())
+    }
+
+    /// Changes the capacity of an existing mailbox; messages that no longer fit are dropped,
+    /// the oldest first, and counted as lost.
+    pub fn set_queue(&mut self, h: Handle, cap: usize) {
+        if let Some(b) = self.boxes.get_mut(&h) {
+            b.cap = cap.max(1);
+            while b.queue.len() > b.cap {
+                b.queue.pop_front();
+                b.lost += 1;
+            }
+        }
+    }
+
+    /// The queue capacity of a module.
+    pub fn queue_cap(&self, h: Handle) -> Option<usize> {
+        self.boxes.get(&h).map(|b| b.cap)
+    }
+
+    /// All topics, ordered by name.
+    pub fn topics(&self) -> impl Iterator<Item = TopicView<'_>> {
+        self.topics.iter().map(|(name, t)| TopicView {
+            name,
+            kind: t.kind,
+            max_len: t.max_len,
+            refused: t.refused,
+            last: t.last.as_deref(),
+        })
     }
 
     /// Opens a mailbox of `cap` messages (0 → [`DEFAULT_QUEUE`]) for a module.
@@ -321,5 +384,42 @@ mod tests {
         };
         bus.declare(&[decl(TopicKind::State)]).unwrap();
         assert!(bus.declare(&[decl(TopicKind::Event)]).is_err());
+    }
+
+    #[test]
+    fn configure_overwrites_and_limits() {
+        let mut bus = Bus::new();
+        bus.configure("t", TopicKind::State, 8).unwrap();
+        bus.publish("t", vec![1, 2]);
+        bus.configure("t", TopicKind::State, 4).unwrap();
+        assert_eq!(bus.last("t"), Some(&[1, 2][..]));
+        bus.configure("t", TopicKind::Event, 16).unwrap();
+        assert_eq!(bus.last("t"), None);
+        let view = bus.topics().next().unwrap();
+        assert_eq!((view.kind, view.max_len), (TopicKind::Event, 16));
+        for i in 1..MAX_TOPICS {
+            bus.configure(&format!("x{i}"), TopicKind::Event, 1)
+                .unwrap();
+        }
+        assert!(bus.configure("one_more", TopicKind::Event, 1).is_err());
+        // an existing topic can still be changed
+        bus.configure("t", TopicKind::State, 2).unwrap();
+    }
+
+    #[test]
+    fn set_queue_shrink_drops_oldest_and_counts() {
+        let [h] = handles::<1>();
+        let mut bus = Bus::new();
+        bus.configure("e", TopicKind::Event, 8).unwrap();
+        bus.attach(h, 4);
+        sub(&mut bus, h, "e");
+        for i in 0..4u8 {
+            bus.publish("e", vec![i]);
+        }
+        bus.set_queue(h, 2);
+        assert_eq!(bus.queue_cap(h), Some(2));
+        assert_eq!(bus.lost(h), 2);
+        let got = bus.take(h);
+        assert_eq!(got, vec![("e".into(), vec![2]), ("e".into(), vec![3])]);
     }
 }

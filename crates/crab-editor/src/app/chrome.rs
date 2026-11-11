@@ -986,6 +986,12 @@ impl EditorApp {
                         }
                         None => {}
                     }
+                    if let Some(bad) = d.live.master_safe {
+                        ui.label(
+                            RichText::new(crate::job::safe_mode_message(bad))
+                                .color(self.theme.palette.warning),
+                        );
+                    }
                     // The master on the board against the one the project needs: native parts of blocks
                     // (and the build itself) are not changed by loading modules.
                     if let Some(id) = &d.live.master_id {

@@ -688,6 +688,10 @@ fn upload_modules(
             crate::i18n::tr(crab_build::mcu_module::OLD_STORAGE_MESSAGE),
         );
     }
+    // Safe mode after a boot loop: the stored modules of the board are stopped; the uploaded ones run.
+    if info.safe_boots > 0 {
+        out(LogLevel::Warning, &safe_mode_message(info.safe_boots));
+    }
     // A module that calls a native part the master does not have would only fail on the board.
     match crab_build::master_state(&info, &master_features(project, lib)) {
         crab_build::MasterState::MissingNative(missing) => {
@@ -816,6 +820,14 @@ fn upload_modules(
         port: Some(port),
         debug: watch,
     })
+}
+
+/// Warning about a master in safe mode after `bad` resets in a row by a watchdog or a panic.
+pub fn safe_mode_message(bad: u32) -> String {
+    crate::i18n::tr(
+        "Мастер в безопасном режиме: после {0} сбоев подряд сохранённые модули не запущены. Залейте исправленные листы или сбросьте плату кнопкой",
+    )
+    .replace("{0}", &bad.to_string())
 }
 
 /// Why modules cannot go to the board: its master lacks native parts of blocks.

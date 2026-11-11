@@ -51,6 +51,9 @@ pub struct Live {
     pub master_id: Option<String>,
     /// `native=` of the master firmware: native parts of blocks built in, (type, instances).
     pub master_natives: Vec<(String, u32)>,
+    /// `safe=` of the master: bad resets in a row after which it started no stored module;
+    /// `None` while it runs normally (or does not tell).
+    pub master_safe: Option<u32>,
 }
 
 impl Live {
