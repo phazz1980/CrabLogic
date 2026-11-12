@@ -20,13 +20,32 @@ pub struct FolderContext {
 
 impl FolderContext {
     /// Opens a project file, or a folder holding one (see [`Project::load`]).
+    /// User blocks the project brings and the library lacks are loaded from a session
+    /// folder; the user library is not touched.
     pub fn open(path: &Path, lib_dir: &Path) -> Result<Self, String> {
-        let (lib, _) = Library::load_with_user(lib_dir).map_err(|e| e.to_string())?;
-        Ok(Self {
+        let mut ctx = Self {
             lib_dir: lib_dir.to_owned(),
             project: Project::load(path).map_err(|e| e.to_string())?,
-            lib,
-        })
+            lib: Library::default(),
+        };
+        ctx.load_library().map_err(|e| e.to_string())?;
+        Ok(ctx)
+    }
+
+    /// Session folder of the project's own blocks for this process.
+    fn session() -> std::path::PathBuf {
+        std::env::temp_dir()
+            .join("crablogic_mcp_blocks")
+            .join(std::process::id().to_string())
+    }
+
+    fn load_library(&mut self) -> crab_core::Result<Vec<crab_core::Error>> {
+        let (mut lib, mut errors) = Library::load_with_user(&self.lib_dir)?;
+        let (_, more) =
+            crab_core::packed::add_project_blocks(&self.project.path, &Self::session(), &mut lib);
+        errors.extend(more);
+        self.lib = lib;
+        Ok(errors)
     }
 
     /// Re-reads the project from disk (call before each command).
@@ -125,8 +144,7 @@ impl Context for FolderContext {
     }
 
     fn reload_library(&mut self) -> Result<(), String> {
-        let (lib, errors) = Library::load_with_user(&self.lib_dir).map_err(|e| e.to_string())?;
-        self.lib = lib;
+        let errors = self.load_library().map_err(|e| e.to_string())?;
         match errors.first() {
             Some(e) => Err(e.to_string()),
             None => Ok(()),

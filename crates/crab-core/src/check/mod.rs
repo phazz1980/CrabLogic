@@ -17,6 +17,7 @@ mod blocks;
 mod boards;
 mod flow;
 mod graph;
+mod retain;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -27,6 +28,7 @@ pub use self::blocks::*;
 use self::boards::*;
 pub use self::flow::*;
 use self::graph::*;
+use self::retain::check_retain_fast;
 pub use self::types::*;
 
 /// Checks the schema against the library. `layout` is optional and only produces warnings.
@@ -37,6 +39,7 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
     edges.extend(check_vars(logic, &defs, &mut report));
     edges.extend(check_tags(logic, &defs, &mut report));
     check_unconnected_inputs(logic, &defs, &mut report);
+    check_retain_fast(logic, &defs, &mut report);
     if let Some(layout) = layout {
         check_layout(logic, layout, &mut report);
     }

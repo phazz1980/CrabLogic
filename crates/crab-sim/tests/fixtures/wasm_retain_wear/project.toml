@@ -1,0 +1,6 @@
+[project]
+name = "wasm_retain_wear"
+description = "Сохраняемая переменная с покоем и периодом записи во флеш"
+
+[board]
+fqbn = "esp32:esp32:esp32"

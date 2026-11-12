@@ -49,6 +49,34 @@ pub struct ProjectConfig {
     /// Hardware UARTs used by blocks (`[[uart]]`), set up in the board settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uart: Vec<crate::uart::UartConfig>,
+    /// Flash wear protection of retained variables (`[retain]`).
+    #[serde(default, skip_serializing_if = "RetainConfig::is_default")]
+    pub retain: RetainConfig,
+}
+
+/// Default timing of saving retained variables to flash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetainConfig {
+    /// Seconds a value must stay unchanged before it is written.
+    pub settle_s: u32,
+    /// Minimum seconds between two writes of one variable; 0 = no limit.
+    pub period_s: u32,
+}
+
+impl Default for RetainConfig {
+    fn default() -> Self {
+        Self {
+            settle_s: 5,
+            period_s: 600,
+        }
+    }
+}
+
+impl RetainConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,6 +132,16 @@ pub struct Project {
 }
 
 impl Project {
+    /// Effective flash-saving timing of a retained variable in milliseconds:
+    /// (settle, period). Period 0 means no limit.
+    pub fn retain_timing(&self, var: &crate::vars::Var) -> (u32, u32) {
+        let c = &self.config.retain;
+        (
+            var.settle_s.unwrap_or(c.settle_s).saturating_mul(1000),
+            var.period_s.unwrap_or(c.period_s).saturating_mul(1000),
+        )
+    }
+
     /// Ids of the blocks standing on switched-off sheets.
     pub fn disabled_blocks(&self) -> std::collections::HashSet<&str> {
         self.layout
@@ -290,6 +328,15 @@ impl Project {
         self
     }
 
+    /// Drops the settings only the C++ sketch build used (`[board.options]`, the Arduino board menus:
+    /// partition scheme, USB CDC and the like) and returns their names. The Rust master is a prebuilt
+    /// image (`specs/rust-only`): the next save writes the project without them.
+    pub fn drop_sketch_settings(&mut self) -> Vec<String> {
+        let names = self.config.board.options.keys().cloned().collect();
+        self.config.board.options.clear();
+        names
+    }
+
     /// Writes the project archive with just the schema files.
     pub fn save(&self) -> Result<()> {
         self.save_with(&[])
@@ -472,6 +519,38 @@ pub fn hash_hex(hash: &[u8; 8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sketch_settings_are_gone_after_a_save() {
+        let dir = std::env::temp_dir().join(format!("crab_sketch_opts_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("project.toml"),
+            "[project]
+name = \"old\"
+
+[board]
+fqbn = \"esp32:esp32:esp32c3\"
+
+             [board.options]
+CDCOnBoot = \"cdc\"
+PartitionScheme = \"huge_app\"
+",
+        )
+        .unwrap();
+        std::fs::write(dir.join("logic.toml"), "").unwrap();
+        let mut project = Project::load(&dir).unwrap();
+        assert_eq!(
+            project.drop_sketch_settings(),
+            ["CDCOnBoot", "PartitionScheme"]
+        );
+        project.save().unwrap();
+        let again = Project::load(&project.path).unwrap();
+        assert!(again.config.board.options.is_empty());
+        assert_eq!(again.config.board.fqbn, "esp32:esp32:esp32c3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn wifi_use_mode_becomes_mode_choice() {

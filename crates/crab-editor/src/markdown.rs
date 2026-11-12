@@ -103,6 +103,16 @@ pub fn show_with_images(
     }
 }
 
+/// Line height of the text as a multiple of the font size: the default (about 1.2) reads tight
+/// in long help pages.
+const LINE: f32 = 1.45;
+/// Space between paragraphs, list items and other blocks.
+const BLOCK_GAP: f32 = 4.0;
+
+fn line_height(font: &FontId) -> Option<f32> {
+    Some((font.size * LINE).round())
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Emphasis {
     bold: bool,
@@ -119,7 +129,7 @@ fn show_inner(
     for block in parse(text) {
         match block {
             Block::Heading(level, text) => {
-                ui.add_space(if level == 1 { 2.0 } else { 6.0 });
+                ui.add_space(if level == 1 { 2.0 } else { 10.0 });
                 if anchor.is_some_and(|a| a == slug(&text)) {
                     ui.scroll_to_cursor(Some(egui::Align::TOP));
                 }
@@ -130,9 +140,12 @@ fn show_inner(
                 };
                 let color = ui.visuals().strong_text_color();
                 rich(ui, &text, FontId::proportional(size), color);
-                ui.add_space(2.0);
+                ui.add_space(4.0);
             }
-            Block::Paragraph(text) => clicked = body(ui, &text).or(clicked),
+            Block::Paragraph(text) => {
+                clicked = body(ui, &text).or(clicked);
+                ui.add_space(BLOCK_GAP);
+            }
             Block::Item(marker, text) => {
                 let url = ui
                     .horizontal_top(|ui| {
@@ -142,6 +155,7 @@ fn show_inner(
                     })
                     .inner;
                 clicked = url.or(clicked);
+                ui.add_space(BLOCK_GAP / 2.0);
             }
             Block::Quote(text) => {
                 let bar = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -197,7 +211,7 @@ fn show_inner(
                     }
                 }
             }
-            Block::Gap => ui.add_space(6.0),
+            Block::Gap => ui.add_space(8.0),
         }
     }
     clicked
@@ -219,7 +233,9 @@ fn body(ui: &mut Ui, text: &str) -> Option<String> {
         for span in spans {
             match span {
                 Span::Text(s, e) => {
-                    let mut t = egui::RichText::new(s).font(font.clone());
+                    let mut t = egui::RichText::new(s)
+                        .font(font.clone())
+                        .line_height(line_height(&font));
                     if e.bold {
                         t = t.color(ui.visuals().strong_text_color());
                     }
@@ -232,10 +248,12 @@ fn body(ui: &mut Ui, text: &str) -> Option<String> {
                     ui.label(
                         egui::RichText::new(s)
                             .monospace()
+                            .line_height(line_height(&font))
                             .background_color(ui.visuals().code_bg_color),
                     );
                 }
                 Span::Link(label, url) => {
+                    let label = egui::RichText::new(label).line_height(line_height(&font));
                     if ui.link(label).clicked() {
                         clicked = Some(url.to_owned());
                     }
@@ -267,6 +285,7 @@ fn layout(ui: &Ui, text: &str, font: FontId, color: Color32) -> LayoutJob {
                         color
                     },
                     italics: e.italic,
+                    line_height: line_height(&font),
                     ..Default::default()
                 };
                 job.append(s, 0.0, format);
@@ -278,6 +297,7 @@ fn layout(ui: &Ui, text: &str, font: FontId, color: Color32) -> LayoutJob {
                     font_id: mono.clone(),
                     color,
                     background: visuals.code_bg_color,
+                    line_height: line_height(&font),
                     ..Default::default()
                 },
             ),
@@ -288,6 +308,7 @@ fn layout(ui: &Ui, text: &str, font: FontId, color: Color32) -> LayoutJob {
                 TextFormat {
                     font_id: font.clone(),
                     color: visuals.hyperlink_color,
+                    line_height: line_height(&font),
                     ..Default::default()
                 },
             ),

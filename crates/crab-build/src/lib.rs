@@ -22,6 +22,7 @@ pub mod aot_xtensa;
 pub mod board_memo;
 pub mod cores;
 mod direct;
+pub mod flash;
 mod master;
 pub mod native;
 pub mod placement;

@@ -690,6 +690,8 @@ pub fn pull_out(
         description: format!("{id}.{name}"),
         retain: false,
         service: true,
+        settle_s: None,
+        period_s: None,
     })?;
     p.bind(id, name, Some(&var))?;
     p.switch_port(lib, id, name, true)?;

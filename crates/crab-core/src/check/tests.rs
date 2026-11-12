@@ -645,3 +645,70 @@ fn the_board_does_not_warn_its_own_devices_about_its_pins() {
         "{m:?}"
     );
 }
+
+fn retain_fast_report(retain: bool, fast: bool) -> Report {
+    let mut lib = library();
+    let def: BlockDef = toml::from_str(&format!(
+        "[block]\ntype = \"meas\"\nname = \"meas\"\ngroup = \"Тест\"\n\
+         [[output]]\nname = \"out\"\ntype = \"float\"\nfast = {fast}\n"
+    ))
+    .unwrap();
+    lib.insert(LibraryBlock {
+        def,
+        dir: Default::default(),
+        inline_templates: Default::default(),
+    });
+    let src = format!(
+        "[[var]]\nname = \"v\"\ntype = \"float\"\nretain = {retain}\n\
+         [[block]]\nid = \"m\"\ntype = \"meas\"\n\
+         [[block]]\nid = \"s\"\ntype = \"var_set\"\nvar = \"v\"\n\
+         [[link]]\nfrom = \"m.out\"\nto = \"s.in\"\n"
+    );
+    let logic: Logic = toml::from_str(&src).unwrap();
+    check(&logic, &lib, None)
+}
+
+fn has_retain_fast(r: &Report) -> bool {
+    r.diagnostics
+        .iter()
+        .any(|d| d.kind == DiagKind::RetainFast && d.severity == Severity::Warning)
+}
+
+#[test]
+fn retain_var_fed_from_fast_output_warns() {
+    let r = retain_fast_report(true, true);
+    assert!(!r.has_errors(), "{:?}", r.diagnostics);
+    assert!(has_retain_fast(&r), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn retain_fast_not_reported_for_slow_output_or_plain_var() {
+    assert!(!has_retain_fast(&retain_fast_report(true, false)));
+    assert!(!has_retain_fast(&retain_fast_report(false, true)));
+}
+
+#[test]
+fn retain_config_round_trip_has_no_extra_fields() {
+    use crate::project::{ProjectConfig, RetainConfig};
+    let base = "[project]\nname = \"p\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n";
+    let cfg: ProjectConfig = toml::from_str(base).unwrap();
+    assert_eq!(cfg.retain, RetainConfig::default());
+    let text = toml::to_string(&cfg).unwrap();
+    assert!(!text.contains("retain"), "{text}");
+    let custom: ProjectConfig =
+        toml::from_str(&format!("{base}\n[retain]\nperiod_s = 0\n")).unwrap();
+    assert_eq!((custom.retain.settle_s, custom.retain.period_s), (5, 0));
+    let back: ProjectConfig = toml::from_str(&toml::to_string(&custom).unwrap()).unwrap();
+    assert_eq!(back.retain, custom.retain);
+}
+
+#[test]
+fn var_timing_override_and_default_serialization() {
+    use crate::vars::Var;
+    let var: Var = toml::from_str("name = \"v\"\ntype = \"int\"\n").unwrap();
+    assert_eq!((var.settle_s, var.period_s), (None, None));
+    assert!(!toml::to_string(&var).unwrap().contains("_s"));
+    let own: Var =
+        toml::from_str("name = \"v\"\ntype = \"int\"\nsettle_s = 1\nperiod_s = 0\n").unwrap();
+    assert_eq!((own.settle_s, own.period_s), (Some(1), Some(0)));
+}

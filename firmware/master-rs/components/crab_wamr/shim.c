@@ -13,6 +13,8 @@
 #include "sdkconfig.h"
 #if CONFIG_IDF_TARGET_ESP32
 #include "esp_memory_utils.h"
+#include "esp_log.h"
+#include "esp_mmu_map.h"
 #include "spi_flash_mmap.h"
 #endif
 
@@ -61,10 +63,19 @@ static int set_memory(wasm_module_t m, uint32_t bytes)
 #if CONFIG_IDF_TARGET_ESP32
 // Classic ESP32: the two buses have separate MMU tables, so the text of each AOT module
 // (literal pool + code) is mapped once more, for the instruction bus, while the module lives.
+//
+// Two modules may share a 64 KB flash page (areas of the storage are 4 KB): mapping a page that
+// is already mapped gives no new mapping but a pointer into the existing one
+// (ESP_ERR_INVALID_STATE). The module that made the mapping owns it; when it goes while a module
+// that borrowed it still runs (a sheet replaced by a new version in the next area), the mapping
+// passes to the borrower instead of being unmapped under its running code.
 #define MAX_AOT 16
 static struct {
     wasm_module_t module;
-    spi_flash_mmap_handle_t handle;
+    // Start of the mapping it owns, or the address it got inside a borrowed one.
+    void *vaddr;
+    size_t len;
+    int owned;
 } s_ibus[MAX_AOT];
 #endif
 
@@ -100,10 +111,18 @@ static int aot_to_ibus(AOTModule *a)
     if (phys == SPI_FLASH_CACHE2PHYS_FAIL)
         return -1;
     page = phys & ~(size_t)(SPI_FLASH_MMU_PAGE_SIZE - 1);
-    if (spi_flash_mmap(page, phys - page + (text_high - text_low), SPI_FLASH_MMAP_INST, &ibus,
-                       &s_ibus[slot].handle)
-        != ESP_OK)
-        return -1;
+    {
+        size_t len = phys - page + (text_high - text_low);
+        void *ptr = NULL;
+        esp_err_t err = esp_mmu_map(page, len, MMU_TARGET_FLASH0, MMU_MEM_CAP_EXEC | MMU_MEM_CAP_32BIT,
+                                    ESP_MMU_MMAP_FLAG_PADDR_SHARED, &ptr);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+            return -1;
+        s_ibus[slot].owned = err == ESP_OK;
+        s_ibus[slot].vaddr = ptr;
+        s_ibus[slot].len = (len + SPI_FLASH_MMU_PAGE_SIZE - 1) & ~(size_t)(SPI_FLASH_MMU_PAGE_SIZE - 1);
+        ibus = ptr;
+    }
     delta = (int32_t)((uint32_t)ibus + (phys - page) - text_low);
     for (i = 0; i < a->func_count; i++) {
         uint32_t p = (uint32_t)a->func_ptrs[i];
@@ -123,11 +142,26 @@ static int aot_to_ibus(AOTModule *a)
 void crab_wamr_unload(wasm_module_t m)
 {
 #if CONFIG_IDF_TARGET_ESP32
-    uint32_t slot;
+    uint32_t slot, other;
     for (slot = 0; slot < MAX_AOT; slot++) {
-        if (s_ibus[slot].module == m) {
-            spi_flash_munmap(s_ibus[slot].handle);
-            s_ibus[slot].module = NULL;
+        if (s_ibus[slot].module != m)
+            continue;
+        s_ibus[slot].module = NULL;
+        if (!s_ibus[slot].owned)
+            continue;
+        // A module still running inside this mapping takes it over.
+        for (other = 0; other < MAX_AOT; other++) {
+            uintptr_t at = (uintptr_t)s_ibus[other].vaddr, start = (uintptr_t)s_ibus[slot].vaddr;
+            if (s_ibus[other].module && !s_ibus[other].owned && at >= start
+                && at < start + s_ibus[slot].len)
+                break;
+        }
+        if (other < MAX_AOT) {
+            s_ibus[other].owned = 1;
+            s_ibus[other].vaddr = s_ibus[slot].vaddr;
+            s_ibus[other].len = s_ibus[slot].len;
+        } else {
+            esp_mmu_unmap(s_ibus[slot].vaddr);
         }
     }
 #endif
@@ -139,6 +173,11 @@ void crab_wamr_unload(wasm_module_t m)
 int crab_wamr_init(NativeSymbol *natives, uint32_t count)
 {
     RuntimeInitArgs args;
+#if CONFIG_IDF_TARGET_ESP32
+    // A borrowed mapping (see `s_ibus`) is expected: its warning would only clutter the console
+    // the editor reads.
+    esp_log_level_set("mmap", ESP_LOG_ERROR);
+#endif
     memset(&args, 0, sizeof(args));
     args.mem_alloc_type = Alloc_With_System_Allocator;
     if (!wasm_runtime_full_init(&args))

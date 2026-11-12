@@ -5,6 +5,7 @@
 //! ([`ArduinoCpp`]); a Rust backend can be added next to it later.
 
 pub mod arduino;
+pub mod block_check;
 pub mod debug;
 pub mod error;
 pub mod expander;
@@ -12,6 +13,7 @@ pub mod lang;
 pub mod preview;
 pub mod program;
 pub mod retain;
+pub mod rust_master;
 pub mod sheet;
 pub mod stats;
 pub mod tasks;
@@ -22,10 +24,14 @@ use std::path::{Path, PathBuf};
 
 pub use arduino::simsrc::{builtin_cpp_preview, sim_source, sim_source_builtin, SimSourceError};
 pub use arduino::ArduinoCpp;
+pub use block_check::{check_block, BlockCheck, BlockDiag};
 pub use error::GenError;
 pub use lang::Lang;
 pub use preview::{preview_block, preview_id};
 pub use program::{Input, Instance, Program, Signal, Source};
+pub use rust_master::{
+    block_has_cpp, check_project, has_cpp_code, rust_master_diagnostics, CPP_BLOCK_HINT,
+};
 pub use sheet::{LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
 pub use wasm::{WasmError, WasmModule, MASTER_CAPS};
 

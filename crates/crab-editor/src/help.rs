@@ -50,6 +50,9 @@ pub fn error_anchor(kind: DiagKind) -> &'static str {
         DiagKind::Tag => crate::i18n::tr("копия-тега"),
         DiagKind::FloatCounter => crate::i18n::tr("счётчик-на-float"),
         DiagKind::ExternalTag => crate::i18n::tr("внешний-тег"),
+        DiagKind::RustMaster => crate::i18n::tr("не-работает-на-мастере-на-rust"),
+        DiagKind::CppBlock => crate::i18n::tr("блок-на-c-больше-не-поддерживается"),
+        DiagKind::RetainFast => crate::i18n::tr("часто-меняющийся-выход-в-retain"),
     }
 }
 

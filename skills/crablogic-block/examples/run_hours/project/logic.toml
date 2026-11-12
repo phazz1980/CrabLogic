@@ -1,0 +1,31 @@
+[[block]]
+id = "pump_on"
+type = "digital_in"
+pin = 4
+
+[[block]]
+id = "reset_btn"
+type = "digital_in"
+pin = 5
+
+[[block]]
+id = "hours"
+type = "run_hours"
+limit = 1000.0
+
+[[block]]
+id = "service_led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "pump_on.out"
+to = "hours.run"
+
+[[link]]
+from = "reset_btn.out"
+to = "hours.reset"
+
+[[link]]
+from = "hours.service"
+to = "service_led.in"

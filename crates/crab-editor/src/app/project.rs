@@ -67,11 +67,24 @@ impl EditorApp {
             .iter()
             .any(|d| d.newer == crab_core::packed::Newer::Parallel);
         match Doc::open(path, &self.lib) {
-            Ok(doc) => {
+            Ok(mut doc) => {
                 self.info(
                     LogLevel::Info,
                     crate::i18n::msg("Открыт проект {0}", &[&path.display()]),
                 );
+                // Settings of the C++ sketch build are not used by the Rust master: one message,
+                // and the next save writes the project without them.
+                let dropped = doc.project.drop_sketch_settings();
+                if !dropped.is_empty() {
+                    doc.dirty = true;
+                    self.info(
+                        LogLevel::Warning,
+                        crate::i18n::fmt(
+                            "Проект собирался скетчем Arduino: настройки сборки ({0}) мастеру на Rust не нужны и будут удалены при сохранении. Схема заливается модулями (📦) на мастер-прошивку (⬆)",
+                            &[&dropped.join(", ")],
+                        ),
+                    );
+                }
                 theme::save_last_project(path);
                 self.port = doc.project.config.board.port.clone().unwrap_or_default();
                 self.doc = Some(doc);
@@ -103,8 +116,8 @@ impl EditorApp {
                     let mut project =
                         crab_core::project::Project::load(src).map_err(|e| e.to_string())?;
                     project.path = dest.clone();
-                    // Blocks of the example itself (`library/`) travel in the copy and are
-                    // installed into the user library on open, as for any project file.
+                    // Blocks of the example itself (`library/`) travel in the copy and show
+                    // as project blocks on open, as for any project file.
                     let blocks = crab_core::packed::pack_block_folders(&src.join("library"));
                     let extra: Vec<(&str, &[u8])> = blocks
                         .iter()
@@ -233,6 +246,7 @@ impl EditorApp {
                     options: Default::default(),
                 },
                 uart: Vec::new(),
+                retain: Default::default(),
             },
             logic: Default::default(),
             layout: Default::default(),

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crab_core::SignalType;
 
-use crate::protocol::{MasterMemory, ModuleMemory, SheetStats, Stats};
+use crate::protocol::{MasterMemory, ModuleMemory, NvsStats, SheetStats, Stats};
 use crate::session::{Command, Live};
 use crate::table::{DebugTable, Value};
 use crate::transport::{Connector, Transport};
@@ -21,6 +21,8 @@ const HISTORY: usize = 6000;
 const CONSOLE: usize = 500;
 /// How often the board is asked which modules it runs.
 const LIST_EVERY: Duration = Duration::from_secs(1);
+/// How often the board is asked for `info` (flash wear counters).
+const INFO_EVERY: Duration = Duration::from_secs(10);
 /// Pause between two polls of the board.
 const POLL: Duration = Duration::from_millis(150);
 /// The board is considered silent after this long without an answer.
@@ -67,6 +69,8 @@ struct Aux {
     /// Per module: steps and summed step time at the previous report.
     prev: BTreeMap<String, (u32, u32)>,
     prev_at: Option<Instant>,
+    /// Inside the `info` answer (between its `master=` line and `end`).
+    in_info: bool,
 }
 
 /// Debugging session with the master firmware: same shape as [`crate::Session`].
@@ -185,6 +189,7 @@ fn serve(
     let mut last_rx = Instant::now();
     let mut last_poll = Instant::now() - POLL;
     let mut last_list = Instant::now() - LIST_EVERY;
+    let mut last_info = Instant::now() - INFO_EVERY;
     let mut running: Vec<(String, u32)> = Vec::new();
     let mut aux = Aux::default();
     loop {
@@ -201,6 +206,12 @@ fn serve(
 ",
             )?;
             last_list = Instant::now();
+        } else if last_info.elapsed() >= INFO_EVERY {
+            port.write_all(
+                b"info
+",
+            )?;
+            last_info = Instant::now();
         }
         if asked.is_empty() && last_poll.elapsed() >= POLL {
             for (i, m) in modules.iter().enumerate() {
@@ -263,6 +274,22 @@ fn handle_line(
     live: &Arc<Mutex<Live>>,
 ) -> bool {
     let mut l = live.lock().expect("live state");
+    // `info` answer (asked now and then for the flash wear): only its `nvs` line is used, the
+    // rest, and the closing `end`, must not reach the `list` handling or the console.
+    if text.starts_with("master=") {
+        aux.in_info = true;
+        return false;
+    }
+    if aux.in_info {
+        if text == "end" {
+            aux.in_info = false;
+        } else if let Some(nvs) = NvsStats::parse(text) {
+            let changed = l.nvs.as_ref() != Some(&nvs);
+            l.nvs = Some(nvs);
+            return changed;
+        }
+        return false;
+    }
     // `list` answer: `<name> run|stop steps=.. restarts=.. out0=.. crc=<hex>`, then `end`.
     if let Some((head, crc)) = text.rsplit_once(" crc=") {
         let name = head.split_whitespace().next().unwrap_or_default();
@@ -661,6 +688,7 @@ fn set_status(live: &Arc<Mutex<Live>>, connected: bool, status: String) {
     if !connected {
         l.schema_matches = None;
         l.stats = None;
+        l.nvs = None;
     }
 }
 
@@ -756,6 +784,35 @@ mod tests {
             [("bmp".to_owned(), 2), ("twice".to_owned(), 1)]
         );
         assert!(l.console.is_empty(), "{:?}", l.console);
+    }
+
+    #[test]
+    fn info_answer_gives_nvs_and_stays_out_of_the_console() {
+        let table = table();
+        let live = Arc::new(Mutex::new(Live::default()));
+        let mut aux = Aux::default();
+        for text in [
+            "master=crab-master-rs 0.1.0",
+            "crabmod=1/2 largest=1",
+            "a at=0 len=10 gen=1",
+            "nvs writes=12 hour=3 used=50 free=450",
+            "end",
+        ] {
+            handle_line(
+                text,
+                &table,
+                &[],
+                &mut Vec::new(),
+                &mut Vec::new(),
+                &mut aux,
+                Instant::now(),
+                &live,
+            );
+        }
+        let l = live.lock().unwrap();
+        assert_eq!(l.nvs.as_ref().map(|n| (n.writes, n.hour)), Some((12, 3)));
+        assert!(l.console.is_empty(), "{:?}", l.console);
+        assert!(!aux.in_info);
     }
 
     #[test]

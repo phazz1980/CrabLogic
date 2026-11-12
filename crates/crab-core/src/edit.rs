@@ -1614,6 +1614,8 @@ group = \"Тест\"
             description: String::new(),
             retain: false,
             service: false,
+            settle_s: None,
+            period_s: None,
         };
         p.add_var(var("t")).unwrap();
         assert_eq!(
@@ -1650,6 +1652,8 @@ group = \"Тест\"
             description: String::new(),
             retain: false,
             service: false,
+            settle_s: None,
+            period_s: None,
         })
         .unwrap();
         let src = p.add_block(&lib, "src", POS).unwrap();
@@ -1681,6 +1685,8 @@ group = \"Тест\"
             description: String::new(),
             retain: false,
             service: true,
+            settle_s: None,
+            period_s: None,
         })
         .unwrap();
         let src = p.add_block(&lib, "src", POS).unwrap();
@@ -1708,6 +1714,8 @@ group = \"Тест\"
             description: String::new(),
             retain: false,
             service: false,
+            settle_s: None,
+            period_s: None,
         })
         .unwrap();
         let tag = p.add_var_block("on", false, POS).unwrap();

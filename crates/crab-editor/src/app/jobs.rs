@@ -62,7 +62,7 @@ impl EditorApp {
                 }
             }
             // The user's build waits for precompilation, which shares the core and libraries.
-            if job.background && !matches!(kind, JobKind::Precompile) && self.queued.is_none() {
+            if job.background && self.queued.is_none() {
                 // It is raised to normal priority: the user waits for it now.
                 if !job.is_cancelled() {
                     job.raise_priority();
@@ -81,7 +81,7 @@ impl EditorApp {
             self.console.release();
         }
         let Some(doc) = &self.doc else { return };
-        if doc.report.has_errors() && !matches!(kind, JobKind::Precompile) {
+        if doc.report.has_errors() {
             self.run_check();
             self.info(
                 LogLevel::Error,
@@ -115,50 +115,6 @@ impl EditorApp {
     /// A foreground job runs; precompilation does not block build buttons.
     pub fn job_running(&self) -> bool {
         self.job.as_ref().is_some_and(|j| !j.background) || self.queued.is_some()
-    }
-
-    /// Key of the master firmware build the current project and board need.
-    pub(super) fn master_key(&self) -> Option<MasterKey> {
-        let doc = self.doc.as_ref()?;
-        Some((
-            doc.project.path.clone(),
-            board_hash(&doc.project.config.board),
-            crab_build::master_sketch_id(&crate::job::master_features(&doc.project, &self.lib)),
-        ))
-    }
-
-    /// Builds the master firmware in the background when the project, the board (or its
-    /// settings) or the embedded master sketch changed. Schema edits do not start it:
-    /// the schema goes to the board as modules.
-    pub(super) fn precompile(&mut self, ctx: &egui::Context) {
-        const PAUSE: Duration = Duration::from_secs(15);
-        // No background build while the core of the board is missing or being downloaded.
-        let core_missing = self
-            .doc
-            .as_ref()
-            .is_some_and(|d| !crab_build::cores::fqbn_available(&d.project.config.board.fqbn));
-        if core_missing
-            || matches!(self.cli_prompt, CliPrompt::Installing(_))
-            || self.cores_conf.downloading()
-        {
-            return;
-        }
-        let Some(key) = self.master_key() else { return };
-        let now = Instant::now();
-        match &self.seen_rev {
-            Some((seen, _)) if *seen == key => {}
-            _ => self.seen_rev = Some((key.clone(), now)),
-        }
-        let quiet = self
-            .seen_rev
-            .as_ref()
-            .is_some_and(|(_, t)| now - *t >= PAUSE);
-        if self.job.is_some() || !quiet || self.precompiled.as_ref() == Some(&key) {
-            return;
-        }
-        // Mark it tried even if the build fails, so a broken build is not repeated in a loop.
-        self.precompiled = Some(key);
-        self.start_job(JobKind::Precompile, ctx);
     }
 
     /// Lines of the board check for the current schema (empty when everything goes accelerated

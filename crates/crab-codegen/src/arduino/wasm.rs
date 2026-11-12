@@ -24,10 +24,12 @@ const MAX_IO: usize = 16;
 
 /// Whether any block of the program runs from a module.
 pub(super) fn uses_modules(program: &Program) -> bool {
-    program
-        .blocks
-        .iter()
-        .any(|i| i.lib.firmware_source() == crab_core::library::FirmwareSource::Module)
+    program.blocks.iter().any(|i| {
+        // A built-in block keeps its C++ code even when its folder has a driver module.
+        i.lib.firmware_source() == crab_core::library::FirmwareSource::Module
+            && crab_blocks::get(i.lib.def.info.code_of.as_deref().unwrap_or(&i.block.kind))
+                .is_none()
+    })
 }
 
 /// Code placed once before all modules: the `w2c2` runtime and the host functions.

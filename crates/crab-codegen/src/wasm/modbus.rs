@@ -55,6 +55,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         ) {
             return Ok(false);
         }
+        self.extras.insert("modbus");
         let out_index = |name: &str| {
             inst.lib
                 .def

@@ -201,41 +201,44 @@ fn numeric_edges_match_the_simulation() {
     compare("crates/crab-sim/tests/fixtures/wasm_edges", 13, 12, 100);
 }
 
+/// Levels of a DHT22 answer the master measures (`pulse_read`): released line, 80 µs low and high,
+/// then 40 bits.
+fn dht_levels(humidity_x10: u16, temp_x10: u16) -> Vec<u16> {
+    let [h1, h0] = humidity_x10.to_be_bytes();
+    let [t1, t0] = temp_x10.to_be_bytes();
+    let sum = h1.wrapping_add(h0).wrapping_add(t1).wrapping_add(t0);
+    let mut levels = vec![30, 80, 80];
+    for byte in [h1, h0, t1, t0, sum] {
+        for bit in (0..8).rev() {
+            levels.push(50);
+            levels.push(if byte >> bit & 1 != 0 { 70 } else { 27 });
+        }
+    }
+    levels.push(50);
+    levels
+}
+
 #[test]
-fn sensors_read_what_the_master_reports() {
+fn sensors_are_drivers_on_the_master_buses() {
     let lib = library();
     let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_sensors")).unwrap();
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module_with(1, true).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
-    assert_eq!(manifest.allow, ["sensor_read"]);
+    assert_eq!(manifest.allow, ["bus"]);
     let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
     let out = |module: &McuModule, label: &str| {
         let i = built.watched.iter().position(|l| l == label).unwrap();
         module.outputs()[i]
     };
-    // Keys are `kind | index << 4 | pin << 8`; fields: 0 temperature, 1 humidity, 2 read ok.
-    let sensors = &mut module.io_mut().sensors;
-    sensors.insert((4 << 8, 0), 21.5);
-    sensors.insert((4 << 8, 2), 1.0);
-    sensors.insert((4 << 8 | 1 << 4, 0), -3.25);
-    sensors.insert((4 << 8 | 1 << 4, 2), 1.0);
-    sensors.insert((1 | 5 << 8, 0), 24.0);
-    sensors.insert((1 | 5 << 8, 1), 55.5);
-    sensors.insert((1 | 5 << 8, 2), 1.0);
+    module.io_mut().pulse_in = dht_levels(555, 240);
     module.step(50).unwrap();
-    assert_eq!(out(&module, "t1.temp"), Word::float(21.5));
-    assert_eq!(out(&module, "t1.ok"), Word::int(1));
-    assert_eq!(out(&module, "t2.temp"), Word::float(-3.25));
     assert_eq!(out(&module, "air.temp"), Word::float(24.0));
     assert_eq!(out(&module, "air.humidity"), Word::float(55.5));
     assert_eq!(out(&module, "air.ok"), Word::int(1));
-    // A failed read: the master keeps the last temperature and drops `ok`.
-    module.io_mut().sensors.insert((4 << 8, 2), 0.0);
-    module.step(50).unwrap();
-    assert_eq!(out(&module, "t1.temp"), Word::float(21.5));
+    // No 1-Wire device answers on the PC: the DS18B20 drivers report a failed read.
     assert_eq!(out(&module, "t1.ok"), Word::int(0));
-    assert_eq!(out(&module, "t2.ok"), Word::int(1));
+    assert_eq!(out(&module, "t2.ok"), Word::int(0));
 }
 
 #[test]
@@ -349,20 +352,14 @@ fn sensors_example_switches_pins_from_sensor_values() {
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module(1).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
-    assert_eq!(manifest.allow, ["gpio_write", "sensor_read"]);
+    assert_eq!(manifest.allow, ["gpio_write", "bus"]);
     let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
-    let (water, air) = (4 << 8, 1 | 15 << 8);
-    let sensors = &mut module.io_mut().sensors;
-    sensors.extend([((water, 0), 30.0), ((water, 2), 1.0)]);
-    sensors.extend([((air, 0), 20.0), ((air, 1), 80.0), ((air, 2), 1.0)]);
+    // 80 % at 20 °C from the DHT22; the DS18B20 does not answer on the PC.
+    module.io_mut().pulse_in = dht_levels(800, 200);
     module.step(50).unwrap();
     let pin = |module: &McuModule, p: i32| module.io().gpio_out.get(&p).copied();
     assert_eq!(pin(&module, 26), Some(1), "humid: fan on");
-    assert_eq!(pin(&module, 27), Some(1), "cold water: heater on");
-    assert_eq!(pin(&module, 2), Some(0), "both sensors ok: no fault");
-    module.io_mut().sensors.insert((air, 2), 0.0);
-    module.step(50).unwrap();
-    assert_eq!(pin(&module, 2), Some(1), "air sensor lost: fault lamp");
+    assert_eq!(pin(&module, 2), Some(1), "water sensor lost: fault lamp");
 }
 
 #[test]
@@ -809,14 +806,18 @@ fn retained_variables_are_loaded_and_saved_through_the_master() {
         first.step(100).unwrap();
     }
     assert_eq!(count_at(&first), Word::int(30));
-    // Written to flash after the first second and again when the value moved; the flash_store
-    // key holds its float and the counter holds an int.
+    // The counter changes every scan, so it never rests: nothing is written until a whole
+    // period (10 minutes) has passed.
+    assert_eq!(first.io().retain.len(), 1, "{:?}", first.io().retain);
+    first.step(600_000).unwrap();
+    assert_eq!(count_at(&first), Word::int(31));
+    // Then the counter is written; the flash_store key holds its float.
     let kept = first.io().retain.clone();
     assert_eq!(kept.len(), 2, "{kept:?}");
     let saved = kept
         .values()
         .copied()
-        .filter(|v| (1..=30).contains(v))
+        .filter(|v| (1..=31).contains(v))
         .count();
     assert_eq!(saved, 1, "{kept:?}");
     // After a restart the counter goes on from what flash holds.
@@ -829,7 +830,7 @@ fn retained_variables_are_loaded_and_saved_through_the_master() {
     let last = kept
         .values()
         .copied()
-        .filter(|v| (1..=30).contains(v))
+        .filter(|v| (1..=31).contains(v))
         .max()
         .unwrap();
     assert_eq!(count_at(&second), Word::int(last + 1));
@@ -916,6 +917,8 @@ fn texts_cross_sheets_and_are_kept_in_flash() {
     assert_eq!(out(&second, &m2, "hl.out"), Word::int(5));
     // The kept text is read at start (`frozen`), the written one goes to flash.
     assert_eq!(out(&second, &m2, "frl.out"), Word::int(6));
+    // The text changes every scan: it is written once a whole period has passed.
+    m2.step(600_000).unwrap();
     let saved = m2
         .io()
         .retain_text
@@ -1097,4 +1100,99 @@ fn modules_list_what_they_need_from_the_master() {
     );
     // Text to USB goes to the console of the master.
     assert!(needs("examples/selftest_logic3").contains(&"uart_console".to_owned()));
+}
+
+/// Module of the `wasm_retain_wear` fixture (retained variable `level` fed from the ADC).
+fn wear_module(settle_period: Option<(u32, u32)>) -> McuModule {
+    let lib = library();
+    let mut project =
+        Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_retain_wear")).unwrap();
+    if let Some((settle_s, period_s)) = settle_period {
+        project.config.retain = crab_core::RetainConfig { settle_s, period_s };
+    }
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap()
+}
+
+fn read_adc(m: &mut McuModule, counts: i32) {
+    m.io_mut().adc_in.insert(34, counts);
+}
+
+#[test]
+fn retained_value_that_never_rests_is_written_once_per_period() {
+    // Defaults: 5 s of rest, 600 s period. The reading changes on every scan for 30 minutes.
+    let mut m = wear_module(None);
+    for step in 0..18_000 {
+        read_adc(&mut m, 1 + step % 4000);
+        m.step(100).unwrap();
+    }
+    let writes = m.io().retain_writes;
+    assert!((1..=4).contains(&writes), "{writes} writes in 30 minutes");
+}
+
+#[test]
+fn burst_of_edits_is_written_once_after_the_last_one() {
+    let mut m = wear_module(None);
+    // Edits 2 s apart (less than the 5 s of rest), then silence.
+    for edit in 1..=5 {
+        read_adc(&mut m, 100 * edit);
+        for _ in 0..20 {
+            m.step(100).unwrap();
+        }
+        assert_eq!(
+            m.io().retain_writes,
+            0,
+            "written in the middle of the burst"
+        );
+    }
+    // 4 s since the last edit: not yet. After 5 s: written once.
+    for _ in 0..20 {
+        m.step(100).unwrap();
+    }
+    assert_eq!(m.io().retain_writes, 0);
+    for _ in 0..15 {
+        m.step(100).unwrap();
+    }
+    assert_eq!(m.io().retain_writes, 1);
+    assert!(m.io().retain.values().any(|&v| v == 500));
+    // Nothing more while the value stays.
+    for _ in 0..1000 {
+        m.step(100).unwrap();
+    }
+    assert_eq!(m.io().retain_writes, 1);
+}
+
+#[test]
+fn value_that_returns_to_the_saved_one_is_not_written() {
+    let mut m = wear_module(None);
+    read_adc(&mut m, 300);
+    for _ in 0..100 {
+        m.step(100).unwrap();
+    }
+    assert_eq!(m.io().retain_writes, 1);
+    // Away and back within the rest time: flash already holds the value.
+    read_adc(&mut m, 900);
+    for _ in 0..20 {
+        m.step(100).unwrap();
+    }
+    read_adc(&mut m, 300);
+    for _ in 0..(700 * 10) {
+        m.step(100).unwrap();
+    }
+    assert_eq!(m.io().retain_writes, 1);
+}
+
+#[test]
+fn project_and_variable_timing_overrides_are_used() {
+    // No limit on the period, 1 s of rest: each separated edit is written.
+    let mut m = wear_module(Some((1, 0)));
+    for edit in 1..=3 {
+        read_adc(&mut m, 100 * edit);
+        for _ in 0..30 {
+            m.step(100).unwrap();
+        }
+    }
+    assert_eq!(m.io().retain_writes, 3);
 }

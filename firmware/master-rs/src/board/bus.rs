@@ -311,6 +311,27 @@ impl Bus {
                 ow_write_bit(pin, bit);
                 0
             }
+            Request::PulseRead {
+                pin,
+                start_us,
+                ptr,
+                count,
+            } => {
+                if mem.read(ptr, (count * 2) as i32, count * 2).is_none() {
+                    return ERR_ARGS;
+                }
+                self.ow_setup(pin);
+                let lengths = pulse_read(pin, start_us, count);
+                if lengths.is_empty() {
+                    return ERR_TIMEOUT;
+                }
+                let bytes: Vec<u8> = lengths.iter().flat_map(|l| l.to_le_bytes()).collect();
+                if mem.write(ptr, &bytes) {
+                    lengths.len() as i32
+                } else {
+                    ERR_ARGS
+                }
+            }
         }
     }
 
@@ -346,23 +367,9 @@ impl Bus {
             return 0;
         }
         if setup {
-            // SAFETY: a zeroed config is valid for the C struct; the fields are set below.
-            let mut cfg: sys::i2c_config_t = unsafe { core::mem::zeroed() };
-            cfg.mode = sys::i2c_mode_t_I2C_MODE_MASTER;
-            cfg.sda_io_num = sda;
-            cfg.scl_io_num = scl;
-            cfg.sda_pullup_en = true;
-            cfg.scl_pullup_en = true;
-            cfg.__bindgen_anon_1.master.clk_speed = hz;
-            // SAFETY: the pins were claimed and checked; the config lives through the call.
-            let err = unsafe { sys::i2c_param_config(I2C_PORT, &cfg) };
+            let err = install_i2c(sda, scl, hz);
             if err != 0 {
-                return ERR_ARGS;
-            }
-            // SAFETY: master mode needs no buffers.
-            let err = unsafe { sys::i2c_driver_install(I2C_PORT, cfg.mode, 0, 0, 0) };
-            if err != 0 {
-                return ERR_BUS;
+                return err;
             }
             shared.pins = Some((sda, scl));
         }
@@ -488,6 +495,8 @@ impl Drop for Bus {
         }
         for pin in 0..64 {
             if self.ow >> pin & 1 != 0 {
+                // The pulse receiver (if the pin had one) goes first; it resets the pin too.
+                super::pulse::release(pin);
                 // SAFETY: this module set the pin up.
                 {
                     unsafe { sys::gpio_reset_pin(pin) };
@@ -525,6 +534,81 @@ impl Drop for Bus {
                 shared.pins = None;
             }
         }
+    }
+}
+
+/// Sets up the I²C controller on these pins; 0 or a `crab.bus` error.
+fn install_i2c(sda: i32, scl: i32, hz: u32) -> i32 {
+    // SAFETY: a zeroed config is valid for the C struct; the fields are set below.
+    let mut cfg: sys::i2c_config_t = unsafe { core::mem::zeroed() };
+    cfg.mode = sys::i2c_mode_t_I2C_MODE_MASTER;
+    cfg.sda_io_num = sda;
+    cfg.scl_io_num = scl;
+    cfg.sda_pullup_en = true;
+    cfg.scl_pullup_en = true;
+    cfg.__bindgen_anon_1.master.clk_speed = hz;
+    // SAFETY: the pins were checked by the caller; the config lives through the call.
+    if unsafe { sys::i2c_param_config(I2C_PORT, &cfg) } != 0 {
+        return ERR_ARGS;
+    }
+    // SAFETY: master mode needs no buffers.
+    if unsafe { sys::i2c_driver_install(I2C_PORT, cfg.mode, 0, 0, 0) } != 0 {
+        return ERR_BUS;
+    }
+    0
+}
+
+/// The I²C bus for the master's own devices (PCF8574 expanders of the project): opened once with
+/// these pins, or joined when a driver opened it on the same pins; it stays open for good (the
+/// master counts as one more user). `false` when the bus is open on other pins.
+pub fn system_i2c(sda: i32, scl: i32) -> bool {
+    static JOINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let mut shared = I2C.lock().unwrap_or_else(|e| e.into_inner());
+    if JOINED.load(std::sync::atomic::Ordering::Relaxed) {
+        return shared.pins == Some((sda, scl));
+    }
+    match i2c_open_rule(shared.pins, sda, scl) {
+        Ok(true) => {
+            if install_i2c(sda, scl, 100_000) != 0 {
+                return false;
+            }
+            shared.pins = Some((sda, scl));
+        }
+        Ok(false) => {}
+        Err(_) => return false,
+    }
+    shared.users += 1;
+    JOINED.store(true, std::sync::atomic::Ordering::Relaxed);
+    true
+}
+
+/// Writes `data` to the device at `addr` on the system bus; `true` if it answered.
+pub fn system_i2c_write(addr: u8, data: &[u8]) -> bool {
+    let _shared = I2C.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the bus is open (`system_i2c`); `data` outlives the call.
+    unsafe {
+        sys::i2c_master_write_to_device(
+            I2C_PORT,
+            addr,
+            data.as_ptr(),
+            data.len(),
+            ticks(I2C_TIMEOUT_MS),
+        ) == 0
+    }
+}
+
+/// Reads `buf.len()` bytes from the device at `addr` on the system bus; `true` if it answered.
+pub fn system_i2c_read(addr: u8, buf: &mut [u8]) -> bool {
+    let _shared = I2C.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: the bus is open (`system_i2c`); `buf` outlives the call.
+    unsafe {
+        sys::i2c_master_read_from_device(
+            I2C_PORT,
+            addr,
+            buf.as_mut_ptr(),
+            buf.len(),
+            ticks(I2C_TIMEOUT_MS),
+        ) == 0
     }
 }
 
@@ -651,6 +735,82 @@ fn ow_read_bit(pin: i32) -> bool {
     });
     delay_us(55);
     bit
+}
+
+/// Longest level `pulse_read_polled` waits for, µs (the RMT path uses `pulse::IDLE_US`, the same).
+const PULSE_MAX_US: i64 = 300;
+
+/// Start pulse and level lengths of a DHT-like single-wire sensor: the line is held low for
+/// `start_us`, released, then the lengths of up to `count` levels are measured by the RMT receiver
+/// (`pulse.rs`, interrupts on, the task sleeps; the first entry is the time from the release to the
+/// first edge of the answer). When no RMT channel is available it falls back to
+/// [`pulse_read_polled`].
+fn pulse_read(pin: i32, start_us: u32, count: usize) -> Vec<u16> {
+    // The channel first: making it reconfigures the pin, which must not happen mid-pulse.
+    if !super::pulse::prepare(pin) {
+        return pulse_read_polled(pin, start_us, count);
+    }
+    ow_low(pin);
+    wait_start(start_us);
+    let measured = super::pulse::measure(pin, count, &mut || {
+        ow_release(pin);
+    });
+    match measured {
+        Some(lengths) => lengths,
+        // The line is still low if the receiver could not be armed; the polled loop releases it.
+        None => pulse_read_polled_released(pin, count),
+    }
+}
+
+/// The start pulse: sleeps for a long one, busy-waits a short one.
+fn wait_start(start_us: u32) {
+    if start_us >= 1000 {
+        std::thread::sleep(std::time::Duration::from_micros(u64::from(start_us)));
+    } else {
+        delay_us(start_us);
+    }
+}
+
+/// The old implementation, kept as the fallback: start pulse, then the levels measured in a busy
+/// loop with interrupts off (a DHT22 answer takes about 5 ms).
+fn pulse_read_polled(pin: i32, start_us: u32, count: usize) -> Vec<u16> {
+    ow_low(pin);
+    wait_start(start_us);
+    pulse_read_polled_released(pin, count)
+}
+
+/// Releases the (low) line and measures `count` levels with interrupts off.
+fn pulse_read_polled_released(pin: i32, count: usize) -> Vec<u16> {
+    critical(|| {
+        ow_release(pin);
+        pulse_levels_loop(pin, count)
+    })
+}
+
+/// The busy loop alone, for the benchmark (`pulsebench`): the line is neither released nor driven.
+/// Interrupts are off for the whole measurement, as in the polled fallback.
+pub(super) fn pulse_measure_polled(pin: i32, count: usize) -> Vec<u16> {
+    critical(|| pulse_levels_loop(pin, count))
+}
+
+/// Measures up to `count` levels of the line as it is now (the caller turned interrupts off).
+fn pulse_levels_loop(pin: i32, count: usize) -> Vec<u16> {
+    // SAFETY: plain reads of the clock and the (claimed) pin.
+    let now = || unsafe { sys::esp_timer_get_time() };
+    let mut lengths = Vec::with_capacity(count);
+    let mut level = ow_level(pin);
+    let mut since = now();
+    while lengths.len() < count {
+        let t = now();
+        if ow_level(pin) != level {
+            lengths.push((t - since).clamp(0, i64::from(u16::MAX)) as u16);
+            level = !level;
+            since = t;
+        } else if t - since > PULSE_MAX_US {
+            break;
+        }
+    }
+    lengths
 }
 
 /// Copies `data` into the module; the byte count, or `ERR_ARGS` if the range is outside its memory.

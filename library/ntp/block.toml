@@ -19,6 +19,7 @@ description = "true, когда время получено с сервера (�
 name = "age"
 when = "out_age"
 type = "int"
+fast = true
 label = "Возраст"
 description = "Секунд с последней успешной синхронизации с сервером; -1, пока синхронизации не было"
 
@@ -40,6 +41,7 @@ description = "Минуты, 0–59"
 name = "second"
 when = "out_second"
 type = "int"
+fast = true
 label = "Секунды"
 description = "Секунды, 0–59"
 
@@ -75,6 +77,7 @@ description = "День недели: 1 понедельник … 7 воскр�
 name = "unix"
 when = "out_unix"
 type = "int"
+fast = true
 label = "Unix-время"
 description = "Секунды с 1 января 1970 (UTC)"
 

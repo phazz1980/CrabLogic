@@ -1,0 +1,6 @@
+[project]
+name = "run_hours"
+description = "Test project for the user block run_hours (block lives in library/run_hours)."
+
+[board]
+fqbn = "esp32:esp32:esp32"

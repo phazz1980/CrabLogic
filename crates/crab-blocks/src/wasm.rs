@@ -364,6 +364,9 @@ fn number_change(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
 /// Piecewise linear curve through the points of the text parameter, flat outside them.
 fn scale_table(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
     let points = crate::more::parse_points(&e.text_param(0)?);
+    if points.len() < 2 {
+        return Err("в таблице нужно не меньше двух точек «x:y»".into());
+    }
     let v = e.tmp(WTy::F);
     e.input_as(0, WTy::F);
     e.op(Instruction::LocalSet(v));

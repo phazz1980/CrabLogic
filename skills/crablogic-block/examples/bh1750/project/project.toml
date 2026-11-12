@@ -1,0 +1,6 @@
+[project]
+name = "bh1750"
+description = "Test project for the user block bh1750 (block lives in library/bh1750)."
+
+[board]
+fqbn = "esp32:esp32:esp32"

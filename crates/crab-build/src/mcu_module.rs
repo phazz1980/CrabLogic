@@ -375,6 +375,7 @@ fn cap_title(cap: &str) -> &str {
         "pcf_expander" => "расширители PCF8574/PCF8575",
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
+        "modbus" => "Modbus RTU/TCP",
         "abi4" => "модули нового формата (ABI 4)",
         "bus" => {
             "шины для драйверов (GPIO, I²C, SPI, UART, 1-Wire из block.wasm; только мастер на Rust)"

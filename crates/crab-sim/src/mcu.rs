@@ -75,6 +75,8 @@ pub struct StubIo {
     /// Registers of an I²C chip for `bus` op 23 (write the register number, read from it on):
     /// the read gives `i2c_regs[reg..]`. Writes (op 21) succeed while this is not empty.
     pub i2c_regs: Vec<u8>,
+    /// Level lengths, µs, a pulse measurement (`bus` op 65) gives; the answer is their count.
+    pub pulse_in: Vec<u16>,
     pub gpio_in: HashMap<i32, i32>,
     pub adc_in: HashMap<i32, i32>,
     pub gpio_out: HashMap<i32, i32>,
@@ -94,6 +96,8 @@ pub struct StubIo {
     pub retain: HashMap<i32, i32>,
     /// Texts kept "in flash" by `retain_text`, by key.
     pub retain_text: HashMap<i32, Vec<u8>>,
+    /// How many times the module wrote to "flash" (`retain` and `retain_text`, op 1).
+    pub retain_writes: u32,
     /// Modbus settings the module handed over, as `(code, value)` in order (the apply call is code 63).
     pub modbus_cfg: Vec<(i32, i32)>,
     /// What a Modbus read returns, by `(slave, table | kind << 4 | master << 8, register)`; the bits of an int or float.
@@ -346,6 +350,7 @@ impl Devices for StubIo {
                 self.retain.get(&a(1)).copied().unwrap_or(a(2))
             } else {
                 self.retain.insert(a(1), a(2));
+                self.retain_writes += 1;
                 1
             }),
             // `retain_text(op, key, ptr, n)`: 0 reads (the length, or -1 when nothing is kept), 1 writes.
@@ -370,6 +375,18 @@ impl StubIo {
             22 => {
                 let n = (call[3].max(0) as usize).min(self.i2c_in.len());
                 if mem.write(call[2], &self.i2c_in[..n]) {
+                    n as i32
+                } else {
+                    -4
+                }
+            }
+            65 => {
+                let n = (call[4].max(0) as usize).min(self.pulse_in.len());
+                let bytes: Vec<u8> = self.pulse_in[..n]
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                if mem.write(call[3], &bytes) {
                     n as i32
                 } else {
                     -4
@@ -408,6 +425,7 @@ impl StubIo {
                 return -1;
             };
             self.retain_text.insert(key, bytes);
+            self.retain_writes += 1;
             1
         }
     }

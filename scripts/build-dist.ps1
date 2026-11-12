@@ -1,6 +1,8 @@
 ﻿# Release build of CrabLogic and assembly of the distribution folder and archive.
 # Usage: build.cmd (double-click) or `powershell -File scripts\build-dist.ps1 [-NoZip] [-Release]`. `-Release` (for a published release) leaves out the build-time mark.
-param([switch]$NoZip, [switch]$WithCore, [switch]$Release)
+# `-BuildMaster` builds the Rust master for ESP32 and ESP32-C3 first (needs the esp toolchain);
+# without it the last built master images are copied into firmware\<chip>\.
+param([switch]$NoZip, [switch]$WithCore, [switch]$Release, [switch]$BuildMaster)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -135,6 +137,46 @@ if ($cli) {
     Write-Host 'Пропуск: arduino-cli.exe не найден (скачайте с github.com/arduino/arduino-cli/releases) — в архив он не попадёт.' -ForegroundColor Yellow
 }
 Copy-Item (Join-Path $PSScriptRoot 'dist-README.txt') (Join-Path $dist 'README.txt') -Force
+# AI instructions (skills, AGENTS.md/CLAUDE.md, Claude Code hooks, Cursor rules) and blocks_src\.
+& (Join-Path $PSScriptRoot 'copy-skills.ps1') -Dest $dist
+
+# Rust master images (crab-build/src/flash.rs): firmware\<chip>\ with the ELF, the partition table
+# and info.toml (version, MODCAPS).
+$masterDir = Join-Path $root 'firmware\master-rs'
+$masters = @(
+    @{ chip = 'esp32'; target = 'xtensa-esp32-espidf'; arch = 'xtensa-esp32' },
+    @{ chip = 'esp32c3'; target = 'riscv32imc-esp-espidf'; arch = 'rv32imc' }
+)
+if ($BuildMaster) {
+    Write-Host '== Сборка Rust-мастера ==' -ForegroundColor Cyan
+    Push-Location $masterDir
+    try {
+        & cargo build --release
+        if ($LASTEXITCODE -ne 0) { Fail 'мастер для ESP32-C3 не собран' }
+        $env:LIBCLANG_PATH = Join-Path $env:USERPROFILE '.rustup\toolchains\esp\xtensa-esp32-elf-clang\esp-clang\bin\libclang.dll'
+        & cargo +esp build --release --target xtensa-esp32-espidf
+        if ($LASTEXITCODE -ne 0) { Fail 'мастер для ESP32 не собран' }
+    } finally {
+        Pop-Location
+        $env:LIBCLANG_PATH = $null
+    }
+}
+$version = (Select-String -Path (Join-Path $masterDir 'Cargo.toml') -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+$boardSrc = Get-Content (Join-Path $masterDir 'src\board\mod.rs') -Raw
+foreach ($m in $masters) {
+    $elf = Join-Path $root ".m\$($m.target)\release\crab-master-rs"
+    $out = Join-Path $dist "firmware\$($m.chip)"
+    if (-not (Test-Path $elf)) {
+        Write-Host "Пропуск: мастер для $($m.chip) не собран ($elf) — запустите с -BuildMaster." -ForegroundColor Yellow
+        continue
+    }
+    New-Item -ItemType Directory -Force $out | Out-Null
+    Copy-Item $elf (Join-Path $out 'crab-master-rs.elf') -Force
+    Copy-Item (Join-Path $masterDir 'partitions.csv') $out -Force
+    $caps = [regex]::Match($boardSrc, 'const MODCAPS: &str = "([^"]*' + [regex]::Escape($m.arch) + ')"').Groups[1].Value
+    "version = `"$version`"`nmodcaps = `"$caps`"`n" | Set-Content -Encoding utf8 (Join-Path $out 'info.toml')
+    Write-Host "Мастер $($m.chip): $([math]::Round((Get-Item $elf).Length / 1MB, 1)) МБ (ELF)"
+}
 
 if (-not $NoZip) {
     Write-Host '== Архив dist\CrabLogic.zip ==' -ForegroundColor Cyan

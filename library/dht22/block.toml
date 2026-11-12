@@ -10,16 +10,21 @@ libraries = ["DHT sensor library", "Adafruit Unified Sensor"]
 
 [[output]]
 name = "temp"
+sim = 21.5
 type = "float"
+fast = true
 description = "Температура, °C"
 
 [[output]]
 name = "humidity"
+sim = 45.0
 type = "float"
+fast = true
 description = "Относительная влажность, %"
 
 [[output]]
 name = "ok"
+sim = true
 type = "bool"
 description = "true, если последнее чтение удалось"
 

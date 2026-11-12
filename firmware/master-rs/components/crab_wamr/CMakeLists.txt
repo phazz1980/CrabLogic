@@ -62,7 +62,7 @@ idf_component_register(
     "${CORE}/shared/platform/esp-idf"
     "${CORE}/shared/platform/include"
     "${CORE}/shared/platform/common/libc-util"
-  PRIV_REQUIRES pthread lwip esp_timer vfs freertos spi_flash)
+  PRIV_REQUIRES pthread lwip esp_timer vfs freertos spi_flash esp_mm log)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
   BH_PLATFORM_ESP_IDF

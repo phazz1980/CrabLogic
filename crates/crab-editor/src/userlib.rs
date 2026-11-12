@@ -346,7 +346,12 @@ fn tree(app: &EditorApp, ui: &mut Ui, selected: Option<&Selected>, actions: &mut
         .default_open(true)
         .show(ui, |ui| {
             folder_contents(app, ui, "", &folders, selected, actions);
-            if folders.is_empty() && app.lib.iter().all(|b| !app.lib.is_user(&b.def.info.kind)) {
+            if folders.is_empty()
+                && app
+                    .lib
+                    .iter()
+                    .all(|b| !in_user_library(app, &b.def.info.kind))
+            {
                 ui.weak(crate::i18n::tr(
                     "Пусто. Создайте раздел или блок кнопками выше, либо блок на основе \
                      встроенного: правая кнопка на нём во вкладке «Встроенные».",
@@ -399,7 +404,7 @@ fn folder_contents(
     let mut blocks: Vec<_> = app
         .lib
         .iter()
-        .filter(|b| app.lib.is_user(&b.def.info.kind) && b.def.info.group == path)
+        .filter(|b| in_user_library(app, &b.def.info.kind) && b.def.info.group == path)
         .collect();
     blocks.sort_by(|a, b| a.def.info.name.cmp(&b.def.info.name));
     let folders_all: Vec<String> = folders.iter().map(|f| (*f).to_owned()).collect();
@@ -425,7 +430,11 @@ fn found(
 ) {
     let folders: Vec<String> = app.lib.user_folders().map(str::to_owned).collect();
     let mut any = false;
-    for b in app.lib.iter().filter(|b| app.lib.is_user(&b.def.info.kind)) {
+    for b in app
+        .lib
+        .iter()
+        .filter(|b| in_user_library(app, &b.def.info.kind))
+    {
         let info = &b.def.info;
         let hay = format!("{} {} {}", info.kind, info.name, info.description).to_lowercase();
         if !hay.contains(needle) {
@@ -448,6 +457,12 @@ fn found(
     }
 }
 
+/// A block of `user_library/`; blocks that only came with the open project are listed in the
+/// «Блоки проекта» tab on the left.
+fn in_user_library(app: &EditorApp, kind: &str) -> bool {
+    app.lib.is_user(kind) && !app.lib.is_project(kind)
+}
+
 fn block_row(
     ui: &mut Ui,
     b: &crab_core::LibraryBlock,
@@ -458,13 +473,24 @@ fn block_row(
 ) {
     let kind = &b.def.info.kind;
     let is_sel = selected == Some(&Selected::Block(kind.clone()));
+    // A block with C++ code does not go to the board any more (`specs/rust-only`).
+    let cpp = crab_codegen::block_has_cpp(b);
+    let text = if cpp {
+        format!("⚠ {text}")
+    } else {
+        text.to_owned()
+    };
     let resp = crate::canvas::drag_source(
         ui,
         Id::unique(("lib", kind.as_str())),
         DragItem::Block(kind.clone()),
         |ui| ui.selectable_label(is_sel, text),
     );
-    let resp = resp.on_hover_text(&b.def.info.description);
+    let resp = if cpp {
+        resp.on_hover_text(crate::i18n::tr(crab_codegen::CPP_BLOCK_HINT))
+    } else {
+        resp.on_hover_text(&b.def.info.description)
+    };
     if resp.clicked() || resp.secondary_clicked() {
         actions.push(Action::Select(Selected::Block(kind.clone())));
     }

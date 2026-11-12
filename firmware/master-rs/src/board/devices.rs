@@ -1,8 +1,9 @@
-//! The hardware of the ESP32-C3 or the classic ESP32 as modules see it. So far: digital pins and the clock;
-//! the other imports answer 0 until their drivers move over from the C++ master.
+//! The hardware of the ESP32-C3 or the classic ESP32 as modules see it: digital, analog and PWM pins,
+//! the clock, driver buses and the network; the imports not done yet answer 0.
 
+use super::analog;
 use super::bus::Bus;
-use super::{eth, mqtt, net, sparkplug};
+use super::{eth, modbus, mqtt, net, pcf, retain, sparkplug, uart, web};
 use crab_kernel::abi::id;
 use crab_kernel::host::{Devices, Mem, Val};
 use crab_kernel::lease::{Fault, Hal, PinUse};
@@ -57,10 +58,42 @@ fn write_pin(pin: u8, high: bool) {
     }
 }
 
+/// Pins already set up as inputs (bit per pin), as for [`OUTPUTS`].
+static INPUTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+/// Bit 8 of the pin number of `gpio_read` asks for the internal pull-up.
+const PULLUP: i32 = 0x100;
+
+/// Level of `pin`; the first read sets it up as an input (with the pull-up if asked), unless a
+/// module drives it: then the level it is driven to is read, as `digitalRead` does.
+fn read_pin(pin: u8, pullup: bool) -> i32 {
+    if !readable(pin) {
+        return 0;
+    }
+    let (word, bit) = (usize::from(pin / 32), 1u32 << (pin % 32));
+    let output = OUTPUTS[word].load(Ordering::Relaxed) & bit != 0;
+    // SAFETY: the pin number was checked; the calls only change this pin.
+    unsafe {
+        if !output && INPUTS[word].fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+            #[cfg(not(target_arch = "riscv32"))]
+            sys::gpio_reset_pin(pin as i32);
+            sys::gpio_set_direction(pin as i32, sys::gpio_mode_t_GPIO_MODE_INPUT);
+            let pull = if pullup {
+                sys::gpio_pull_mode_t_GPIO_PULLUP_ONLY
+            } else {
+                sys::gpio_pull_mode_t_GPIO_FLOATING
+            };
+            sys::gpio_set_pull_mode(pin as i32, pull);
+        }
+        sys::gpio_get_level(pin as i32)
+    }
+}
+
 /// The pin is set up again at the next write (a driver block reconfigured it through `crab.bus`).
 pub fn forget_output(pin: i32) {
     if (0..64).contains(&pin) {
         OUTPUTS[pin as usize / 32].fetch_and(!(1u32 << (pin % 32)), Ordering::Relaxed);
+        INPUTS[pin as usize / 32].fetch_and(!(1u32 << (pin % 32)), Ordering::Relaxed);
     }
 }
 
@@ -91,8 +124,12 @@ pub fn out_register() -> u32 {
 pub struct BoardHal;
 
 impl Hal for BoardHal {
-    fn safe(&self, pin: u8, _use: PinUse, fault: Fault) {
-        write_pin(pin, fault == Fault::High);
+    fn safe(&self, pin: u8, use_: PinUse, fault: Fault) {
+        let high = fault == Fault::High;
+        if use_ == PinUse::Pwm && analog::pwm_safe(pin, high) {
+            return;
+        }
+        write_pin(pin, high);
     }
 }
 
@@ -116,14 +153,23 @@ impl Devices for BoardDevices {
                 write_pin((a(0) & 0xFF) as u8, a(1) != 0);
                 None
             }
-            id::GPIO_READ => {
+            id::GPIO_READ => Some(Val::I32(read_pin((a(0) & 0xFF) as u8, a(0) & PULLUP != 0))),
+            id::ADC_READ => {
                 let pin = (a(0) & 0xFF) as u8;
-                // SAFETY: the pin number is checked first.
                 Some(Val::I32(if readable(pin) {
-                    unsafe { sys::gpio_get_level(pin as i32) }
+                    analog::adc_read(pin)
                 } else {
                     0
                 }))
+            }
+            id::PWM_WRITE => {
+                let pin = (a(0) & 0xFF) as u8;
+                if usable(pin) {
+                    // LEDC takes the pin over: a later `gpio_write` sets it up again.
+                    forget_output(i32::from(pin));
+                    analog::pwm_write(pin, a(1));
+                }
+                None
             }
             id::MILLIS => Some(Val::I32(millis())),
             id::BUS => {
@@ -134,6 +180,24 @@ impl Devices for BoardDevices {
                     &mut mem,
                 )))
             }
+            id::PCF_READ => Some(Val::I32(pcf::read(a(0), a(1), a(2)))),
+            id::PCF_WRITE => Some(Val::I32(pcf::write(a(0), a(1)))),
+            id::UART => {
+                let mut mem = mem;
+                Some(Val::I32(uart::call(a(0), a(1), a(2), a(3), &mut mem)))
+            }
+            id::RETAIN => Some(Val::I32(retain::retain(a(0), a(1), a(2)))),
+            id::MODBUS => Some(Val::I32(modbus::call(a(0), a(1), a(2), a(3), a(4)))),
+            id::RETAIN_TEXT => {
+                let mut mem = mem;
+                Some(Val::I32(retain::retain_text(
+                    a(0),
+                    a(1),
+                    a(2),
+                    a(3),
+                    &mut mem,
+                )))
+            }
             id::NET => {
                 let mut mem = mem;
                 let op = a(0);
@@ -141,6 +205,8 @@ impl Devices for BoardDevices {
                     eth::call(op, a(1), a(2), a(3), &mut mem)
                 } else if (9..=16).contains(&op) {
                     mqtt::call(op, a(1), a(2), a(3), a(4), &mut mem)
+                } else if (17..=24).contains(&op) {
+                    web::call(op, a(1), a(2), a(3), a(4), &mut mem)
                 } else if (30..=33).contains(&op) {
                     sparkplug::call(op, a(1), a(2), a(3), &mut mem)
                 } else {

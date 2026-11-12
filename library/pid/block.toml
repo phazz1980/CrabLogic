@@ -25,6 +25,7 @@ default = true
 [[output]]
 name = "out"
 type = "float"
+fast = true
 
 [[param]]
 name = "kp"

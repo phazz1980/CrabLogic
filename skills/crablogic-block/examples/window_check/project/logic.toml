@@ -1,0 +1,41 @@
+[[block]]
+id = "sensor"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "win"
+type = "window_check"
+low = 1000.0
+high = 3000.0
+
+[[block]]
+id = "led_in"
+type = "digital_out"
+pin = 2
+
+[[block]]
+id = "led_above"
+type = "digital_out"
+pin = 4
+
+[[block]]
+id = "led_below"
+type = "digital_out"
+pin = 5
+
+[[link]]
+from = "sensor.out"
+to = "win.value"
+
+[[link]]
+from = "win.inside"
+to = "led_in.in"
+
+[[link]]
+from = "win.above"
+to = "led_above.in"
+
+[[link]]
+from = "win.below"
+to = "led_below.in"

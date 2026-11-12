@@ -1,0 +1,6 @@
+[project]
+name = "window_check"
+description = "Test project for the user block window_check (block lives in library/window_check)."
+
+[board]
+fqbn = "esp32:esp32:esp32"

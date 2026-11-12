@@ -218,6 +218,7 @@ fn spi_and_onewire_calls_reach_the_master() {
               (import "bus" "ow_read" (func $orr (param i32 i32 i32) (result i32)))
               (import "bus" "ow_read_bit" (func $orb (param i32) (result i32)))
               (import "bus" "ow_write_bit" (func $owb (param i32 i32) (result i32)))
+              (import "bus" "pulse_read" (func $pr (param i32 i32 i32 i32) (result i32)))
               (memory 1)
               (global i32 (i32.const 256))
               (export "__heap_base" (global 0))
@@ -228,7 +229,8 @@ fn spi_and_onewire_calls_reach_the_master() {
                 (drop (call $ow (i32.const 4) (i32.const 40) (i32.const 2)))
                 (drop (call $orr (i32.const 4) (i32.const 48) (i32.const 9)))
                 (drop (call $orb (i32.const 4)))
-                (drop (call $owb (i32.const 4) (i32.const 1)))))"#,
+                (drop (call $owb (i32.const 4) (i32.const 1)))
+                (drop (call $pr (i32.const 4) (i32.const 1100) (i32.const 64) (i32.const 84)))))"#,
         )
         .unwrap(),
     )
@@ -261,6 +263,7 @@ fn spi_and_onewire_calls_reach_the_master() {
             [62, 4, base + 48, 9, 0],
             [63, 4, 0, 0, 0],
             [64, 4, 1, 0, 0],
+            [65, 4, 1100, base + 64, 84],
         ]
     );
     let _ = std::fs::remove_dir_all(&root);

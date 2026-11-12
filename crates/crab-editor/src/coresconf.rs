@@ -32,11 +32,6 @@ impl CoresConf {
         self.open = true;
     }
 
-    /// A core download is running (also with the window closed).
-    pub fn downloading(&self) -> bool {
-        self.job.is_some()
-    }
-
     fn refresh(&mut self) {
         self.status = cores::PACKS.iter().map(cores::is_installed).collect();
     }

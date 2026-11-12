@@ -1,0 +1,47 @@
+[block]
+type = "run_hours"
+name = "Моточасы"
+symbol = "MCH"
+group = "Счётчики"
+description = "Считает время работы (пока run истинен) в часах и число запусков; service включается, когда наработка достигла limit. Пример блока на WASM с памятью."
+memory = true
+
+[[input]]
+name = "run"
+label = "Работа"
+type = "bool"
+default = false
+description = "Оборудование работает"
+
+[[input]]
+name = "reset"
+label = "Сброс"
+type = "bool"
+default = false
+description = "Обнулить наработку и число запусков"
+
+[[output]]
+name = "hours"
+label = "Часы"
+type = "float"
+description = "Наработка, ч"
+
+[[output]]
+name = "starts"
+label = "Запуски"
+type = "int"
+description = "Число запусков (фронтов run)"
+
+[[output]]
+name = "service"
+label = "Обслуживание"
+type = "bool"
+description = "hours >= limit"
+
+[[param]]
+name = "limit"
+label = "Лимит, ч"
+type = "float"
+default = 1000.0
+min = 0.0
+description = "Наработка, после которой включается service"

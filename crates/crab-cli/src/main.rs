@@ -3,12 +3,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod audit;
+
 use clap::{Parser, Subcommand};
 use crab_build::upload_plan::{self, SheetModule, StopReport, UploadReport};
 use crab_build::{ArduinoCli, BuildMode, CompileOptions, Compiled};
 use crab_codegen::{ArduinoCpp, Backend, GenError, Program};
 use crab_core::logic::SheetSpeed;
-use crab_core::{check_project, Diagnostic, Library, LocalValues, Project, Severity};
+use crab_core::{Diagnostic, Library, LocalValues, Project, Severity};
 
 /// Exit code when the schema has errors.
 const EXIT_SCHEMA_ERRORS: u8 = 1;
@@ -145,6 +147,31 @@ enum Command {
         #[arg(long, short)]
         port: Option<String>,
     },
+    /// Временная: что из библиотеки и примеров ещё не собирается модулями для мастера на Rust
+    AuditRust {
+        /// Папка примеров (по умолчанию examples рядом с библиотекой)
+        #[arg(long)]
+        examples: Option<PathBuf>,
+    },
+    /// Записать на плату мастер-прошивку (Rust) из папки firmware дистрибутива
+    FlashMaster {
+        /// Файл проекта .crab: плата берётся из него (иначе нужен --chip)
+        project: Option<PathBuf>,
+        /// Чип платы: esp32 или esp32c3 (вместо проекта)
+        #[arg(long)]
+        chip: Option<String>,
+        /// Порт платы, например COM3 (по умолчанию единственный найденный)
+        #[arg(long, short)]
+        port: Option<String>,
+        /// Папка с образами мастера (по умолчанию firmware рядом с программой)
+        #[arg(long)]
+        firmware: Option<PathBuf>,
+    },
+    /// Свои платы (контроллеры): проверка папки платы
+    Board {
+        #[command(subcommand)]
+        action: BoardAction,
+    },
     /// Наборы пользовательских блоков: список, экспорт и импорт файлом .crabblocks
     Block {
         #[command(subcommand)]
@@ -162,6 +189,11 @@ enum Command {
 enum BlockAction {
     /// Показать наборы и блоки пользовательской библиотеки
     List,
+    /// Проверить папку одного блока (block.toml, block.wasm, docs.md)
+    Check {
+        /// Папка блока, например user_library/Мои блоки/my_block
+        dir: PathBuf,
+    },
     /// Сохранить набор блоков в файл
     Export {
         /// Имя набора (папка в `user_library/`), например `Мои блоки`
@@ -179,7 +211,30 @@ enum BlockAction {
     },
 }
 
+#[derive(Subcommand)]
+enum BoardAction {
+    /// Проверить папку платы (board.toml): формат, выводы чипа, периферию, поддержку мастером на Rust
+    Check {
+        /// Папка платы, например user_library/boards/my_board
+        dir: PathBuf,
+    },
+}
+
 fn main() -> ExitCode {
+    let code = run();
+    // The project's own blocks were only needed while the command ran.
+    let _ = std::fs::remove_dir_all(session_blocks_dir());
+    code
+}
+
+/// Session folder of the blocks a project brings (see `load_library`).
+fn session_blocks_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join("crablogic_cli_blocks")
+        .join(std::process::id().to_string())
+}
+
+fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { project } => run_check(&project, cli.library.as_deref()),
@@ -252,12 +307,88 @@ fn main() -> ExitCode {
                 allow_stop,
             },
         ),
+        Command::AuditRust { examples } => run_audit(cli.library.as_deref(), examples),
+        Command::FlashMaster {
+            project,
+            chip,
+            port,
+            firmware,
+        } => match run_flash_master(project.as_deref(), chip.as_deref(), port, firmware) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("ошибка: {e}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Board {
+            action: BoardAction::Check { dir },
+        } => run_board_check(&dir, cli.library.as_deref()),
         Command::Block { action } => run_block(action, cli.library.as_deref()),
         Command::Convert { project } => run_convert(&project, cli.library.as_deref()),
     }
 }
 
+/// `block check`: one block folder with every problem named and a hint how to fix it.
+fn run_block_check(dir: &Path, library: Option<&Path>) -> ExitCode {
+    let here = Path::new(".");
+    let Some(lib_dir) = library
+        .map(Path::to_path_buf)
+        .or_else(|| find_library(here))
+    else {
+        eprintln!(
+            "ошибка: не найдена папка библиотеки блоков `library/`; укажите её через --library"
+        );
+        return ExitCode::FAILURE;
+    };
+    let lib = match Library::load_with_user(&lib_dir) {
+        Ok((lib, _)) => lib,
+        Err(e) => {
+            eprintln!("ошибка: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let check = crab_codegen::check_block(dir, &lib);
+    let mut errors = 0;
+    for d in &check.diags {
+        let word = if d.severity == Severity::Error {
+            errors += 1;
+            "ошибка"
+        } else {
+            "предупреждение"
+        };
+        println!("{word} [{}]: {}", d.code, d.message);
+        println!("  → {}", d.hint);
+    }
+    if let Some(kind) = &check.kind {
+        let mut line = format!(
+            "Блок «{kind}» ({})",
+            if check.driver {
+                "драйвер"
+            } else {
+                "логика"
+            }
+        );
+        if let Some(n) = check.wasm_bytes {
+            line.push_str(&format!(": block.wasm {n} байт"));
+        }
+        if let Some(n) = check.module_bytes {
+            line.push_str(&format!(", модуль листа {n} байт"));
+        }
+        println!("{line}");
+    }
+    if errors == 0 {
+        println!("Ошибок нет");
+        ExitCode::SUCCESS
+    } else {
+        println!("Ошибок — {errors}");
+        ExitCode::from(EXIT_SCHEMA_ERRORS)
+    }
+}
+
 fn run_block(action: BlockAction, library: Option<&Path>) -> ExitCode {
+    if let BlockAction::Check { dir } = &action {
+        return run_block_check(dir, library);
+    }
     use crab_core::pack::{self, PackImport};
     let here = Path::new(".");
     let Some(dir) = library
@@ -278,6 +409,7 @@ fn run_block(action: BlockAction, library: Option<&Path>) -> ExitCode {
     };
     let user = crab_core::user_library_dir(&dir);
     let result = match action {
+        BlockAction::Check { .. } => unreachable!("handled above"),
         BlockAction::List => {
             for (folder, info) in pack::list(&user) {
                 println!("{folder} · версия {} · {}", info.version, info.description);
@@ -354,7 +486,7 @@ fn run_check(project_dir: &Path, library: Option<&Path>) -> ExitCode {
         Err(code) => return code,
     };
 
-    let report = check_project(&project, &lib);
+    let report = crab_codegen::check_project(&project, &lib);
     print_diagnostics(&report.diagnostics);
 
     let errors = report.errors().count();
@@ -629,6 +761,159 @@ fn push_module(
 
 /// Opens the serial port of the board (the only found one if `port` is not given) without
 /// resetting it. Returns the port and its name.
+/// `board check`: one board folder with every problem named (a broken board is otherwise only
+/// skipped by the library, and its blocks show up as unknown types).
+fn run_board_check(dir: &Path, library: Option<&Path>) -> ExitCode {
+    use crab_core::boards::{Boards, UserBoard};
+    let board = match UserBoard::load(dir) {
+        Ok(board) => board,
+        Err(e) => {
+            eprintln!("ошибка: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut bad = 0;
+    let info = &board.def.info;
+    if crab_build::flash::MasterChip::of_fqbn(&info.fqbn).is_none() {
+        eprintln!(
+            "ошибка: мастер на Rust есть только для ESP32 и ESP32-C3, а FQBN «{}» — другой чип",
+            info.fqbn
+        );
+        bad += 1;
+    }
+    if !info.options.is_empty() {
+        eprintln!(
+            "предупреждение: [board.options] ({}) нужны только сборке скетча Arduino — мастер на Rust их не читает, уберите",
+            info.options.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    // Device blocks are made from built-in blocks: an unknown `kind` or a bad parameter shows here.
+    let here = std::env::current_dir().unwrap_or_default();
+    match library
+        .map(Path::to_path_buf)
+        .or_else(|| find_library(&here))
+        .map(Library::load)
+    {
+        Some(Ok((mut lib, _))) => {
+            let mut boards = Boards::default();
+            boards.insert(board.clone());
+            for e in lib.set_boards(boards) {
+                eprintln!("ошибка: {e}");
+                bad += 1;
+            }
+            for dev in &board.def.devices {
+                let kind = format!("{}_{}", info.id, dev.id);
+                if lib.get(&kind).is_some() {
+                    println!(
+                        "блок периферии: {kind} («{}: {}», каналов {})",
+                        info.name,
+                        dev.name,
+                        dev.channels.len()
+                    );
+                }
+            }
+        }
+        _ => {
+            eprintln!(
+                "предупреждение: библиотека блоков не найдена (--library): периферия не проверена"
+            );
+        }
+    }
+    println!(
+        "Плата «{}» ({}, {}): выводов {}, выводов расширителей {}, устройств {}",
+        info.name,
+        info.id,
+        info.chip,
+        board.def.pins.len(),
+        board.def.expander_pins.len(),
+        board.def.devices.len()
+    );
+    if !board.dir.join("docs.md").is_file() {
+        println!("предупреждение: нет docs.md с описанием платы");
+    }
+    if bad == 0 {
+        println!("Ошибок нет");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `audit-rust`: prints a line per block and example; exit code 1 when anything does not go.
+fn run_audit(library: Option<&Path>, examples: Option<PathBuf>) -> ExitCode {
+    let here = std::env::current_dir().unwrap_or_default();
+    let Some(lib_dir) = library
+        .map(Path::to_path_buf)
+        .or_else(|| find_library(&here))
+    else {
+        eprintln!(
+            "ошибка: не найдена папка библиотеки блоков `library/`; укажите её через --library"
+        );
+        return ExitCode::from(EXIT_LOAD_FAILED);
+    };
+    let lib = match Library::load(&lib_dir) {
+        Ok((lib, _)) => lib,
+        Err(e) => {
+            eprintln!("ошибка: {e}");
+            return ExitCode::from(EXIT_LOAD_FAILED);
+        }
+    };
+    let caps = audit::master_caps();
+    let examples = examples.unwrap_or_else(|| {
+        lib_dir
+            .parent()
+            .map_or_else(|| PathBuf::from("examples"), |p| p.join("examples"))
+    });
+    let mut bad = 0;
+    for (title, rows) in [
+        ("Блоки", audit::audit_blocks(&lib, &caps)),
+        ("Примеры", audit::audit_examples(&examples, &lib, &caps)),
+    ] {
+        println!("== {title} ==");
+        for row in rows {
+            if row.verdict != audit::Verdict::Ok {
+                bad += 1;
+            }
+            println!("{}", row.line());
+        }
+    }
+    println!("Не идут на мастер на Rust: {bad}");
+    if bad == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `flash-master`: the prebuilt Rust master for the board of the project (or `--chip`).
+fn run_flash_master(
+    project: Option<&Path>,
+    chip: Option<&str>,
+    port: Option<String>,
+    firmware: Option<PathBuf>,
+) -> Result<(), String> {
+    use crab_build::flash;
+    let fqbn = match (project, chip) {
+        (_, Some(chip)) => format!("esp32:esp32:{chip}"),
+        (Some(project), None) => Project::load(project)
+            .map_err(|e| e.to_string())?
+            .config
+            .board
+            .fqbn
+            .clone(),
+        (None, None) => return Err("укажите проект или --chip esp32 / esp32c3".into()),
+    };
+    let dir = firmware
+        .or_else(flash::firmware_dir)
+        .ok_or("не найдена папка firmware с образами мастера (укажите --firmware)")?;
+    let image = flash::find_image(&dir, &fqbn).map_err(|e| e.to_string())?;
+    let port = match port {
+        Some(port) => port,
+        None => flash::single_usb_port().map_err(|e| e.to_string())?,
+    };
+    flash::flash_master(&image, &port, &mut |line| println!("{line}")).map_err(|e| e.to_string())
+}
+
 fn open_master_port(
     port: Option<String>,
 ) -> Result<(Box<dyn serialport::SerialPort>, String), String> {
@@ -1137,26 +1422,26 @@ fn load_library(project_dir: &Path, explicit: Option<&Path>) -> Option<Library> 
         );
         return None;
     };
-    // User blocks packed into the project file but missing here are restored first;
-    // a project folder (old format) may bring a board of its own.
+    // A board packed into the project file but missing here is installed (the library has to
+    // know it); the project's own blocks are only loaded for this run, the user library keeps
+    // what it had.
     if crab_core::project::is_project_file(project_dir) || project_dir.is_dir() {
-        if let Ok((mut lib, _)) = Library::load_with_user(&dir) {
+        if let Ok((lib, _)) = Library::load_with_user(&dir) {
             let user = crab_core::user_library_dir(&dir);
             let boards = crab_core::packed::unpack_missing_boards(project_dir, &user, &lib);
             if !boards.is_empty() {
                 println!("из проекта добавлена плата: {}", boards.join(", "));
-                if let Ok((reloaded, _)) = Library::load_with_user(&dir) {
-                    lib = reloaded;
-                }
-            }
-            let written = crab_core::packed::unpack_missing_blocks(project_dir, &user, &lib);
-            if !written.is_empty() {
-                println!("из проекта добавлены блоки: {}", written.join(", "));
             }
         }
     }
     match Library::load_with_user(&dir) {
-        Ok((lib, errors)) => {
+        Ok((mut lib, mut errors)) => {
+            let (kinds, more) =
+                crab_core::packed::add_project_blocks(project_dir, &session_blocks_dir(), &mut lib);
+            errors.extend(more);
+            if !kinds.is_empty() {
+                println!("блоки проекта: {}", kinds.join(", "));
+            }
             for e in errors {
                 println!("предупреждение: блок пропущен: {e}");
             }
@@ -1170,6 +1455,7 @@ fn load_library(project_dir: &Path, explicit: Option<&Path>) -> Option<Library> 
 }
 
 /// Looks for `library/` in the project folder and its parents, then next to the executable.
+/// The `library/` of a project folder holds that project's own blocks, not the library.
 fn find_library(project_dir: &Path) -> Option<PathBuf> {
     let project_dir = std::path::absolute(project_dir).ok();
     let exe_dir = std::env::current_exe()
@@ -1184,7 +1470,12 @@ fn find_library(project_dir: &Path) -> Option<PathBuf> {
                 .map(|a| a.join("library"))
                 .collect::<Vec<_>>()
         })
-        .find(|dir| dir.is_dir())
+        .find(|dir| {
+            let own = dir
+                .parent()
+                .is_some_and(|p| p.join(crab_core::project::PROJECT_FILE).is_file());
+            dir.is_dir() && !own
+        })
 }
 
 #[cfg(test)]

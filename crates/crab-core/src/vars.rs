@@ -188,6 +188,14 @@ pub struct Var {
     /// the user's variables.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub service: bool,
+    /// Seconds without changes before a retained value is written to flash; the
+    /// project's `[retain]` value when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_s: Option<u32>,
+    /// Minimum seconds between flash writes of a retained value (0 = no limit); the
+    /// project's `[retain]` value when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_s: Option<u32>,
 }
 
 impl Logic {
@@ -285,6 +293,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                 label: None,
                 description: String::new(),
                 sim: None,
+                fast: false,
             };
             let def = BlockDef {
                 info: BlockInfo {
@@ -330,6 +339,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                             label: None,
                             description: "Разрешение записи".to_owned(),
                             sim: None,
+                            fast: false,
                         },
                     ],
                 },

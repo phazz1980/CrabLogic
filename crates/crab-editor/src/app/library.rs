@@ -17,9 +17,17 @@ impl EditorApp {
             return;
         };
         match Library::load_with_user(&dir) {
-            Ok((lib, errors)) => {
+            Ok((mut lib, mut errors)) => {
+                // Blocks of the open project that are not in the user library.
+                if let Some(session) = &self.project_blocks {
+                    match lib.add_project_dir(session) {
+                        Ok(e) => errors.extend(e),
+                        Err(e) => errors.push(e),
+                    }
+                }
                 let user = lib.iter().filter(|b| lib.is_user(&b.def.info.kind)).count();
                 let builtin = lib.len() - user;
+                let user = user - lib.project_blocks().count();
                 self.lib = lib;
                 if let Some(help) = &mut self.help {
                     help.blocks_dirty = true;
@@ -112,9 +120,14 @@ impl EditorApp {
         }
     }
 
-    /// User blocks packed into the project file but missing on this computer are put into
-    /// `user_library/` before the project is checked.
+    /// Boards packed into the project file but missing on this computer are put into
+    /// `user_library/`; user blocks missing here go into a session folder: they work while the
+    /// project is open and show in the «Блоки проекта» tab, but stay out of the user library
+    /// until saved there ([`EditorApp::save_project_block`]).
     pub(super) fn restore_packed_blocks(&mut self, path: &Path) {
+        if self.clear_project_blocks() {
+            self.reload_library();
+        }
         let Some(dir) = self.user_lib_dir() else {
             return;
         };
@@ -130,16 +143,55 @@ impl EditorApp {
             );
             self.reload_library();
         }
-        let written = crab_core::packed::unpack_missing_blocks(path, &dir, &self.lib);
+        let session = session_blocks_dir();
+        let (written, _) = crab_core::packed::add_project_blocks(path, &session, &mut self.lib);
         if !written.is_empty() {
+            self.project_blocks = Some(session);
             self.info(
                 LogLevel::Info,
                 crate::i18n::msg(
-                    "Из проекта добавлены пользовательские блоки: {0}",
+                    "Блоки проекта, которых нет в библиотеке: {0} (вкладка «Блоки проекта»)",
                     &[&written.join(", ")],
                 ),
             );
+            // Problems of single blocks are reported by the reload.
             self.reload_library();
+        }
+    }
+
+    /// Deletes the session folder of the project blocks; `true` if there was one.
+    pub(super) fn clear_project_blocks(&mut self) -> bool {
+        match self.project_blocks.take() {
+            Some(dir) => {
+                let _ = fs::remove_dir_all(dir);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Copies the project block `kind` into the user library, at its section and folder.
+    pub fn save_project_block(&mut self, kind: &str) {
+        let Some(user) = self.user_lib_dir() else {
+            return;
+        };
+        let Some(block) = self.lib.get(kind).filter(|_| self.lib.is_project(kind)) else {
+            return;
+        };
+        let (from, group) = (block.dir.clone(), block.def.info.group.clone());
+        match crab_core::packed::save_block_to_library(&from, &user, &group) {
+            Ok(_) => {
+                let _ = fs::remove_dir_all(&from);
+                self.info(
+                    LogLevel::Ok,
+                    crate::i18n::msg("Блок «{0}» сохранён в библиотеку", &[&kind]),
+                );
+                self.reload_library();
+            }
+            Err(e) => self.info(
+                LogLevel::Error,
+                crate::i18n::msg("Блок «{0}» не сохранён в библиотеку: {1}", &[&kind, &e]),
+            ),
         }
     }
 
@@ -351,6 +403,27 @@ impl EditorApp {
     }
 }
 
+/// Session folder of the project blocks of this editor process. Folders left by editors that
+/// did not close normally are removed after a day.
+pub(super) fn session_blocks_dir() -> PathBuf {
+    let root = std::env::temp_dir().join("crablogic_project_blocks");
+    let own = std::process::id().to_string();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for e in entries.flatten() {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(24 * 3600));
+            if old && e.file_name() != own.as_str() {
+                let _ = fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    root.join(own)
+}
+
 /// `library/` next to the project (or its parents), next to the executable, or `CRAB_LIBRARY`.
 pub(super) fn find_library(project: Option<&Path>) -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("CRAB_LIBRARY") {
@@ -367,7 +440,13 @@ pub(super) fn find_library(project: Option<&Path>) -> Option<PathBuf> {
         .into_iter()
         .flatten()
         .flat_map(|s| s.ancestors().map(|a| a.join("library")).collect::<Vec<_>>())
-        .find(|d| d.is_dir())
+        // The `library/` of a project folder holds that project's own blocks.
+        .find(|d| {
+            let own = d
+                .parent()
+                .is_some_and(|p| p.join(crab_core::project::PROJECT_FILE).is_file());
+            d.is_dir() && !own
+        })
 }
 
 /// Change stamp of the built-in and user block folders.

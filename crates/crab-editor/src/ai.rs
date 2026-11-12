@@ -80,6 +80,7 @@ impl AiChat {
         project: &Project,
         lib: &Library,
         lib_dir: Option<PathBuf>,
+        project_blocks: Option<PathBuf>,
         live: SharedLive,
         ctx: &egui::Context,
     ) {
@@ -102,6 +103,7 @@ impl AiChat {
             project: project.clone(),
             lib: lib.clone(),
             lib_dir: lib_dir.unwrap_or_else(|| PathBuf::from("library")),
+            project_blocks,
             live,
             tx: tx.clone(),
             wake: ctx.clone(),
@@ -223,6 +225,8 @@ struct WorkerContext {
     project: Project,
     lib: Library,
     lib_dir: PathBuf,
+    /// Session folder of the open project's own blocks, loaded along with the library.
+    project_blocks: Option<PathBuf>,
     live: SharedLive,
     tx: Sender<Msg>,
     wake: egui::Context,
@@ -277,7 +281,11 @@ impl Context for WorkerContext {
     }
 
     fn reload_library(&mut self) -> Result<(), String> {
-        let (lib, errors) = Library::load_with_user(&self.lib_dir).map_err(|e| e.to_string())?;
+        let (mut lib, mut errors) =
+            Library::load_with_user(&self.lib_dir).map_err(|e| e.to_string())?;
+        if let Some(dir) = &self.project_blocks {
+            errors.extend(lib.add_project_dir(dir).map_err(|e| e.to_string())?);
+        }
         self.lib = lib;
         let _ = self.tx.send(Msg::ReloadLibrary);
         match errors.first() {

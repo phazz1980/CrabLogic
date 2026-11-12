@@ -35,6 +35,7 @@ mod user_block;
 mod web;
 use block_emit::BlockEmit;
 use text::{Buf, A, MEM_START, STR_CAP};
+pub(crate) use user_block::inspect_block_wasm;
 
 /// Custom section with the bytes of memory a module needs (u32, little-endian); 0 without memory.
 pub const MEM_SECTION: &str = "crab.mem";
@@ -121,7 +122,7 @@ const F_LOCAL_BASE: u32 = 1000;
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 11] = [
+pub const MASTER_CAPS: [&str; 12] = [
     "math",
     "retain",
     "tag_text",
@@ -135,6 +136,8 @@ pub const MASTER_CAPS: [&str; 11] = [
     "abi4",
     // Bus functions of driver blocks (`specs/wasm-drivers`).
     "bus",
+    // Modbus RTU/TCP of the Rust master (`specs/rust-only`).
+    "modbus",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
@@ -213,8 +216,18 @@ struct RetainedText {
     buf: Buf,
     /// The last text known to be in flash.
     saved: Buf,
-    /// Time of the last check.
-    last: u32,
+    /// The text of the previous scan: a difference restarts the settle time.
+    prev: Buf,
+    /// Time of the last change of the text.
+    changed_at: u32,
+    /// Time the text last started to differ from the one in flash.
+    dirty_at: u32,
+    /// Time of the last write to flash (at start: `now - period`).
+    written_at: u32,
+    /// Milliseconds the text must stay unchanged before it is written.
+    settle: i32,
+    /// Minimum milliseconds between two writes; 0 = no limit.
+    period: i32,
 }
 
 /// A variable kept in flash by the master (`retain`).
@@ -229,8 +242,18 @@ struct Retained {
     default: i32,
     /// The last value known to be in flash, as bits.
     saved: u32,
-    /// Time of the last check.
-    last: u32,
+    /// The value of the previous scan, as bits: a difference restarts the settle time.
+    prev: u32,
+    /// Time of the last change of the value.
+    changed_at: u32,
+    /// Time the value last started to differ from the one in flash.
+    dirty_at: u32,
+    /// Time of the last write to flash (at start: `now - period`).
+    written_at: u32,
+    /// Milliseconds the value must stay unchanged before it is written.
+    settle: i32,
+    /// Minimum milliseconds between two writes; 0 = no limit.
+    period: i32,
 }
 
 struct Global {
@@ -1283,6 +1306,19 @@ impl<'a, 'p> Emitter<'a, 'p> {
             init.instruction(&I::I32Const(0));
             init.instruction(&I::Call(target(HW_TEXT)));
             init.instruction(&I::GlobalSet(r.saved.len));
+            for v in [1, r.prev.ptr as i32, r.prev.cap as i32, r.buf.ptr as i32] {
+                init.instruction(&I::I32Const(v));
+            }
+            init.instruction(&I::GlobalGet(r.buf.len));
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::I32Const(0));
+            init.instruction(&I::Call(target(HW_TEXT)));
+            init.instruction(&I::GlobalSet(r.prev.len));
+            // The first settled change may be written at once.
+            init.instruction(&I::GlobalGet(GLOBAL_NOW));
+            init.instruction(&I::I32Const(r.period));
+            init.instruction(&I::I32Sub);
+            init.instruction(&I::GlobalSet(r.written_at));
         }
         for r in &self.retained {
             // The value kept in flash (or the initial one) goes where the variable lives.
@@ -1292,6 +1328,12 @@ impl<'a, 'p> Emitter<'a, 'p> {
             init.instruction(&I::Call(target(HW_RETAIN)));
             init.instruction(&I::LocalTee(0));
             init.instruction(&I::GlobalSet(r.saved));
+            init.instruction(&I::LocalGet(0));
+            init.instruction(&I::GlobalSet(r.prev));
+            init.instruction(&I::GlobalGet(GLOBAL_NOW));
+            init.instruction(&I::I32Const(r.period));
+            init.instruction(&I::I32Sub);
+            init.instruction(&I::GlobalSet(r.written_at));
             match r.tag {
                 Some(n) => {
                     init.instruction(&I::I32Const(n as i32));

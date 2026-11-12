@@ -17,8 +17,8 @@ use crab_core::expander::taken_pins;
 use crab_core::library::{BLOCK_FILE, DOCS_FILE, ESP32_CPP_TEMPLATE};
 use crab_core::pins::{pin_uses, BoardLayout};
 use crab_core::{
-    check_project, BlockPos, Expander, ExpanderChip, Library, LibraryBlock, LocalValues,
-    ParamValue, PortRef, Project, Severity, Var, VarType,
+    BlockPos, Expander, ExpanderChip, Library, LibraryBlock, LocalValues, ParamValue, PortRef,
+    Project, Severity, Var, VarType,
 };
 use serde_json::{json, Map, Value};
 
@@ -525,6 +525,8 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
                     .to_owned(),
                 retain: args.get("retain").and_then(Value::as_bool).unwrap_or(false),
                 service: false,
+                settle_s: None,
+                period_s: None,
             };
             let retain = args.get("retain").and_then(Value::as_bool);
             ctx.edit(&mut |p| {
@@ -533,6 +535,8 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
                     let var = Var {
                         retain: retain.unwrap_or(old.retain),
                         service: old.service,
+                        settle_s: old.settle_s,
+                        period_s: old.period_s,
                         ..var.clone()
                     };
                     p.update_var(&name, var)
@@ -744,7 +748,7 @@ pub fn report(project: &Project, lib: &Library) -> Value {
         Ok(store) => project.with_local(lib, &store),
         Err(_) => project.clone(),
     };
-    let r = check_project(project, lib);
+    let r = crab_codegen::check_project(project, lib);
     let list = |sev: Severity| -> Vec<Value> {
         r.diagnostics
             .iter()

@@ -27,3 +27,4 @@ description = "Пока true — счётчик равен 0"
 [[output]]
 name = "count"
 type = "int"
+fast = true

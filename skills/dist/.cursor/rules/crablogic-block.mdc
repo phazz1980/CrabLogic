@@ -1,0 +1,10 @@
+---
+description: Свой блок CrabLogic (block.toml, block.wasm, драйвер датчика) — создать, исправить, проверить
+globs: user_library/**/block.toml, blocks_src/**
+alwaysApply: false
+---
+
+Работай по `skills/crablogic-block/SKILL.md` (справочники — `skills/crablogic-block/reference/`).
+После каждой правки `block.toml`, `docs.md` или пересборки `block.wasm` запусти
+`powershell -NoProfile -ExecutionPolicy Bypass -File skills/crablogic-block/hooks/check.ps1 <папка блока>`
+и исправь всё, что он назовёт, до «ошибок нет». Перед сдачей — `skills/crablogic-block/checklist.md`.

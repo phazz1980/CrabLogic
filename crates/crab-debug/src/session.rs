@@ -54,6 +54,8 @@ pub struct Live {
     /// `safe=` of the master: bad resets in a row after which it started no stored module;
     /// `None` while it runs normally (or does not tell).
     pub master_safe: Option<u32>,
+    /// Flash (NVS) write counters of the master, from the `nvs` line of its `info` answer.
+    pub nvs: Option<crate::protocol::NvsStats>,
 }
 
 impl Live {

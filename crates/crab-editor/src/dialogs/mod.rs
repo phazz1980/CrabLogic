@@ -80,6 +80,12 @@ pub struct VarDialog {
     init: String,
     description: String,
     retain: bool,
+    /// Per-variable flash timing override, seconds; empty = as in the project.
+    settle_s: String,
+    period_s: String,
+    /// Project defaults shown as hints.
+    project_settle_s: u32,
+    project_period_s: u32,
 }
 
 pub struct SheetDialog {
@@ -169,6 +175,8 @@ impl Dialog {
                 description: String::new(),
                 retain: false,
                 service: false,
+                settle_s: None,
+                period_s: None,
             },
         };
         Some(Self::Var(VarDialog {
@@ -179,6 +187,16 @@ impl Dialog {
             block: None,
             description: var.description,
             retain: var.retain,
+            settle_s: var.settle_s.map(|v| v.to_string()).unwrap_or_default(),
+            period_s: var.period_s.map(|v| v.to_string()).unwrap_or_default(),
+            project_settle_s: app
+                .doc
+                .as_ref()
+                .map_or(5, |d| d.project.config.retain.settle_s),
+            project_period_s: app
+                .doc
+                .as_ref()
+                .map_or(600, |d| d.project.config.retain.period_s),
         }))
     }
 
@@ -478,6 +496,8 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
                 description: d.description.trim().to_owned(),
                 retain: d.retain,
                 service: false,
+                settle_s: parse_secs(&d.settle_s, "покой")?,
+                period_s: parse_secs(&d.period_s, "период")?,
             };
             match &d.original {
                 Some(name) => doc.edit(&lib, None, |p| p.update_var(name, var)),

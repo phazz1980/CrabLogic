@@ -319,6 +319,8 @@ type = \"{kind}\""
             description: String::new(),
             retain: false,
             service: false,
+            settle_s: None,
+            period_s: None,
         });
         let tag = |n: &str, a: u16| PublishedTag {
             name: n.into(),

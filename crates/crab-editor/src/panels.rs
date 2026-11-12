@@ -6,7 +6,7 @@ use crab_core::expander::expander_uses;
 use crab_core::{BlockPos, ParamKind, Project};
 use eframe::egui::{self, Id, RichText, ScrollArea, Ui};
 
-use crate::app::{BottomTab, EditorApp, LogLevel, RightTab};
+use crate::app::{BottomTab, EditorApp, LeftTab, LogLevel, RightTab};
 use crate::canvas::DragItem;
 use crate::debugview::{self, DebugState};
 use crate::dialogs::{value_text, Dialog};
@@ -612,8 +612,29 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
         style.spacing.item_spacing.y += 3.0;
         style.spacing.button_padding.y += 1.0;
     }
-    ui.strong(crate::i18n::tr("Дерево проекта"));
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut app.left_tab,
+            LeftTab::Tree,
+            crate::i18n::tr("Дерево проекта"),
+        );
+        let count = app.lib.project_blocks().count();
+        let title = crate::i18n::tr("Блоки проекта");
+        let title = if count > 0 {
+            format!("{title} ({count})")
+        } else {
+            title.to_owned()
+        };
+        ui.selectable_value(&mut app.left_tab, LeftTab::ProjectBlocks, title)
+            .on_hover_text(crate::i18n::tr(
+                "Пользовательские блоки, которые пришли с проектом и которых нет в библиотеке программы",
+            ));
+    });
     ui.separator();
+    if app.left_tab == LeftTab::ProjectBlocks {
+        project_blocks(app, ui);
+        return;
+    }
     // Online: tags show live values and offer writing and forcing.
     let mut debug = app.debug.take();
     let Some(doc) = &app.doc else {
@@ -971,6 +992,92 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                 Err(e) => app.info(LogLevel::Error, e.to_string()),
             }
         }
+    }
+}
+
+/// The «Блоки проекта» tab: user blocks that came with the open project and are not in the
+/// user library. They work while the project is open and leave the program with it, unless
+/// saved into the library.
+fn project_blocks(app: &mut EditorApp, ui: &mut Ui) {
+    if app.doc.is_none() {
+        ui.weak(crate::i18n::tr("Проект не открыт"));
+        return;
+    }
+    ui.weak(crate::i18n::tr(
+        "Блоки, которые пришли с проектом и которых нет в библиотеке программы. Они работают, пока проект открыт, и при закрытии проекта уходят из программы (в файле проекта они остаются). Чтобы ставить блок в другие проекты, сохраните его в библиотеку.",
+    ));
+    ui.add_space(4.0);
+    let mut blocks: Vec<_> = app.lib.project_blocks().collect();
+    if blocks.is_empty() {
+        ui.weak(crate::i18n::tr(
+            "Таких блоков нет: все пользовательские блоки проекта есть в библиотеке.",
+        ));
+        return;
+    }
+    blocks.sort_by(|a, b| a.def.info.name.cmp(&b.def.info.name));
+    let mut save = None;
+    let mut open = None;
+    let mut add = None;
+    ScrollArea::vertical()
+        .id_salt("project_blocks")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for b in blocks {
+                let info = &b.def.info;
+                let kind = info.kind.as_str();
+                ui.horizontal(|ui| {
+                    let resp = crate::canvas::drag_source(
+                        ui,
+                        Id::unique(("project_block", kind)),
+                        DragItem::Block(kind.to_owned()),
+                        |ui| {
+                            ui.label(crate::i18n::tr(&info.name))
+                                .union(ui.weak(kind))
+                        },
+                    );
+                    let mut hover = crate::i18n::tr(&info.description).to_owned();
+                    if !info.group.is_empty() {
+                        hover.push_str(&format!(
+                            "
+{}: {}",
+                            crate::i18n::tr("Раздел в библиотеке"),
+                            info.group.replace('/', " / ")
+                        ));
+                    }
+                    let resp = resp.on_hover_text(hover);
+                    if resp.double_clicked() {
+                        add = Some(kind.to_owned());
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button(crate::i18n::tr("Изменить блок...")).clicked() {
+                            open = Some(kind.to_owned());
+                        }
+                        if ui.button(crate::i18n::tr("Сохранить в библиотеку")).clicked() {
+                            save = Some(kind.to_owned());
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(crate::i18n::tr("В библиотеку"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Сохранить блок в библиотеку программы: он останется и после закрытия проекта",
+                            ))
+                            .clicked()
+                        {
+                            save = Some(kind.to_owned());
+                        }
+                    });
+                });
+            }
+        });
+    if let Some(kind) = save {
+        app.save_project_block(&kind);
+    }
+    if let Some(b) = open.and_then(|kind| app.lib.get(&kind).cloned()) {
+        app.block_editor = Some(crate::blockedit::BlockEditor::edit(app, &b));
+    }
+    if let Some(kind) = add {
+        add_to_schema(app, &kind);
     }
 }
 

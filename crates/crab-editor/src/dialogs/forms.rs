@@ -40,6 +40,28 @@ pub(super) fn var_body(ui: &mut Ui, d: &mut VarDialog) {
                 crate::i18n::tr("Значение хранится во флеш-памяти (NVS) и восстанавливается после перезагрузки.                  Запись — только когда значение изменилось, не чаще раза в секунду."),
             );
             ui.end_row();
+            if d.retain {
+                ui.label(crate::i18n::tr("Покой перед записью, с"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.settle_s)
+                        .desired_width(60.0)
+                        .hint_text(d.project_settle_s.to_string()),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Сколько секунд значение должно не меняться, чтобы его записали во флеш. Пусто — как в настройках проекта.",
+                ));
+                ui.end_row();
+                ui.label(crate::i18n::tr("Не чаще раза в, с"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut d.period_s)
+                        .desired_width(60.0)
+                        .hint_text(d.project_period_s.to_string()),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Минимум секунд между двумя записями этой переменной (0 — без ограничения). Пусто — как в настройках проекта.",
+                ));
+                ui.end_row();
+            }
             if let Some((_, en)) = &mut d.block {
                 ui.label("");
                 ui.checkbox(en, crate::i18n::tr("Вход разрешения записи (En)")).on_hover_text(
@@ -109,6 +131,20 @@ pub(super) fn sheet_body(ui: &mut Ui, d: &mut SheetDialog) {
 }
 
 /// Parses the initial value field; empty means "no initial value".
+/// Optional whole seconds of a per-variable flash timing field; empty = `None`.
+pub(super) fn parse_secs(text: &str, what: &str) -> Result<Option<u32>, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    t.parse::<u32>().map(Some).map_err(|_| {
+        format!(
+            "{}: {what}",
+            crate::i18n::tr("Сохранение во флеш — нужно целое число секунд")
+        )
+    })
+}
+
 pub(super) fn parse_init(ty: VarType, text: &str) -> Result<Option<ParamValue>, String> {
     let t = text.trim();
     if t.is_empty() {

@@ -110,6 +110,51 @@ pub struct Stats {
     pub memory: Option<MasterMemory>,
 }
 
+/// Flash (NVS) wear figures of the master: `nvs writes=<total> hour=<last hour> used=<n> free=<n>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NvsStats {
+    /// Writes since power on.
+    pub writes: u32,
+    /// Writes in the last hour.
+    pub hour: u32,
+    /// Entries in use and free entries; `None` when the master does not tell.
+    pub used: Option<u32>,
+    pub free: Option<u32>,
+}
+
+/// Hourly writes above this are shown as a warning (flash wears out).
+pub const NVS_HOUR_WARN: u32 = 60;
+
+impl NvsStats {
+    /// Reads one line of the `info` answer; `None` if it is not the `nvs` line.
+    pub fn parse(line: &str) -> Option<Self> {
+        let rest = line.trim().strip_prefix("nvs ")?;
+        let mut s = NvsStats::default();
+        let (mut got_writes, mut got_hour) = (false, false);
+        for word in rest.split_whitespace() {
+            let Some((key, value)) = word.split_once('=') else {
+                continue;
+            };
+            let Ok(v) = value.parse::<u32>() else {
+                continue;
+            };
+            match key {
+                "writes" => (s.writes, got_writes) = (v, true),
+                "hour" => (s.hour, got_hour) = (v, true),
+                "used" => s.used = Some(v),
+                "free" => s.free = Some(v),
+                _ => {}
+            }
+        }
+        (got_writes && got_hour).then_some(s)
+    }
+
+    /// Too many writes in the last hour.
+    pub fn too_frequent(&self) -> bool {
+        self.hour > NVS_HOUR_WARN
+    }
+}
+
 /// Memory figures the master reports in `stats`: what is left of the heap and of each stack.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MasterMemory {
@@ -400,5 +445,25 @@ mod tests {
             payload: vec![]
         }));
         assert!(p.crc_errors >= 1);
+    }
+}
+
+#[cfg(test)]
+mod nvs_tests {
+    use super::*;
+
+    #[test]
+    fn parses_nvs_line() {
+        let s = NvsStats::parse("nvs writes=12 hour=3 used=50 free=450").unwrap();
+        assert_eq!(
+            (s.writes, s.hour, s.used, s.free),
+            (12, 3, Some(50), Some(450))
+        );
+        assert!(!s.too_frequent());
+        let s = NvsStats::parse("nvs writes=500 hour=61").unwrap();
+        assert_eq!((s.used, s.free), (None, None));
+        assert!(s.too_frequent());
+        assert!(NvsStats::parse("crabmod=1/2").is_none());
+        assert!(NvsStats::parse("nvs writes=x hour=1").is_none());
     }
 }

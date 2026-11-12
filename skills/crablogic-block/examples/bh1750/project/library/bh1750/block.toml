@@ -1,0 +1,54 @@
+[block]
+type = "bh1750"
+name = "BH1750 (освещённость)"
+symbol = "BH"
+group = "Датчики"
+description = "Освещённость в люксах с датчика BH1750 по I²C. Драйвер на WASM: к шине он ходит через функции мастера (bus.*). Работает только с мастером на Rust."
+
+[[output]]
+name = "lux"
+label = "Лк"
+type = "float"
+sim = 120.0
+description = "Освещённость, лк"
+
+[[output]]
+name = "ok"
+type = "bool"
+sim = true
+description = "Датчик ответил при последнем чтении"
+
+[[param]]
+name = "address"
+label = "Адрес"
+type = "int"
+default = 35
+min = 8
+max = 119
+bus = "i2c-address"
+description = "Адрес I²C: 35 (0x23, ADDR на земле) или 92 (0x5C, ADDR на питании)"
+
+[[param]]
+name = "sda"
+type = "pin"
+mode = "io"
+default = 21
+bus = "i2c-sda"
+description = "Вывод SDA шины I²C"
+
+[[param]]
+name = "scl"
+type = "pin"
+mode = "out"
+default = 22
+bus = "i2c-scl"
+description = "Вывод SCL шины I²C"
+
+[[param]]
+name = "period"
+label = "Период, мс"
+type = "int"
+default = 500
+min = 200
+max = 60000
+description = "Как часто читать датчик (одно измерение длится до 180 мс)"

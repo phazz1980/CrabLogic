@@ -9,12 +9,14 @@ description = "Читает значение из таблицы Modbus TCP Slav
 [[output]]
 name = "out"
 type = "int"
+fast = true
 when = 'kind == "int"'
 description = "Значение регистра"
 
 [[output]]
 name = "out_f"
 type = "float"
+fast = true
 when = 'kind == "float"'
 description = "Значение двух регистров как float"
 

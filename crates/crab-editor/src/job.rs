@@ -18,9 +18,6 @@ pub enum JobKind {
     Build,
     /// Build even if the last build is up to date (library or core changed).
     Rebuild,
-    /// Quiet low-priority build of the master firmware (no upload), so the upload finds
-    /// it ready. Pressing upload meanwhile promotes it (`Job::promote`).
-    Precompile,
     Upload {
         port: Option<String>,
     },
@@ -101,11 +98,10 @@ impl Job {
         let title = match kind {
             JobKind::Build => crate::i18n::tr("Сборка"),
             JobKind::Rebuild => crate::i18n::tr("Пересборка"),
-            JobKind::Precompile => crate::i18n::tr("Фоновая сборка"),
             JobKind::Upload { .. } => crate::i18n::tr("Заливка"),
             JobKind::UploadModules { .. } => crate::i18n::tr("Заливка модулей"),
         };
-        let background = matches!(kind, JobKind::Precompile);
+        let background = false;
         let uses_port = matches!(kind, JobKind::Upload { .. } | JobKind::UploadModules { .. });
         let control = Arc::new(BuildControl::default());
         let worker = control.clone();
@@ -230,10 +226,7 @@ fn run(
         direct,
         promotion,
     } = report;
-    let background = matches!(kind, JobKind::Precompile);
-    if background {
-        return precompile_master(project, lib, control, promotion, out);
-    }
+    let _ = promotion;
     if let JobKind::UploadModules { port } = &kind {
         return upload_modules(port.as_deref(), project, lib, debug, &control, out, ask);
     }
@@ -266,8 +259,8 @@ fn run(
     let board = &project.config.board;
     let opts = CompileOptions {
         mode: BuildMode::Release,
-        verbose: !background,
-        low_priority: background,
+        verbose: true,
+        low_priority: false,
         force: matches!(kind, JobKind::Rebuild),
         libraries: program.attached_libraries(),
         ..Default::default()
@@ -355,7 +348,7 @@ fn run(
     }
 
     match kind {
-        JobKind::Build | JobKind::Rebuild | JobKind::Precompile => Ok(Done {
+        JobKind::Build | JobKind::Rebuild => Ok(Done {
             message: crate::i18n::tr("Сборка готова").into(),
             port: None,
             debug: false,
@@ -432,205 +425,37 @@ pub fn master_features(project: &Project, lib: &Library) -> crab_build::MasterFe
     features
 }
 
-/// Background build of the master firmware. If the user presses upload meanwhile, the
-/// finished build is flashed to the chosen port, like a normal master upload.
-fn precompile_master(
+/// Flashes the prebuilt Rust master (`firmware/<chip>/` of the distribution): the schema itself
+/// goes to the board as WASM modules (`upload_modules`).
+fn upload_master(
+    port: Option<&str>,
     project: &Project,
-    lib: &Library,
-    control: Arc<BuildControl>,
-    promotion: &Mutex<Promotion>,
+    _lib: &Library,
+    _control: Arc<BuildControl>,
     out: &mut dyn FnMut(LogLevel, &str),
 ) -> Result<Done, String> {
-    let cli = ArduinoCli::locate()
-        .map_err(|e| e.to_string())?
-        .with_control(control);
+    use crab_build::flash;
     let board = &project.config.board;
-    let mut log = |l: &str| match crab_build::classify(l) {
-        OutputLine::Stage(s) | OutputLine::Size(s) => out(LogLevel::Info, &s),
-        OutputLine::Warning(s) => out(LogLevel::Warning, &s),
-        OutputLine::Error(s) => out(LogLevel::Error, &s),
-        _ => {}
+    let dir = flash::firmware_dir().ok_or_else(|| {
+        crate::i18n::tr("Не найдена папка firmware с образами мастера рядом с программой")
+            .to_owned()
+    })?;
+    let image = flash::find_image(&dir, &board.fqbn).map_err(|e| e.to_string())?;
+    let port = match port.map(str::to_owned).or_else(|| board.port.clone()) {
+        Some(port) => port,
+        None => flash::single_usb_port().map_err(|e| e.to_string())?,
     };
-    let build = cli
-        .compile_master(
-            &project.work_dir(),
-            board,
-            &master_features(project, lib),
-            true,
-            &mut log,
-        )
-        .map_err(|e| e.to_string());
-    let port = {
-        let mut state = promotion.lock().unwrap();
-        state.finished = true;
-        state.upload.take()
-    };
-    let build = build?;
-    let Some(port) = port else {
-        return Ok(Done {
-            message: crate::i18n::tr("Мастер-прошивка собрана").into(),
-            port: None,
-            debug: false,
-        });
-    };
-    let port = cli
-        .choose_port(port.as_deref(), board)
-        .map_err(|e| e.to_string())?;
-    warn_if_other_board(&cli, &port, &board.fqbn, out);
     out(
         LogLevel::Info,
         &crate::i18n::fmt("Заливка мастер-прошивки на {0}...", &[&port]),
     );
-    let mut explained = None;
-    let result = cli.flash_master(
-        &build,
-        board,
-        &port,
-        &mut |l| match crab_build::explain_upload(l, &board.fqbn) {
-            Some(text) => {
-                out(LogLevel::Info, l);
-                out(LogLevel::Error, &text);
-                explained.get_or_insert(text);
-            }
-            None => match crab_build::classify(l) {
-                OutputLine::Stage(s) | OutputLine::Size(s) => out(LogLevel::Info, &s),
-                OutputLine::Warning(s) => out(LogLevel::Warning, &s),
-                OutputLine::Error(s) => out(LogLevel::Error, &s),
-                _ => {}
-            },
-        },
-    );
-    result.map_err(|e| explained.unwrap_or_else(|| e.to_string()))?;
+    flash::flash_master(&image, &port, &mut |l| out(LogLevel::Info, l))
+        .map_err(|e| e.to_string())?;
     Ok(Done {
         message: crate::i18n::fmt("Мастер-прошивка залита на {0}", &[&port]),
         port: Some(port),
         debug: false,
     })
-}
-
-/// Builds the master firmware and uploads it: the schema itself goes to the board as
-/// WASM modules (`upload_modules`).
-fn upload_master(
-    port: Option<&str>,
-    project: &Project,
-    lib: &Library,
-    control: Arc<BuildControl>,
-    out: &mut dyn FnMut(LogLevel, &str),
-) -> Result<Done, String> {
-    let cli = ArduinoCli::locate()
-        .map_err(|e| e.to_string())?
-        .with_control(control);
-    let board = &project.config.board;
-    let port = cli.choose_port(port, board).map_err(|e| e.to_string())?;
-    warn_if_other_board(&cli, &port, &board.fqbn, out);
-    let features = master_features(project, lib);
-    let defines = features.defines();
-    let parts: Vec<&str> = defines
-        .lines()
-        .filter_map(|l| l.strip_prefix("#define CRAB_"))
-        .filter_map(|l| l.split_whitespace().next())
-        .collect();
-    out(
-        LogLevel::Info,
-        &crate::i18n::fmt(
-            "Мастер-прошивка для {0}: {1}",
-            &[
-                &board.fqbn,
-                &if parts.is_empty() {
-                    crate::i18n::tr("базовый состав").to_owned()
-                } else {
-                    parts.join(", ").to_lowercase()
-                },
-            ],
-        ),
-    );
-    out(
-        LogLevel::Info,
-        crate::i18n::tr("Шаг 1 из 2: сборка мастер-прошивки..."),
-    );
-    let started = std::time::Instant::now();
-    let mut errors = 0;
-    let mut tools_hinted = false;
-    let build = cli
-        .compile_master(&project.work_dir(), board, &features, false, &mut |l| {
-            // arduino-cli leaves `{runtime.tools.X.path}` unexpanded when the core wants a tool
-            // version that is not on disk (two cores of different versions, a half-unpacked pack).
-            if !tools_hinted && l.contains("{runtime.tools.") {
-                tools_hinted = true;
-                out(
-                    LogLevel::Error,
-                    crate::i18n::tr(
-                        "Ядро и его инструменты разных версий или распакованы не полностью: удалите папку esp32core рядом с программой (и пакеты esp32 в Arduino15, если они есть) и скачайте ядро заново через «Файл → Ядра ESP32...»",
-                    ),
-                );
-            }
-            match crab_build::classify(l) {
-                OutputLine::Stage(s) | OutputLine::Size(s) | OutputLine::Context(s) => {
-                    out(LogLevel::Info, &s)
-                }
-                OutputLine::Warning(s) => out(LogLevel::Warning, &s),
-                OutputLine::Error(s) => {
-                    errors += 1;
-                    out(LogLevel::Error, &s)
-                }
-                OutputLine::Detail => {}
-            }
-        })
-        .map_err(|e| match (&e, errors) {
-            (crab_build::BuildError::Failed { .. }, 1..) => crate::i18n::fmt(
-                "Ошибка сборки мастера ({0}): подробности в журнале",
-                &[&errors],
-            ),
-            _ => e.to_string(),
-        })?;
-    out(
-        LogLevel::Ok,
-        &crate::i18n::fmt("Мастер собран за {0} с", &[&started.elapsed().as_secs()]),
-    );
-    out(
-        LogLevel::Info,
-        &crate::i18n::fmt("Шаг 2 из 2: заливка на {0}...", &[&port]),
-    );
-    let mut explained = None;
-    let mut shown = 0;
-    let result = cli.flash_master(&build, board, &port, &mut |l| {
-        match crab_build::explain_upload(l, &board.fqbn) {
-            Some(text) => {
-                out(LogLevel::Info, l);
-                out(LogLevel::Error, &text);
-                explained.get_or_insert(text);
-            }
-            None => match upload_progress(l) {
-                // Flash progress every 20%, not on every block.
-                Some(percent) => {
-                    if percent >= shown + 20 || (percent == 100 && shown < 100) {
-                        shown = percent;
-                        out(LogLevel::Info, l.trim());
-                    }
-                }
-                None if !l.trim().is_empty() => out(LogLevel::Info, l.trim()),
-                None => {}
-            },
-        }
-    });
-    result.map_err(|e| explained.unwrap_or_else(|| e.to_string()))?;
-    Ok(Done {
-        message: crate::i18n::fmt("Мастер-прошивка залита на {0}", &[&port]),
-        port: Some(port),
-        debug: false,
-    })
-}
-
-/// Percent of an esptool progress line (`Writing at 0x00010000... (12 %)`).
-fn upload_progress(line: &str) -> Option<u32> {
-    let rest = line.trim().strip_prefix("Writing at ")?;
-    let (_, tail) = rest.rsplit_once('(')?;
-    tail.trim_end_matches(')')
-        .trim()
-        .trim_end_matches('%')
-        .trim()
-        .parse()
-        .ok()
 }
 
 /// Builds the WASM module of every sheet of the prepared project; returns the prepared project
@@ -707,6 +532,24 @@ fn upload_modules(
         std::time::Duration::from_secs(8),
     )
     .map_err(|e| e.to_string())?;
+    // Modules are built for the Rust master only (`specs/rust-only`).
+    let image = crab_build::flash::image_version(&project.config.board.fqbn);
+    match crab_build::flash::master_verdict(info.id.as_deref(), image.as_deref()) {
+        crab_build::flash::MasterVerdict::NotRust => {
+            return Err(crate::i18n::tr(
+                "На плате не мастер на Rust (старый C++-мастер или другая прошивка): залейте мастер кнопкой ⬆, затем модули",
+            )
+            .to_owned());
+        }
+        crab_build::flash::MasterVerdict::Older(have, want) => out(
+            LogLevel::Warning,
+            &crate::i18n::fmt(
+                "Мастер на плате версии {0}, в программе {1}: залейте мастер кнопкой ⬆",
+                &[&have, &want],
+            ),
+        ),
+        crab_build::flash::MasterVerdict::Current => {}
+    }
     // A module that uses what only a newer master can do would only fail on the board.
     for module in &modules {
         let missing = info.missing_caps(&module.needs);
@@ -872,6 +715,23 @@ pub fn safe_mode_message(bad: u32) -> String {
     .replace("{0}", &bad.to_string())
 }
 
+/// Flash wear line of the master for the debug status, and whether it is a warning
+/// (more than `NVS_HOUR_WARN` writes in the last hour).
+pub fn nvs_message(n: &crab_debug::protocol::NvsStats) -> (String, bool) {
+    if n.hour > crab_debug::protocol::NVS_HOUR_WARN {
+        let text = crate::i18n::fmt(
+            "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.",
+            &[&n.hour],
+        );
+        return (text, true);
+    }
+    let mut text = crate::i18n::fmt("Флеш: записей {0}, за час {1}", &[&n.writes, &n.hour]);
+    if let Some(free) = n.free {
+        text.push_str(&crate::i18n::fmt(", свободно {0} записей", &[&free]));
+    }
+    (text, false)
+}
+
 /// Why modules cannot go to the board: its master lacks native parts of blocks.
 pub fn missing_native_message(missing: &[(String, u32)]) -> String {
     let list = missing
@@ -950,12 +810,29 @@ fn warn_if_other_board(
 }
 
 #[cfg(test)]
-mod upload_progress_tests {
-    use super::upload_progress;
+mod nvs_message_tests {
+    use super::nvs_message;
+    use crab_debug::protocol::NvsStats;
 
     #[test]
-    fn esptool_progress_percent() {
-        assert_eq!(upload_progress("Writing at 0x00010000... (12 %)"), Some(12));
-        assert_eq!(upload_progress("Connecting...."), None);
+    fn calm_and_frequent_writes() {
+        let calm = NvsStats {
+            writes: 12,
+            hour: 3,
+            used: Some(50),
+            free: Some(450),
+        };
+        let (text, warn) = nvs_message(&calm);
+        assert!(!warn);
+        assert!(text.contains("12") && text.contains("450"));
+        let busy = NvsStats {
+            writes: 500,
+            hour: 61,
+            used: None,
+            free: None,
+        };
+        let (text, warn) = nvs_message(&busy);
+        assert!(warn);
+        assert!(text.contains("61"));
     }
 }

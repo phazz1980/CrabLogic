@@ -8,6 +8,7 @@ description = "Читает напряжение на выводе через А
 [[output]]
 name = "out"
 type = "int"
+fast = true
 description = "Отсчёт АЦП, 0…4095 (12 бит)"
 
 [[param]]

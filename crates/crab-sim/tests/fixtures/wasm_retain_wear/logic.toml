@@ -1,0 +1,20 @@
+# A retained variable fed by the ADC: the tests move the reading and count flash writes.
+
+[[var]]
+name = "level"
+type = "int"
+retain = true
+
+[[block]]
+id = "adc"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "lw"
+type = "var_set"
+var = "level"
+
+[[link]]
+from = "adc.out"
+to = "lw.in"

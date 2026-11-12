@@ -211,7 +211,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
 
     /// Digital/analog/PWM pins of the board: calls into the master.
     pub(super) fn hardware_block(&mut self, inst: &Instance) -> Result<bool, WasmError> {
-        if self.sensor_block(inst)?
+        // A block with its own driver (`block.wasm`) wins over the built-in master call.
+        if self.user_block(inst)?
+            || self.sensor_block(inst)?
             || self.pcf_block(inst)?
             || self.modbus_block(inst)?
             || self.uart_block(inst)?

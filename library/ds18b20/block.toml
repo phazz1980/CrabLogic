@@ -10,11 +10,14 @@ libraries = ["OneWire", "DallasTemperature"]
 
 [[output]]
 name = "temp"
+sim = 21.5
 type = "float"
+fast = true
 description = "Температура, °C (при обрыве остаётся последнее удачное значение)"
 
 [[output]]
 name = "ok"
+sim = true
 type = "bool"
 description = "true, если последнее чтение удалось"
 

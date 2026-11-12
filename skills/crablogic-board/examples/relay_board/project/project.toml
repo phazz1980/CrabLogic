@@ -1,0 +1,7 @@
+[project]
+name = "relay_board"
+description = "Проверка платы demo_relay4: входы IN1 и IN2 включают реле K1 и K2"
+
+[board]
+fqbn = "esp32:esp32:esp32"
+model = "demo_relay4"   # плата лежит рядом, в user_boards/

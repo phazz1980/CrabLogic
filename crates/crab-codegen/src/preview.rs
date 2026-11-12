@@ -71,6 +71,7 @@ pub fn preview_block(def: &BlockDef, template: &str) -> Result<String, GenError>
             },
             // A block on a UART finds its settings with the defaults.
             uart: vec![crab_core::UartConfig::new(1), crab_core::UartConfig::new(2)],
+            retain: Default::default(),
         },
         logic: Logic {
             vars: Vec::new(),

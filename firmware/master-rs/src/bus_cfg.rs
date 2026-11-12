@@ -101,6 +101,12 @@ pub enum Request {
         pin: i32,
         bit: bool,
     },
+    PulseRead {
+        pin: i32,
+        start_us: u32,
+        ptr: i32,
+        count: usize,
+    },
 }
 
 /// Fastest SPI clock a module may ask for, Hz.
@@ -248,7 +254,8 @@ impl Claims {
             }
             GPIO_MODE | GPIO_READ | GPIO_WRITE | I2C_OPEN | I2C_WRITE | I2C_READ
             | I2C_WRITE_READ | UART_OPEN | UART_WRITE | UART_READ | UART_AVAILABLE | SPI_OPEN
-            | SPI_TRANSFER | OW_RESET | OW_WRITE | OW_READ | OW_READ_BIT | OW_WRITE_BIT => {}
+            | SPI_TRANSFER | OW_RESET | OW_WRITE | OW_READ | OW_READ_BIT | OW_WRITE_BIT
+            | PULSE_READ => {}
             _ => return Err(ERR_ARGS),
         }
         if !self.locked {
@@ -430,6 +437,18 @@ impl Claims {
             OW_READ_BIT => {
                 self.pin(chip, a, true)?;
                 Ok(Request::OwReadBit { pin: a })
+            }
+            PULSE_READ => {
+                if !(1..=MAX_LEN / 2).contains(&d) || !(0..=20_000).contains(&b) {
+                    return Err(ERR_ARGS);
+                }
+                self.pin(chip, a, true)?;
+                Ok(Request::PulseRead {
+                    pin: a,
+                    start_us: b as u32,
+                    ptr: c,
+                    count: d as usize,
+                })
             }
             _ => {
                 self.pin(chip, a, true)?;
@@ -832,6 +851,27 @@ mod tests {
             open.request(C3, OW_RESET, 4, 0, 0, 0),
             Err(ERR_NOT_CLAIMED),
             "before LOCK"
+        );
+    }
+
+    #[test]
+    fn pulse_read_rules() {
+        let mut c = locked(C3, &[4], &[], &[]);
+        assert_eq!(
+            c.request(C3, PULSE_READ, 4, 1100, 64, 84),
+            Ok(Request::PulseRead {
+                pin: 4,
+                start_us: 1100,
+                ptr: 64,
+                count: 84
+            })
+        );
+        assert_eq!(c.request(C3, PULSE_READ, 4, 1100, 64, 0), Err(ERR_ARGS));
+        assert_eq!(c.request(C3, PULSE_READ, 4, 1100, 64, 129), Err(ERR_ARGS));
+        assert_eq!(c.request(C3, PULSE_READ, 4, 20_001, 64, 10), Err(ERR_ARGS));
+        assert_eq!(
+            c.request(C3, PULSE_READ, 5, 1100, 64, 10),
+            Err(ERR_NOT_CLAIMED)
         );
     }
 

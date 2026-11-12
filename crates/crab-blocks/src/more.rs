@@ -509,7 +509,8 @@ fn parse_float(s: &str) -> (f32, usize) {
 /// Points of `"x:y;x:y"`, parsed the way the firmware does it (up to 32 of them).
 pub(crate) fn parse_points(text: &str) -> Vec<(f32, f32)> {
     let mut points = Vec::new();
-    let mut rest = text;
+    // The default of the block is a C string literal (`"0:0;50:20"`): its quotes are not points.
+    let mut rest = text.trim().trim_matches('"');
     while !rest.is_empty() && points.len() < 32 {
         let (x, used) = parse_float(rest);
         if rest.as_bytes().get(used) != Some(&b':') {

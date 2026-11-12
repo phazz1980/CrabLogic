@@ -186,6 +186,11 @@ pub mod bus_op {
     pub const OW_READ_BIT: i32 = 63;
     /// `OW_WRITE_BIT(pin, bit)`: returns 0.
     pub const OW_WRITE_BIT: i32 = 64;
+    /// `PULSE_READ(pin, start_us, ptr, count)`: holds the (open-drain) pin low for `start_us`
+    /// (0..=20000), releases it and, with interrupts off, stores the lengths of the next `count`
+    /// (1..=128) levels as `u16` microseconds at `ptr`; a level longer than 300 µs ends the
+    /// measurement. Returns the number of lengths stored, `ERR_TIMEOUT` if none (DHT sensors).
+    pub const PULSE_READ: i32 = 65;
 
     /// Claim kinds.
     pub const KIND_PIN: i32 = 1;

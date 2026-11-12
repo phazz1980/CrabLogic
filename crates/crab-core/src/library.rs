@@ -342,6 +342,10 @@ pub struct PortDef {
     /// board (a hardware driver, `specs/wasm-drivers`). Only outputs may have it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim: Option<ParamValue>,
+    /// An output whose value changes often (a measurement, a counter): a retained
+    /// variable fed from it wears the flash (check `retain_fast`). Only outputs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -983,6 +987,9 @@ pub struct Library {
     blocks: BTreeMap<String, LibraryBlock>,
     /// Types of user blocks.
     user: HashSet<String>,
+    /// Types of blocks that came with the open project and are not in `user_library/`
+    /// (a subset of `user`), see [`Library::add_project_dir`].
+    project: HashSet<String>,
     /// Sections and folders of the user library, as paths `Раздел/Папка`
     /// relative to `user_library/`; empty ones too.
     user_folders: BTreeSet<String>,
@@ -1016,6 +1023,7 @@ impl Default for Library {
         Self {
             blocks: BTreeMap::new(),
             user: HashSet::new(),
+            project: HashSet::new(),
             user_folders: BTreeSet::new(),
             builtins: crate::vars::builtin_blocks(),
             boards: Boards::default(),
@@ -1151,9 +1159,36 @@ impl Library {
         Ok(errors)
     }
 
-    /// Whether `kind` is a user block (from `user_library/`).
+    /// Whether `kind` is a user block (from `user_library/` or from the open project).
     pub fn is_user(&self, kind: &str) -> bool {
         self.user.contains(kind)
+    }
+
+    /// Adds the blocks that came with the open project (unpacked into a session folder, or the
+    /// `library/` of a project folder). They work as user blocks but are not in `user_library/`:
+    /// [`Library::is_project`] tells them apart, and their folders are not user folders.
+    pub fn add_project_dir(&mut self, dir: impl AsRef<Path>) -> Result<Vec<Error>> {
+        let folders = std::mem::take(&mut self.user_folders);
+        let before = self.user.clone();
+        let added = self.add_user_dir(dir);
+        self.user_folders = folders;
+        let errors = added?;
+        self.project
+            .extend(self.user.difference(&before).cloned().collect::<Vec<_>>());
+        Ok(errors)
+    }
+
+    /// Whether `kind` is a block of the open project that is not in `user_library/`.
+    pub fn is_project(&self, kind: &str) -> bool {
+        self.project.contains(kind)
+    }
+
+    /// Blocks of the open project that are not in `user_library/`, by type.
+    pub fn project_blocks(&self) -> impl Iterator<Item = &LibraryBlock> {
+        self.blocks
+            .iter()
+            .filter(|(kind, _)| self.project.contains(*kind))
+            .map(|(_, b)| b)
     }
 
     /// Sections and folders of the user library (`Раздел`, `Раздел/Папка`), sorted.
@@ -1223,6 +1258,7 @@ impl Library {
                     label: param.label.clone(),
                     description: param.description.clone(),
                     sim: None,
+                    fast: false,
                 });
             }
             Box::leak(Box::new(derived))

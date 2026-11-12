@@ -41,6 +41,13 @@ pub enum DiagKind {
     Tag,
     FloatCounter,
     ExternalTag,
+    /// The module generator refuses the block: it does not run on the Rust master
+    /// (`crab_codegen::rust_master_diagnostics`).
+    RustMaster,
+    /// A block with C++ code (`esp32.cpp.tmpl`, `native.cpp`): only `block.wasm` runs now.
+    CppBlock,
+    /// A retained variable is fed straight from an output that changes often.
+    RetainFast,
 }
 
 impl DiagKind {
@@ -76,6 +83,9 @@ impl DiagKind {
         DiagKind::Tag,
         DiagKind::FloatCounter,
         DiagKind::ExternalTag,
+        DiagKind::RustMaster,
+        DiagKind::CppBlock,
+        DiagKind::RetainFast,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -112,6 +122,9 @@ impl DiagKind {
             DiagKind::Tag => "tag",
             DiagKind::FloatCounter => "float-counter",
             DiagKind::ExternalTag => "external-tag",
+            DiagKind::RustMaster => "rust-master",
+            DiagKind::CppBlock => "cpp-block",
+            DiagKind::RetainFast => "retain-fast",
         }
     }
 }

@@ -34,6 +34,15 @@ pub enum Command {
     SpDump {
         ts_ms: u64,
     },
+    /// `pulsetest <pin>`: the RMT pulse receiver measures a 5 kHz PWM made on the same pin.
+    PulseTest {
+        pin: i32,
+    },
+    /// `pulsebench <pin> <n>`: polled loop against the RMT receiver on a 5 kHz PWM, `n` runs each.
+    PulseBench {
+        pin: i32,
+        runs: u32,
+    },
     Tick {
         name: String,
         count: u32,
@@ -388,6 +397,13 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
                 .parse()
                 .map_err(|_| ParseError::InvalidNumber)?,
         },
+        "pulsetest" => Command::PulseTest {
+            pin: number(&mut args)?,
+        },
+        "pulsebench" => Command::PulseBench {
+            pin: number(&mut args)?,
+            runs: number(&mut args)?,
+        },
         "bus" | "topic" | "queue" => parse_bus(command, &mut args)?,
         _ => return Err(ParseError::UnknownCommand),
     };
@@ -703,6 +719,20 @@ mod tests {
             Command::SpDump {
                 ts_ms: 1_700_000_000_000
             }
+        );
+        assert_eq!(typed("pulsetest 4"), Command::PulseTest { pin: 4 });
+        assert_eq!(parse_command("pulsetest"), Err(ParseError::MissingArgument));
+        assert_eq!(
+            typed("pulsebench 4 50"),
+            Command::PulseBench { pin: 4, runs: 50 }
+        );
+        assert_eq!(
+            parse_command("pulsebench 4"),
+            Err(ParseError::MissingArgument)
+        );
+        assert_eq!(
+            parse_command("pulsebench 4 x"),
+            Err(ParseError::InvalidNumber)
         );
         assert_eq!(parse_command("spdump"), Err(ParseError::MissingArgument));
         assert_eq!(parse_command("spdump x"), Err(ParseError::InvalidNumber));

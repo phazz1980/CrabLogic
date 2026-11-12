@@ -11,15 +11,23 @@
 //! Commands: `put`, `list`, `info`, `tick`, `del`, `swap`, `reset`, `rmax`, `log`; live
 //! data of a module: `in`, `param`, `out`, `ev`, `force`, `unforce`, `pins`.
 
+mod analog;
 mod bus;
 mod devices;
 mod engine;
 mod eth;
 mod flash;
+mod modbus;
 mod mqtt;
 mod net;
+mod notes;
+mod pcf;
+mod pulse;
+mod retain;
 mod sparkplug;
+mod uart;
 mod usb;
+mod web;
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -60,13 +68,15 @@ const MAX_MEMORY: usize = 128 * 1024;
 const MAX_TICKS: u32 = 100_000;
 /// Lines the journal keeps.
 const JOURNAL: usize = 16;
-/// The CPU the AOT images must be built for, as `modcaps=` names it.
+/// What modules may use, as `modcaps=` names it, and the CPU the AOT images must be built for.
+/// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
+/// `retain` and `retain_text` keep values in NVS (`retain.rs`); UART blocks: `uart.rs`; PCF8574 expanders: `pcf.rs`.
 #[cfg(target_arch = "riscv32")]
-const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,rv32imc";
+const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,rv32imc";
 /// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
 /// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
 #[cfg(not(target_arch = "riscv32"))]
-const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,xtensa-esp32";
+const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
@@ -147,6 +157,8 @@ fn fallback(line: &str) -> &'static str {
         "out" if line.contains(' ') => "bad count",
         "topic" | "queue" | "bus" => "bad bus command",
         "spdump" => "spdump <ms>",
+        "pulsetest" => "pulsetest <pin>",
+        "pulsebench" => "pulsebench <pin> <n>",
         "ev" | "reset" if line.contains(' ') => "no such module",
         _ => "unknown command",
     }
@@ -867,6 +879,13 @@ impl Master {
                 a.meta.memory
             );
         }
+        let (total, hour) = retain::write_counts();
+        match retain::nvs_entries() {
+            Some((used, free)) => {
+                println!("nvs writes={total} hour={hour} used={used} free={free}")
+            }
+            None => println!("nvs writes={total} hour={hour}"),
+        }
         println!("end");
     }
 
@@ -900,6 +919,8 @@ impl Master {
             Ok(Command::Reset { name }) => self.reset(&name),
             Ok(Command::Pins) => self.pins(),
             Ok(Command::SpDump { ts_ms }) => sparkplug::dump(ts_ms),
+            Ok(Command::PulseTest { pin }) => pulse::self_test(pin),
+            Ok(Command::PulseBench { pin, runs }) => pulse::bench(pin, runs),
             Ok(Command::Topic {
                 name,
                 state,
@@ -951,6 +972,9 @@ impl Master {
             }
             for text in mqtt::take_notes() {
                 self.log("mqtt", &text);
+            }
+            for (source, text) in notes::take() {
+                self.log(source, &text);
             }
             let dt = last_scan.elapsed().as_millis() as u32;
             if dt >= QUANTUM_MS {

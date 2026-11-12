@@ -102,6 +102,7 @@ when = "count > 15"
 [[output]]
 name = "out"
 type = "int"
+fast = true
 
 [[output]]
 name = "any"

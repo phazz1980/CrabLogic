@@ -1,0 +1,9 @@
+---
+description: Своя плата CrabLogic (board.toml, пользовательский контроллер) — добавить, исправить, проверить
+globs: user_library/boards/**
+alwaysApply: false
+---
+
+Работай по `skills/crablogic-board/SKILL.md`. После правки `board.toml` запусти
+`crablogic --library library board check <папка платы>` и исправь всё до «Ошибок нет».
+Перед сдачей — `skills/crablogic-board/checklist.md`.

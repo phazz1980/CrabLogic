@@ -74,6 +74,7 @@ const BUS_IMPORTS: &[(&str, usize, Shim)] = &[
     ("ow_read", 3, Shim::Bus(62, &[P(0), Ptr(1), P(2)])),
     ("ow_read_bit", 1, Shim::Bus(63, &[P(0)])),
     ("ow_write_bit", 2, Shim::Bus(64, &[P(0), P(1)])),
+    ("pulse_read", 4, Shim::Bus(65, &[P(0), P(1), Ptr(2), P(3)])),
 ];
 
 /// The shim of an import, or why the driver may not have it.
@@ -103,6 +104,26 @@ fn shim_of(
         return Err(format!("у импорта {module}.{name} не та сигнатура"));
     }
     Ok(shim)
+}
+
+/// What a static look at a `block.wasm` found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WasmInfo {
+    /// The module imports `bus.*` functions: it is a hardware driver.
+    pub driver: bool,
+}
+
+/// Parses `block.wasm` and checks every import the way the sheet module generator does.
+pub(crate) fn inspect_block_wasm(bytes: &[u8]) -> Result<WasmInfo, String> {
+    let d = driver::parse(bytes)?;
+    let mut driver = false;
+    for imp in &d.imports {
+        let (params, results) = &d.types[imp.ty as usize];
+        if let Shim::Bus(..) = shim_of(&imp.module, &imp.name, params, results)? {
+            driver = true;
+        }
+    }
+    Ok(WasmInfo { driver })
 }
 
 /// Name of the import module of the bus functions (the same as `crab_sim::BUS_MODULE`).
@@ -158,6 +179,13 @@ impl Emitter<'_, '_> {
             Ok(None) => return Ok(false),
             Err(e) => return Err(self.unsupported(inst, &format!("block.wasm: {e}"))),
         };
+        // A driver talks to its pins through the master's buses: an expander pin is not one.
+        if inst.block.expander.is_some() {
+            return Err(self.unsupported(
+                inst,
+                "драйвер (block.wasm) на выводах расширителя не работает: подключите датчик к выводу платы",
+            ));
+        }
         let def = &inst.lib.def;
         let mut shims = Vec::new();
         for imp in &d.imports {

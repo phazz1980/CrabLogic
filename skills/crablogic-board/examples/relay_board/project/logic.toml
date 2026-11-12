@@ -1,0 +1,23 @@
+# Входы платы включают реле. Адрес расширителя и шина заданы платой — блок реле их не спрашивает.
+
+[[block]]
+id = "in1"
+type = "digital_in"
+pin = 32
+
+[[block]]
+id = "in2"
+type = "digital_in"
+pin = 33
+
+[[block]]
+id = "relays"
+type = "demo_relay4_relays"
+
+[[link]]
+from = "in1.out"
+to = "relays.p0"
+
+[[link]]
+from = "in2.out"
+to = "relays.p1"

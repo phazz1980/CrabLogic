@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crab_core::project::is_web_kind;
-use crab_core::{check_project, BlockPos, Layout, Library, Logic, ParamKind, Project, Report};
+use crab_core::{BlockPos, Layout, Library, Logic, ParamKind, Project, Report};
 
 /// State that undo/redo restores.
 #[derive(Clone)]
@@ -33,7 +33,7 @@ impl Doc {
     pub fn open(path: &Path, lib: &Library) -> crab_core::Result<Self> {
         let mut project = Project::load(path)?;
         place_unplaced(&mut project, lib);
-        let report = check_project(&project, lib);
+        let report = crab_codegen::check_project(&project, lib);
         Ok(Self {
             project,
             dirty: false,
@@ -46,7 +46,7 @@ impl Doc {
     }
 
     pub fn recheck(&mut self, lib: &Library) {
-        self.report = check_project(&self.project, lib);
+        self.report = crab_codegen::check_project(&self.project, lib);
     }
 
     /// Applies an edit as one undo step. `key` merges consecutive edits of the same

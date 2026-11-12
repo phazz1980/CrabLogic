@@ -195,10 +195,13 @@ pub fn find_w2c2(configured: Option<&Path>) -> Option<std::path::PathBuf> {
 pub fn translate_library(w2c2: &Path, lib: &crab_core::Library) -> Vec<String> {
     let mut problems = Vec::new();
     for block in lib.iter() {
-        if block.firmware_source() != crab_core::library::FirmwareSource::Module {
+        let name = &block.def.info.kind;
+        // Built-in blocks keep their C++ code; their module is a driver for the Rust master.
+        if block.firmware_source() != crab_core::library::FirmwareSource::Module
+            || crab_blocks::get(block.def.info.code_of.as_deref().unwrap_or(name)).is_some()
+        {
             continue;
         }
-        let name = &block.def.info.kind;
         if let Err(e) = translate_firmware(w2c2, &block.dir, name) {
             problems.push(format!("{name}: {e}"));
         }

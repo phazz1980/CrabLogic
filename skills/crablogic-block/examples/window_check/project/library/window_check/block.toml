@@ -1,0 +1,44 @@
+[block]
+type = "window_check"
+name = "Окно значений"
+symbol = "WIN"
+group = "Сравнение"
+description = "Сравнивает значение с окном [low, high]: внутри, выше или ниже. Пример блока на WASM без памяти."
+
+[[input]]
+name = "value"
+label = "Значение"
+type = "float"
+description = "Проверяемое значение"
+
+[[output]]
+name = "inside"
+label = "Внутри"
+type = "bool"
+description = "low <= value <= high"
+
+[[output]]
+name = "above"
+label = "Выше"
+type = "bool"
+description = "value > high"
+
+[[output]]
+name = "below"
+label = "Ниже"
+type = "bool"
+description = "value < low"
+
+[[param]]
+name = "low"
+label = "Нижняя граница"
+type = "float"
+default = 10.0
+description = "Нижняя граница окна"
+
+[[param]]
+name = "high"
+label = "Верхняя граница"
+type = "float"
+default = 20.0
+description = "Верхняя граница окна"

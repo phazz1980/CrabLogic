@@ -39,18 +39,6 @@ use crate::selfupdate;
 use crate::theme::{self, Theme};
 use crate::update::{self, Check, Release};
 
-/// What the master firmware build depends on: project folder (build folder), board with
-/// its settings, and the embedded master sketch.
-type MasterKey = (PathBuf, u64, u64);
-
-/// Identifies the board and its settings: what, besides libraries, decides the core build.
-fn board_hash(board: &impl std::fmt::Debug) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{board:?}").hash(&mut hasher);
-    hasher.finish()
-}
-
 /// What is selected on the canvas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
@@ -95,6 +83,13 @@ pub enum BottomTab {
 pub enum RightTab {
     Library,
     Ai,
+}
+
+/// Tabs of the left panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeftTab {
+    Tree,
+    ProjectBlocks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +145,9 @@ pub struct EditorApp {
     web_sig: String,
     lib_stamp: Option<SystemTime>,
     lib_checked: Instant,
+    /// Session folder with the user blocks of the open project that are not in the user
+    /// library; deleted when the project is closed (see `restore_packed_blocks`).
+    pub project_blocks: Option<PathBuf>,
     /// Modification time of the project file as the editor last read or wrote it; a
     /// different time means another program (MCP server, web designer) changed it.
     disk_stamp: Option<SystemTime>,
@@ -167,6 +165,7 @@ pub struct EditorApp {
     pub tree_cycle: Option<(String, usize)>,
     pub canvas: CanvasState,
     pub right_tab: RightTab,
+    pub left_tab: LeftTab,
     /// Panel sizes and which side panels are expanded; saved in the editor settings.
     pub panels: theme::PanelSizes,
     pub log: Vec<LogLine>,
@@ -215,10 +214,6 @@ pub struct EditorApp {
     upload_question: Option<(UploadQuestion, bool)>,
     /// Build requested while precompilation runs; starts right after it.
     queued: Option<JobKind>,
-    /// What the build folder holds a master firmware build of.
-    precompiled: Option<MasterKey>,
-    /// Last seen master key and when it changed: precompile after a pause.
-    seen_rev: Option<(MasterKey, Instant)>,
     /// Warnings about the sheets that would not go accelerated on the remembered board.
     board_check: Option<BoardCheck>,
     /// When the project last changed and when the memo file was last looked at.
@@ -315,6 +310,7 @@ impl EditorApp {
             web_sig: String::new(),
             lib_stamp: None,
             lib_checked: Instant::now(),
+            project_blocks: None,
             disk_stamp: None,
             disk_checked: Instant::now(),
             disk_warned: false,
@@ -325,6 +321,7 @@ impl EditorApp {
             tree_cycle: None,
             canvas: CanvasState::default(),
             right_tab: RightTab::Library,
+            left_tab: LeftTab::Tree,
             panels: theme::saved_panels(),
             log: Vec::new(),
             bottom_tab: BottomTab::Log,
@@ -358,8 +355,6 @@ impl EditorApp {
             autosave_minutes: theme::autosave_minutes(),
             last_autosave: Instant::now(),
             queued: None,
-            precompiled: None,
-            seen_rev: None,
             board_check: None,
             board_changed: Instant::now(),
             board_seen: None,
@@ -523,7 +518,6 @@ impl eframe::App for EditorApp {
         crate::textmenu::begin(&ctx);
         self.sync_comment_lang();
         self.poll_job(&ctx);
-        self.precompile(&ctx);
         self.update_board_check(&ctx);
         self.poll_debug();
         // Wires of fast 0/1 signals follow the history of the board: redraw about 30 times a second.
@@ -691,6 +685,7 @@ fn hide_console(cmd: &mut std::process::Command) {
 
 impl Drop for EditorApp {
     fn drop(&mut self) {
+        self.clear_project_blocks();
         if let Some(child) = &mut self.web_editor {
             let _ = child.kill();
         }

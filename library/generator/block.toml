@@ -15,6 +15,7 @@ description = "Разрешение работы; если не подключё
 [[output]]
 name = "out"
 type = "bool"
+fast = true
 
 [[param]]
 name = "time_on"

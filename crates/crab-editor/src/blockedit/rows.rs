@@ -114,7 +114,7 @@ pub(super) fn ports_table(ui: &mut Ui, id: &str, rows: &mut Vec<PortRow>, inputs
     let mut op = None;
     let len = rows.len();
     egui::Grid::new(id)
-        .num_columns(6)
+        .num_columns(if inputs { 6 } else { 7 })
         .striped(true)
         .spacing([8.0, 4.0])
         .show(ui, |ui| {
@@ -130,6 +130,12 @@ pub(super) fn ports_table(ui: &mut Ui, id: &str, rows: &mut Vec<PortRow>, inputs
             );
             ui.label(RichText::new(crate::i18n::tr("Условие when")).strong());
             ui.label(RichText::new(crate::i18n::tr("Описание")).strong());
+            if !inputs {
+                ui.label(RichText::new(crate::i18n::tr("Часто")).strong())
+                    .on_hover_text(crate::i18n::tr(
+                        "Выход меняется часто (счётчик, измерение): проверка предупредит, если им кормят переменную с сохранением во флеш",
+                    ));
+            }
             ui.label("");
             ui.end_row();
             for (i, row) in rows.iter_mut().enumerate() {
@@ -164,6 +170,9 @@ pub(super) fn ports_table(ui: &mut Ui, id: &str, rows: &mut Vec<PortRow>, inputs
                      порт есть, только пока оно выполняется",
                 ));
                 ui.add_sized([220.0, 20.0], TextEdit::singleline(&mut row.description));
+                if !inputs {
+                    ui.checkbox(&mut row.fast, "");
+                }
                 row_ops(ui, i, len, &mut op);
                 ui.end_row();
             }

@@ -32,6 +32,8 @@ pub(super) struct PortRow {
     pub(super) description: String,
     /// Value in the simulation on the PC (outputs of drivers); empty: none.
     pub(super) sim: String,
+    /// Output changes often (`fast` in `block.toml`): retained variables fed by it wear the flash.
+    pub(super) fast: bool,
 }
 
 impl PortRow {
@@ -44,6 +46,7 @@ impl PortRow {
             when: String::new(),
             description: String::new(),
             sim: String::new(),
+            fast: false,
         }
     }
 
@@ -56,6 +59,7 @@ impl PortRow {
             when: p.when.clone().unwrap_or_default(),
             description: p.description.clone(),
             sim: p.sim.as_ref().map(value_text).unwrap_or_default(),
+            fast: p.fast,
         }
     }
 
@@ -70,6 +74,7 @@ impl PortRow {
             description: self.description.trim().to_owned(),
             sim: parse_signal(self.ty, &self.sim)
                 .map_err(|e| format!("«{}», значение в симуляции: {e}", self.name))?,
+            fast: self.fast,
         })
     }
 }

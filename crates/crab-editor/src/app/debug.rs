@@ -119,6 +119,7 @@ impl EditorApp {
             &doc.project,
             &self.lib,
             self.lib_dir.clone(),
+            self.project_blocks.clone(),
             self.ai_live.clone(),
             ctx,
         );

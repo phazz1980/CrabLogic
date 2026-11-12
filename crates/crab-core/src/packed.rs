@@ -307,6 +307,103 @@ pub fn unpack_missing_blocks(project: &Path, user_dir: &Path, lib: &Library) -> 
         .collect()
 }
 
+/// Adds to `lib` the user blocks the project brings and the library lacks, without touching
+/// the user library: those packed in the project file and, for a project folder (an example
+/// in git), those in its own `library/`. They are copied into the session folder `session`
+/// (emptied first) and loaded by [`Library::add_project_dir`]. Returns their types and the
+/// problems of single blocks.
+pub fn add_project_blocks(
+    project: &Path,
+    session: &Path,
+    lib: &mut Library,
+) -> (Vec<String>, Vec<crate::Error>) {
+    let _ = fs::remove_dir_all(session);
+    let mut kinds = unpack_missing_blocks(project, session, lib);
+    if project.is_dir() {
+        let own = project.join("library");
+        let mut folders: Vec<_> = fs::read_dir(&own)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join(crate::library::BLOCK_FILE).is_file())
+            .collect();
+        folders.sort();
+        for folder in folders {
+            let Ok(block) = crate::library::LibraryBlock::load(&folder) else {
+                continue;
+            };
+            let kind = block.def.info.kind.clone();
+            if lib.get(&kind).is_some() || kinds.contains(&kind) {
+                continue;
+            }
+            let group = block.def.info.group.trim_matches('/');
+            let mut dir = session.to_path_buf();
+            dir.extend(group.split('/').filter(|p| safe_part(p)));
+            if copy_tree(&folder, &dir.join(&kind)).is_ok() {
+                kinds.push(kind);
+            }
+        }
+    }
+    if kinds.is_empty() {
+        return (kinds, Vec::new());
+    }
+    let errors = match lib.add_project_dir(session) {
+        Ok(errors) => errors,
+        Err(e) => vec![e],
+    };
+    (kinds, errors)
+}
+
+/// Copies the folder of a project block (see [`Library::add_project_dir`]) into the user
+/// library `user_dir`, at its section and folder `group` (`Раздел/Папка`, may be empty).
+/// Refuses when the user library already has a folder of that name. Returns the new folder.
+pub fn save_block_to_library(
+    block_dir: &Path,
+    user_dir: &Path,
+    group: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::io::{Error, ErrorKind};
+    let name = block_dir
+        .file_name()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "нет имени папки блока"))?;
+    let mut dir = user_dir.to_path_buf();
+    for part in group.split('/').filter(|p| !p.is_empty()) {
+        if !safe_part(part) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("недопустимая папка «{part}»"),
+            ));
+        }
+        dir.push(part);
+    }
+    dir.push(name);
+    if dir.exists() {
+        return Err(Error::new(
+            ErrorKind::AlreadyExists,
+            format!("в библиотеке уже есть папка {}", dir.display()),
+        ));
+    }
+    copy_tree(block_dir, &dir).inspect_err(|_| {
+        let _ = fs::remove_dir_all(&dir);
+    })?;
+    Ok(dir)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// A user block whose copy in the project differs from the one in the program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionDiff {
@@ -531,6 +628,64 @@ mod tests {
         assert_eq!(written, ["bmp280"]);
         assert!(user.join("Датчики/bmp280/block.wasm").is_file());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn project_blocks_stay_out_of_the_library_until_saved() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::env::temp_dir().join(format!("crab_session_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let session = root.join("session");
+        let user = root.join("user_library");
+        fs::create_dir_all(&user).unwrap();
+
+        let (mut lib, _) = Library::load(repo.join("library")).unwrap();
+        lib.add_user_dir(&user).unwrap();
+        let src = repo.join("examples/wasm_driver/library");
+        let mut project = Project::load(repo.join("examples/wasm_driver")).unwrap();
+        project.path = root.join("p.crab");
+        let entries = pack_block_folders(&src);
+        let extra: Vec<(&str, &[u8])> = entries
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_slice()))
+            .collect();
+        project.save_with(&extra).unwrap();
+
+        // Opening: the blocks go into the session folder, not into the user library.
+        assert_eq!(
+            unpack_missing_blocks(&project.path, &session, &lib),
+            ["bmp280"]
+        );
+        assert!(lib.add_project_dir(&session).unwrap().is_empty());
+        assert!(lib.is_user("bmp280") && lib.is_project("bmp280"));
+        assert_eq!(lib.user_folders().count(), 0);
+        assert_eq!(fs::read_dir(&user).unwrap().count(), 0);
+        let block = lib.project_blocks().next().unwrap();
+        assert_eq!(block.def.info.group, "Датчики");
+
+        // Saving copies it into the library at its section; then it is an ordinary user block.
+        let dir = save_block_to_library(&block.dir, &user, &block.def.info.group).unwrap();
+        assert_eq!(dir, user.join("Датчики").join("bmp280"));
+        assert!(dir.join("block.wasm").is_file());
+        assert!(save_block_to_library(&block.dir, &user, "Датчики").is_err());
+        let (mut lib, _) = Library::load(repo.join("library")).unwrap();
+        lib.add_user_dir(&user).unwrap();
+        assert!(lib.is_user("bmp280") && !lib.is_project("bmp280"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_folder_brings_its_own_library() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let session = std::env::temp_dir().join(format!("crab_own_{}", std::process::id()));
+        let (mut lib, _) = Library::load(repo.join("library")).unwrap();
+        let (kinds, errors) =
+            add_project_blocks(&repo.join("examples/wasm_driver"), &session, &mut lib);
+        assert_eq!(kinds, ["bmp280"]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(lib.is_project("bmp280"));
+        assert_eq!(lib.get("bmp280").unwrap().def.info.group, "Датчики");
+        let _ = fs::remove_dir_all(&session);
     }
 
     #[test]

@@ -1,10 +1,11 @@
-# Partitions of the Rust master (specs/wasm-kernel, stage 3): a 1.5 MB app and the "crabmod"
-# partition (about 2.4 MB) where module images live in areas of variable length; AOT images run
+# Partitions of the Rust master (specs/wasm-kernel, stage 3): a 2 MB app (UART, Modbus and the web
+# page came over from the C++ master, specs/rust-only) and the "crabmod" partition (1.875 MB) where
+# module images live in areas of variable length; AOT images run
 # straight from it (XIP). Its type is the custom 0x40 (espflash does not take a numeric subtype of
 # "data", which the C++ master uses), so it is found by type or by name.
 # Name,   Type, SubType, Offset,  Size, Flags
 nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x180000,
-crabmod,  0x40, 0x00,    0x190000,0x260000,
+factory,  app,  factory, 0x10000, 0x200000,
+crabmod,  0x40, 0x00,    0x210000,0x1E0000,
 coredump, data, coredump,0x3F0000,0x10000,

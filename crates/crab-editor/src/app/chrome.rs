@@ -379,6 +379,39 @@ impl EditorApp {
         }
     }
 
+    /// "Flash saving": default timing of retained variables (`[retain]` of the project).
+    pub(super) fn retain_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(doc) = &self.doc else { return };
+        let cur = doc.project.config.retain;
+        let lib = self.lib.clone();
+        let mut new = cur;
+        ui.menu_button(crate::i18n::tr("Сохранение во флеш"), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::tr("Сохранение во флеш: покой, с"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Значение пишется во флеш, только когда не менялось столько секунд: частые правки дают одну запись",
+                    ));
+                ui.add(egui::DragValue::new(&mut new.settle_s).range(0..=86_400));
+            });
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::tr("не чаще раза в, с"))
+                    .on_hover_text(crate::i18n::tr(
+                        "Минимум секунд между записями одной переменной; 0 — без ограничения. Флеш выдерживает ограниченное число записей",
+                    ));
+                ui.add(egui::DragValue::new(&mut new.period_s).range(0..=86_400));
+            });
+            ui.weak(crate::i18n::tr("0 в периоде — без ограничения"));
+        });
+        if new != cur {
+            if let Some(doc) = &mut self.doc {
+                let _ = doc.edit(&lib, Some("retain_timing".into()), |p| {
+                    p.config.retain = new;
+                    Ok::<(), String>(())
+                });
+            }
+        }
+    }
+
     /// The editor menus; shown inside the burger button of the title bar.
     pub(super) fn menus(&mut self, ui: &mut egui::Ui) {
         ui.menu_button(crate::i18n::tr("Файл"), |ui| {
@@ -598,6 +631,7 @@ impl EditorApp {
                 self.open_web_designer();
             }
             ui.add_enabled_ui(has_doc, |ui| self.board_copy_menu(ui));
+            ui.add_enabled_ui(has_doc, |ui| self.retain_menu(ui));
             ui.separator();
             if ui
                 .add_enabled(
@@ -1003,29 +1037,38 @@ impl EditorApp {
                                 .color(self.theme.palette.warning),
                         );
                     }
-                    // The master on the board against the one the project needs: native parts of blocks
-                    // (and the build itself) are not changed by loading modules.
+                    if let Some(nvs) = &d.live.nvs {
+                        let (text, warn) = crate::job::nvs_message(nvs);
+                        let mut label = RichText::new(text);
+                        if warn {
+                            label = label.color(self.theme.palette.warning);
+                        }
+                        ui.label(label);
+                    }
+                    // The master on the board against the image of the program (`specs/rust-only`).
                     if let Some(id) = &d.live.master_id {
-                        let info = crab_build::mcu_module::MasterInfo {
-                            id: Some(id.clone()),
-                            natives: d.live.master_natives.clone(),
-                            ..Default::default()
-                        };
-                        let features = crate::job::master_features(p, &self.lib);
-                        match crab_build::master_state(&info, &features) {
-                            crab_build::MasterState::Current => {
+                        let image = crab_build::flash::image_version(&p.config.board.fqbn);
+                        match crab_build::flash::master_verdict(Some(id), image.as_deref()) {
+                            crab_build::flash::MasterVerdict::Current => {
                                 ui.label(crate::i18n::tr("Мастер на плате актуален"));
                             }
-                            crab_build::MasterState::MissingNative(missing) => {
+                            crab_build::flash::MasterVerdict::Older(have, want) => {
                                 ui.label(
-                                    RichText::new(crate::job::missing_native_message(&missing))
-                                        .color(self.theme.palette.warning),
+                                    RichText::new(crate::i18n::fmt(
+                                        "Мастер на плате версии {0}, в программе {1}: залейте мастер кнопкой ⬆",
+                                        &[&have, &want],
+                                    ))
+                                    .color(self.theme.palette.warning),
                                 );
                             }
-                            crab_build::MasterState::Differs => {
-                                ui.label(crate::i18n::tr("Мастер на плате собран иначе"));
+                            crab_build::flash::MasterVerdict::NotRust => {
+                                ui.label(
+                                    RichText::new(crate::i18n::tr(
+                                        "На плате не мастер на Rust: залейте мастер кнопкой ⬆",
+                                    ))
+                                    .color(self.theme.palette.warning),
+                                );
                             }
-                            crab_build::MasterState::Unknown => {}
                         }
                     }
                     if d.live.needs_password {

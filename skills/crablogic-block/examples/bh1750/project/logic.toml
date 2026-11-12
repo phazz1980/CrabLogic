@@ -1,0 +1,34 @@
+[[block]]
+id = "light"
+type = "bh1750"
+address = 35
+sda = 21
+scl = 22
+period = 500
+
+[[block]]
+id = "dark"
+type = "less"
+b = 100.0
+
+[[block]]
+id = "lamp"
+type = "digital_out"
+pin = 4
+
+[[block]]
+id = "sensor_ok"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "light.lux"
+to = "dark.a"
+
+[[link]]
+from = "dark.out"
+to = "lamp.in"
+
+[[link]]
+from = "light.ok"
+to = "sensor_ok.in"

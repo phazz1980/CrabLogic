@@ -276,6 +276,11 @@ pub fn link_ready() -> bool {
     s.client_ready || s.ap_ready
 }
 
+/// Address of the Wi-Fi client (first octet in the lowest byte), 0 without one.
+pub fn wifi_ip() -> u32 {
+    lock().snap.ip
+}
+
 fn read_wifi(field: i32) -> i32 {
     let s = lock().snap;
     match field {
