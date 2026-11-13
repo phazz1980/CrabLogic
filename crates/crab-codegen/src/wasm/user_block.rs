@@ -3,10 +3,25 @@
 //! window, globals and value cells. Its imports become small functions of the sheet module
 //! ("shims"): `crab.input/param/output` read and write the cells, `crab.log` and `bus.*` call
 //! the master (`crab.log`, `crab.bus`) with pointers moved into the window.
+//!
+//! Interface of the value imports (`specs/no-f64`; the old `f64` interface `crab.input/param/
+//! output` and the module name `flp` are refused with `OLD_F64`, see `driver.rs`):
+//! `crab.input_i/input_f/param_i/param_f/output_i/output_f` and the text imports
+//! `crab.input_text/param_text/output_text`. A value cell is 4 bytes and sits at
+//! `cells + 4 * index` (`i32` for `bool`/`int`/`duration`/`pin`, `f32` for `float`); the
+//! type of a cell is the type of its port and the type of the import must match it: with a
+//! constant port index in the call (`i32.const` right before it) the type of that very port is
+//! checked, otherwise the block must have some port of the type (`check_v2_types`).
+//! An index past the cells reads 0 / is ignored. String ports keep an unused cell, so every
+//! index is the index of the port in `block.toml`; their text goes through `*_text` only:
+//! the shim copies the bytes (`memory.copy`) into the block's window, at most `cap` of them,
+//! and returns the copied length. `output_text(i, ptr, len)` copies into the string signal
+//! of output `i` (at most its capacity). No `f64` appears in the module.
 
 use std::rc::Rc;
 
 use super::driver::{self, Driver};
+use super::text::{Buf, Len, Str};
 use super::*;
 use wasm_encoder::MemArg;
 
@@ -35,12 +50,36 @@ pub(super) enum Arg {
 /// What an import of a driver is: its signature and how the shim serves it.
 #[derive(Clone, Copy)]
 pub(super) enum Shim {
-    Input,
-    Param,
-    Output,
+    InputI,
+    InputF,
+    ParamI,
+    ParamF,
+    OutputI,
+    OutputF,
+    InputText,
+    ParamText,
+    OutputText,
     Log,
     Config,
     Bus(i32, &'static [Arg]),
+}
+
+impl Shim {
+    /// An import of the value interface (`input_i` and the like).
+    pub(super) fn is_v2(self) -> bool {
+        matches!(
+            self,
+            Shim::InputI
+                | Shim::InputF
+                | Shim::ParamI
+                | Shim::ParamF
+                | Shim::OutputI
+                | Shim::OutputF
+                | Shim::InputText
+                | Shim::ParamText
+                | Shim::OutputText
+        )
+    }
 }
 
 use Arg::{Pack, Ptr, P};
@@ -85,20 +124,29 @@ fn shim_of(
     params: &[ValType],
     results: &[ValType],
 ) -> Result<Shim, String> {
-    use ValType::{F64, I32};
+    use ValType::{F32, I32};
     let (shim, want_p, want_r): (Shim, Vec<ValType>, Vec<ValType>) = match (module, name) {
-        ("crab" | "flp", "input") => (Shim::Input, vec![I32], vec![F64]),
-        ("crab" | "flp", "param") => (Shim::Param, vec![I32], vec![F64]),
-        ("crab" | "flp", "output") => (Shim::Output, vec![I32, F64], vec![]),
-        ("crab" | "flp", "log") => (Shim::Log, vec![I32, I32], vec![]),
-        ("crab" | "flp", "config") => (Shim::Config, vec![I32, I32], vec![I32]),
+        ("flp", _) | ("crab", "input" | "param" | "output") => {
+            return Err(driver::old_f64(&format!("импорт {module}.{name}")))
+        }
+        ("crab", "input_i") => (Shim::InputI, vec![I32], vec![I32]),
+        ("crab", "input_f") => (Shim::InputF, vec![I32], vec![F32]),
+        ("crab", "param_i") => (Shim::ParamI, vec![I32], vec![I32]),
+        ("crab", "param_f") => (Shim::ParamF, vec![I32], vec![F32]),
+        ("crab", "output_i") => (Shim::OutputI, vec![I32, I32], vec![]),
+        ("crab", "output_f") => (Shim::OutputF, vec![I32, F32], vec![]),
+        ("crab", "input_text") => (Shim::InputText, vec![I32; 3], vec![I32]),
+        ("crab", "param_text") => (Shim::ParamText, vec![I32; 3], vec![I32]),
+        ("crab", "output_text") => (Shim::OutputText, vec![I32; 3], vec![]),
+        ("crab", "log") => (Shim::Log, vec![I32, I32], vec![]),
+        ("crab", "config") => (Shim::Config, vec![I32, I32], vec![I32]),
         (crab_sim_bus::MODULE, _) => match BUS_IMPORTS.iter().find(|(n, ..)| *n == name) {
             Some(&(_, n, shim)) => (shim, vec![I32; n], vec![I32]),
             None => return Err(format!("нет такой функции шины: bus.{name}")),
         },
         _ => {
             return Err(format!(
-                "импорт {module}.{name} недоступен драйверу (только crab.input/param/output/log/config и bus.*)"
+                "импорт {module}.{name} недоступен драйверу (только crab.input*/param*/output*/log/config и bus.*)"
             ))
         }
     };
@@ -113,23 +161,28 @@ fn shim_of(
 pub(crate) struct WasmInfo {
     /// The module imports `bus.*` functions: it is a hardware driver.
     pub driver: bool,
+    /// The module imports the value interface (`crab.input_i` and the like).
+    pub v2: bool,
 }
 
 /// Parses `block.wasm` and checks every import the way the sheet module generator does.
 pub(crate) fn inspect_block_wasm(bytes: &[u8]) -> Result<WasmInfo, String> {
     let d = driver::parse(bytes)?;
-    let mut driver = false;
+    let (mut driver, mut v2) = (false, false);
     for imp in &d.imports {
         let (params, results) = &d.types[imp.ty as usize];
-        if let Shim::Bus(..) = shim_of(&imp.module, &imp.name, params, results)? {
-            driver = true;
-        }
+        let shim = shim_of(&imp.module, &imp.name, params, results)?;
+        driver |= matches!(shim, Shim::Bus(..));
+        v2 |= shim.is_v2();
     }
-    Ok(WasmInfo { driver })
+    Ok(WasmInfo { driver, v2 })
 }
 
 /// Largest per-instance configuration a block may get through `crab.config`.
 pub const MAX_BLOCK_CONFIG: usize = 4096;
+
+/// Size of a value cell: `i32` or `f32`.
+const CELL: u32 = 4;
 
 /// Name of the import module of the bus functions (the same as `crab_sim::BUS_MODULE`).
 mod crab_sim_bus {
@@ -142,7 +195,7 @@ pub(super) struct DriverUse {
     pub(super) shims: Vec<Shim>,
     /// Memory window of the driver.
     pub(super) base: u32,
-    /// `f64` cells of the inputs, parameters and outputs.
+    /// Value cells (4-byte `i32`/`f32`) of the inputs, parameters and outputs.
     pub(super) cells_in: u32,
     pub(super) n_in: u32,
     pub(super) cells_param: u32,
@@ -153,6 +206,11 @@ pub(super) struct DriverUse {
     pub(super) claims: Vec<(i32, i32)>,
     /// Configuration bytes in the data segment: (address, length); length 0 when none.
     pub(super) config: (u32, u32),
+    /// v2 text imports: (port index, string) of the string inputs and parameters, and
+    /// (port index, buffer) of the string outputs.
+    pub(super) text_in: Vec<(u32, Str)>,
+    pub(super) text_param: Vec<(u32, Str)>,
+    pub(super) text_out: Vec<(u32, Buf)>,
 }
 
 impl Emitter<'_, '_> {
@@ -210,13 +268,15 @@ impl Emitter<'_, '_> {
             }
             shims.push(shim);
         }
-        // A display takes its kind and size from `crab.config`; its text parameter (`model`)
-        // keeps a zero cell (the indices of the other parameters do not move).
+        let v2 = shims.iter().any(|s| s.is_v2());
+        self.check_v2_types(inst, &d, &shims)?;
+        // The text parameters reach a block through `param_text`; a display takes its model
+        // from `crab.config` as well.
         let is_display = takes_text_params(&inst.block.kind);
         let text_param = def
             .params
             .iter()
-            .find(|p| p.kind == ParamKind::Text && !is_display);
+            .find(|p| p.kind == ParamKind::Text && !is_display && !v2);
         if let Some(p) = text_param {
             let why = format!(
                 "строковый параметр «{}» пока не передаётся в block.wasm в модуле",
@@ -287,62 +347,111 @@ impl Emitter<'_, '_> {
         let n_in = def.inputs.len() as u32 + extra_in;
         let n_param = def.params.len() as u32;
         let n_out = def.outputs.len() as u32 + extra_out;
-        let cells_in = self.alloc_aligned(8 * n_in.max(1), 8);
-        let cells_param = self.alloc_aligned(8 * n_param.max(1), 8);
-        let cells_out = self.alloc_aligned(8 * n_out.max(1), 8);
+        let cell = CELL;
+        let cells_in = self.alloc_aligned(cell * n_in.max(1), cell);
+        let cells_param = self.alloc_aligned(cell * n_param.max(1), cell);
+        let cells_out = self.alloc_aligned(cell * n_out.max(1), cell);
         // Constant parameters are in their cells from the start (a data segment), so the
         // driver's `init` already sees its pins and address.
         for i in 0..def.params.len() {
+            if def.params[i].kind == ParamKind::Text {
+                continue;
+            }
             if let Ok(v) = self.const_param(inst, i) {
-                let at = cells_param + 8 * i as u32;
-                self.data.push((at, v.to_le_bytes().to_vec()));
+                let at = cells_param + cell * i as u32;
+                let bytes = if def.params[i].kind == ParamKind::Float {
+                    (v as f32).to_le_bytes().to_vec()
+                } else {
+                    (v as i32).to_le_bytes().to_vec()
+                };
+                self.data.push((at, bytes));
+            }
+        }
+
+        // Text slots of v2: the strings the shims copy from.
+        let (mut text_in, mut text_param, mut text_out) = (Vec::new(), Vec::new(), Vec::new());
+        {
+            for (i, p) in def.inputs.iter().enumerate() {
+                if p.ty == SignalType::String {
+                    text_in.push((i as u32, self.str_in(inst, &p.name)?));
+                }
+            }
+            // String widgets of a display: slots after the own inputs and the numeric widgets.
+            if let Some(d) = &display {
+                let first = def.inputs.len() + d.widgets.len();
+                for (k, w) in d.strings.iter().enumerate() {
+                    let text = match w {
+                        Some(w) => self.str_in(w, "in")?,
+                        None => Str {
+                            ptr: 0,
+                            len: Len::Const(0),
+                        },
+                    };
+                    text_in.push(((first + k) as u32, text));
+                }
+            }
+            for (i, p) in def.params.iter().enumerate() {
+                if p.kind == ParamKind::Text {
+                    text_param.push((i as u32, self.param_str(inst, &p.name)?));
+                }
+            }
+            for (i, p) in def.outputs.iter().enumerate() {
+                if p.ty == SignalType::String {
+                    if let Some(b) = self.out_buf(inst, &p.name) {
+                        text_out.push((i as u32, b));
+                    }
+                }
             }
         }
 
         // Inputs and parameters go to their cells every step (a parameter may come from a tag).
-        let f64_store = I::F64Store(Self::mem_arg(0, 3));
         for i in 0..def.inputs.len() {
-            self.c_i((cells_in + 8 * i as u32) as i32);
+            if def.inputs[i].ty == SignalType::String {
+                continue;
+            }
+            self.c_i((cells_in + cell * i as u32) as i32);
             let ty = self.input(inst, i);
-            self.op(to_f64(ty));
-            self.op(f64_store.clone());
+            self.store_cell(ty);
         }
         for i in 0..def.params.len() {
             if def.params[i].kind == ParamKind::Text {
                 continue;
             }
-            self.c_i((cells_param + 8 * i as u32) as i32);
+            self.c_i((cells_param + cell * i as u32) as i32);
             let ty = self.param(inst, i);
-            self.op(to_f64(ty));
-            self.op(f64_store.clone());
+            let want = Ty::of_kind(def.params[i].kind);
+            self.coerce(ty, want);
+            self.store_cell(want);
         }
         if let Some(d) = &display {
-            self.display_inputs(d, cells_in + 8 * def.inputs.len() as u32);
+            self.display_inputs(d, cells_in + cell * def.inputs.len() as u32);
         }
         let k = self.drivers.len() as u32;
         self.op(I::LocalGet(0));
         self.op(I::Call(DRIVER_STEP + k));
         for (i, port) in def.outputs.iter().enumerate() {
-            if !inst.outputs.contains_key(port.name.as_str()) {
+            if !inst.outputs.contains_key(port.name.as_str()) || port.ty == SignalType::String {
                 continue;
             }
-            self.c_i((cells_out + 8 * i as u32) as i32);
-            self.op(I::F64Load(Self::mem_arg(0, 3)));
+            self.c_i((cells_out + cell * i as u32) as i32);
             let ty = if port.ty == SignalType::Float {
-                self.op(I::F32DemoteF64);
+                self.op(I::F32Load(Self::mem_arg(0, 2)));
                 Ty::F
             } else {
-                self.op(I::I32TruncSatF64S);
+                self.op(I::I32Load(Self::mem_arg(0, 2)));
                 Ty::I
             };
             self.set_out(inst, i, ty);
         }
         if let Some(d) = &display {
-            self.display_outputs(d, cells_out + 8 * def.outputs.len() as u32);
+            self.display_outputs(d, cells_out + cell * def.outputs.len() as u32);
         }
         self.drivers.push(DriverUse {
             driver: d,
             shims,
+            text_in,
+            text_param,
+            text_out,
             base,
             cells_in,
             n_in,
@@ -357,10 +466,128 @@ impl Emitter<'_, '_> {
     }
 }
 
+impl Emitter<'_, '_> {
+    /// Stores the value of type `ty` on the stack (below it the address) into a v2 cell.
+    fn store_cell(&mut self, ty: Ty) {
+        self.op(match ty {
+            Ty::I => I::I32Store(Self::mem_arg(0, 2)),
+            Ty::F => I::F32Store(Self::mem_arg(0, 2)),
+        });
+    }
+
+    /// The string a text parameter has now: an input, a text variable or a constant.
+    fn param_str(&mut self, inst: &Instance, name: &str) -> Result<Str, WasmError> {
+        if Self::param_is_input(inst, name) {
+            return self.str_in(inst, name);
+        }
+        if let Some(var) = inst.param_vars.get(name) {
+            return match self.string_var_buf(var) {
+                Some((b, _)) => Ok(Str {
+                    ptr: b.ptr,
+                    len: Len::Global(b.len),
+                }),
+                None => Err(self.unsupported(inst, "текстовая переменная не найдена")),
+            };
+        }
+        let text = self.text_param(inst, name);
+        Ok(self.const_str(text.as_bytes()))
+    }
+
+    /// An import reads a cell of its own type. With a constant port index in the call the type
+    /// of that very port is checked; otherwise (an index computed by the block) the block must
+    /// have some port of the type of the import.
+    fn check_v2_types(&self, inst: &Instance, d: &Driver, shims: &[Shim]) -> Result<(), WasmError> {
+        /// What a port is for the import: a number (`Some(Ty)`) or a string (`None`).
+        type PortTy = Option<Ty>;
+        let def = &inst.lib.def;
+        // Ports of a display's extra slots have no type in `block.toml`: the display checks them.
+        let display = self.program.display_plan(&inst.block.id).is_some();
+        let in_tys: Vec<PortTy> = (0..def.inputs.len())
+            .map(|i| (def.inputs[i].ty != SignalType::String).then(|| self.input_ty(inst, i)))
+            .collect();
+        let param_tys: Vec<PortTy> = def
+            .params
+            .iter()
+            .map(|p| (p.kind != ParamKind::Text).then(|| Ty::of_kind(p.kind)))
+            .collect();
+        let out_tys: Vec<PortTy> = def
+            .outputs
+            .iter()
+            .map(|p| (p.ty != SignalType::String).then(|| Ty::of(p.ty)))
+            .collect();
+        // Import name, port types of its side, the type it works with (`None`: text), the
+        // port kind for the message.
+        let rule = |s: Shim| -> Option<(&'static str, &Vec<PortTy>, PortTy, &'static str)> {
+            Some(match s {
+                Shim::InputI => ("input_i", &in_tys, Some(Ty::I), "bool или int вход"),
+                Shim::InputF => ("input_f", &in_tys, Some(Ty::F), "float вход"),
+                Shim::ParamI => (
+                    "param_i",
+                    &param_tys,
+                    Some(Ty::I),
+                    "параметр bool, int, duration или pin",
+                ),
+                Shim::ParamF => ("param_f", &param_tys, Some(Ty::F), "float параметр"),
+                Shim::OutputI => ("output_i", &out_tys, Some(Ty::I), "bool или int выход"),
+                Shim::OutputF => ("output_f", &out_tys, Some(Ty::F), "float выход"),
+                Shim::InputText => ("input_text", &in_tys, None, "вход string"),
+                Shim::ParamText => ("param_text", &param_tys, None, "параметр text"),
+                Shim::OutputText => ("output_text", &out_tys, None, "выход string"),
+                _ => return None,
+            })
+        };
+        let mut seen = Vec::new();
+        for &s in shims {
+            let Some((name, tys, want, what)) = rule(s) else {
+                continue;
+            };
+            // A text import has no port of the type to look for besides the string ones.
+            if want.is_some() && !seen.contains(&name) {
+                seen.push(name);
+                let extras =
+                    display && !name.ends_with("text") && name != "param_i" && name != "param_f";
+                if !extras && !tys.contains(&want) {
+                    return Err(self.unsupported(
+                        inst,
+                        &format!(
+                            "block.wasm использует crab.{name}, а в блоке нет портов этого типа (нужен {what}): тип импорта должен совпадать с типом порта в block.toml"
+                        ),
+                    ));
+                }
+            }
+        }
+        for (imp, index) in d.const_first_args() {
+            let Some((name, tys, want, what)) = rule(shims[imp]) else {
+                continue;
+            };
+            // An index past the ports: a display's extra slot, or a cell that reads 0.
+            let Some(have) = usize::try_from(index).ok().and_then(|i| tys.get(i)) else {
+                continue;
+            };
+            if *have != want {
+                let is = match have {
+                    Some(Ty::I) => "число int (i32)",
+                    Some(Ty::F) => "число float (f32)",
+                    None => "строка",
+                };
+                return Err(self.unsupported(
+                    inst,
+                    &format!(
+                        "block.wasm вызывает crab.{name}({index}, …), а порт {index} в block.toml — {is}: нужен {what}"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What a display block gets besides its own ports (see `display.rs`).
 struct DisplayExtras<'a, 'p> {
     /// The widget input slots: the instance that feeds the widget on this sheet, if any.
     widgets: Vec<Option<&'a Instance<'p>>>,
+    /// The string widget slots (after the numeric ones): the instance feeding the widget, if any.
+    strings: Vec<Option<&'a Instance<'p>>>,
     menu: Option<MenuExtras<'a, 'p>>,
 }
 
@@ -371,7 +598,9 @@ struct MenuExtras<'a, 'p> {
 
 impl DisplayExtras<'_, '_> {
     fn n_in(&self) -> u32 {
-        self.widgets.len() as u32 + self.menu.as_ref().map_or(0, |m| 4 + m.vars.len() as u32)
+        self.widgets.len() as u32
+            + self.strings.len() as u32
+            + self.menu.as_ref().map_or(0, |m| 4 + m.vars.len() as u32)
     }
 
     fn n_out(&self) -> u32 {
@@ -403,19 +632,17 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 .filter(move |i| i.block.id == id || i.block.tag.as_deref() == Some(id.as_str()))
         };
         // The widget itself or an image of it on this sheet feeds it; a linked one wins.
-        let widgets = plan
-            .widgets
-            .iter()
-            .map(|w| {
-                let all: Vec<&Instance> = on_sheet(w.clone())
-                    .filter(|i| i.inputs.contains_key("in"))
-                    .collect();
-                all.iter()
-                    .copied()
-                    .find(|i| in_linked(i))
-                    .or(all.first().copied())
-            })
-            .collect();
+        let feeder = |w: &String| {
+            let all: Vec<&Instance> = on_sheet(w.clone())
+                .filter(|i| i.inputs.contains_key("in"))
+                .collect();
+            all.iter()
+                .copied()
+                .find(|i| in_linked(i))
+                .or(all.first().copied())
+        };
+        let widgets = plan.widgets.iter().map(feeder).collect();
+        let strings = plan.string_widgets.iter().map(feeder).collect();
         let menu = match plan.menu {
             Some(m) => {
                 let Some(menu) = on_sheet(m.block.clone()).find(|i| i.block.id == m.block) else {
@@ -434,41 +661,52 @@ impl<'a, 'p> Emitter<'a, 'p> {
             }
             None => None,
         };
-        Ok(Some(DisplayExtras { widgets, menu }))
+        Ok(Some(DisplayExtras {
+            widgets,
+            strings,
+            menu,
+        }))
     }
 
     /// Stores the widget values, the menu buttons and the menu variables in the input cells
     /// after the block's own ports (`first` is the address of the first extra cell).
+    ///
+    /// Layout of the extras (cell index counted after the block's own inputs; cells are
+    /// 4 bytes, typed by the source signal: `bool`/`int` -> `i32`, `float` -> `f32`): numeric widgets (one per widget of the plan), then string widgets (task 6:
+    /// `disp_string`; read with `input_text` at their slot, the numeric cell stays unused; an unlinked one reads as an empty string),
+    /// then the four menu buttons `up`, `down`, `ok`, `back` (`i32`), then one cell per menu
+    /// variable (type of the variable). Extra output cells follow the block's own outputs:
+    /// `open`, `item`, `changed` (`i32`), the index of the variable just confirmed (`i32`; a value that is no variable index
+    /// means none), then one cell per menu variable (type of the variable).
     fn display_inputs(&mut self, d: &DisplayExtras, first: u32) {
-        let f64_store = I::F64Store(Self::mem_arg(0, 3));
-        let mut cell = first;
+        let cell = CELL;
+        let mut at = first;
         for w in d.widgets.iter().copied() {
             if let Some(w) = w {
-                self.c_i(cell as i32);
+                self.c_i(at as i32);
                 let ty = self.operand(w, "in");
-                self.op(to_f64(ty));
-                self.op(f64_store.clone());
+                self.store_cell(ty);
             }
-            cell += 8;
+            at += cell;
         }
+        // String widgets: their text is read with `input_text`, the numeric cell stays unused.
+        at += cell * d.strings.len() as u32;
         let Some(menu) = &d.menu else {
             return;
         };
         for button in ["up", "down", "ok", "back"] {
             if menu.inst.inputs.contains_key(button) {
-                self.c_i(cell as i32);
+                self.c_i(at as i32);
                 let ty = self.operand(menu.inst, button);
-                self.op(to_f64(ty));
-                self.op(f64_store.clone());
+                self.store_cell(ty);
             }
-            cell += 8;
+            at += cell;
         }
         for v in &menu.vars {
-            self.c_i(cell as i32);
+            self.c_i(at as i32);
             let ty = self.var_read(&v.name);
-            self.op(to_f64(ty));
-            self.op(f64_store.clone());
-            cell += 8;
+            self.store_cell(ty);
+            at += cell;
         }
     }
 
@@ -478,9 +716,11 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let Some(menu) = &d.menu else {
             return;
         };
-        let load = |e: &mut Self, cell: u32| {
-            e.c_i(cell as i32);
-            e.op(I::F64Load(Self::mem_arg(0, 3)));
+        let cell = CELL;
+        // An `i32` out of a cell.
+        let load_i = |e: &mut Self, at: u32| {
+            e.c_i(at as i32);
+            e.op(I::I32Load(Self::mem_arg(0, 2)));
         };
         let def = &menu.inst.lib.def;
         for (k, port) in ["open", "item", "changed"].into_iter().enumerate() {
@@ -490,27 +730,27 @@ impl<'a, 'p> Emitter<'a, 'p> {
             if !menu.inst.outputs.contains_key(port) {
                 continue;
             }
-            load(self, first + 8 * k as u32);
-            self.op(I::I32TruncSatF64S);
+            load_i(self, first + cell * k as u32);
             self.set_out(menu.inst, i, Ty::I);
         }
-        let slot = first + 8 * 3;
+        let slot = first + cell * 3;
         for (v, var) in menu.vars.iter().enumerate() {
-            load(self, slot);
-            self.op(I::F64Const((v as f64).into()));
-            self.op(I::F64Eq);
+            load_i(self, slot);
+            self.c_i(v as i32);
+            self.op(I::I32Eq);
             if var.action {
                 // A pulse of one step.
                 self.var_write(&var.name, Ty::I);
                 continue;
             }
             self.op(I::If(BlockType::Empty));
-            load(self, slot + 8 * (1 + v as u32));
+            let at = slot + cell * (1 + v as u32);
             let ty = self.var_ty(&var.name);
+            self.c_i(at as i32);
             self.op(if ty == Ty::F {
-                I::F32DemoteF64
+                I::F32Load(Self::mem_arg(0, 2))
             } else {
-                I::I32TruncSatF64S
+                I::I32Load(Self::mem_arg(0, 2))
             });
             self.var_write(&var.name, ty);
             // Retained: saved in this scan, not after `settle` and `period`.
@@ -531,53 +771,38 @@ impl<'a, 'p> Emitter<'a, 'p> {
     }
 }
 
-fn to_f64(ty: Ty) -> I<'static> {
-    match ty {
-        Ty::I => I::F64ConvertI32S,
-        Ty::F => I::F64PromoteF32,
-    }
-}
-
 /// Body of the shim of one driver import. `bus` and `log` are the final indices of the
 /// master's imports (or their AOT wrappers).
 pub(super) fn shim_body(shim: Shim, u: &DriverUse, bus: u32, log: u32) -> Function {
     let mut f = Function::new([]);
-    let arg = Emitter::mem_arg(0, 3);
-    // `index < n ? cell(index) : 0`, the same for inputs and parameters.
-    let read = |f: &mut Function, cells: u32, n: u32| {
-        f.instruction(&I::LocalGet(0));
-        f.instruction(&I::I32Const(n as i32));
-        f.instruction(&I::I32LtU);
-        f.instruction(&I::If(BlockType::Result(ValType::F64)));
-        f.instruction(&I::LocalGet(0));
-        f.instruction(&I::I32Const(8));
-        f.instruction(&I::I32Mul);
-        f.instruction(&I::F64Load(MemArg {
-            offset: u64::from(cells),
-            ..arg
-        }));
-        f.instruction(&I::Else);
-        f.instruction(&I::F64Const(0.0.into()));
-        f.instruction(&I::End);
-    };
     match shim {
-        Shim::Input => read(&mut f, u.cells_in, u.n_in),
-        Shim::Param => read(&mut f, u.cells_param, u.n_param),
-        Shim::Output => {
+        Shim::InputI => read_cell(&mut f, u.cells_in, u.n_in, ValType::I32),
+        Shim::InputF => read_cell(&mut f, u.cells_in, u.n_in, ValType::F32),
+        Shim::ParamI => read_cell(&mut f, u.cells_param, u.n_param, ValType::I32),
+        Shim::ParamF => read_cell(&mut f, u.cells_param, u.n_param, ValType::F32),
+        Shim::OutputI | Shim::OutputF => {
             f.instruction(&I::LocalGet(0));
             f.instruction(&I::I32Const(u.n_out as i32));
             f.instruction(&I::I32LtU);
             f.instruction(&I::If(BlockType::Empty));
             f.instruction(&I::LocalGet(0));
-            f.instruction(&I::I32Const(8));
+            f.instruction(&I::I32Const(4));
             f.instruction(&I::I32Mul);
             f.instruction(&I::LocalGet(1));
-            f.instruction(&I::F64Store(MemArg {
+            let m = MemArg {
                 offset: u64::from(u.cells_out),
-                ..arg
-            }));
+                ..Emitter::mem_arg(0, 2)
+            };
+            f.instruction(&if matches!(shim, Shim::OutputF) {
+                I::F32Store(m)
+            } else {
+                I::I32Store(m)
+            });
             f.instruction(&I::End);
         }
+        Shim::InputText => return text_in_shim(u, &u.text_in),
+        Shim::ParamText => return text_in_shim(u, &u.text_param),
+        Shim::OutputText => return text_out_shim(u),
         Shim::Log => {
             f.instruction(&I::LocalGet(0));
             f.instruction(&I::I32Const(u.base as i32));
@@ -614,6 +839,149 @@ pub(super) fn shim_body(shim: Shim, u: &DriverUse, bus: u32, log: u32) -> Functi
         }
     }
     f.instruction(&I::End);
+    f
+}
+
+/// `index < n ? cell(index) : 0` for a cell of 4 bytes of type `ty`.
+fn read_cell(f: &mut Function, cells: u32, n: u32, ty: ValType) {
+    f.instruction(&I::LocalGet(0));
+    f.instruction(&I::I32Const(n as i32));
+    f.instruction(&I::I32LtU);
+    f.instruction(&I::If(BlockType::Result(ty)));
+    f.instruction(&I::LocalGet(0));
+    f.instruction(&I::I32Const(4));
+    f.instruction(&I::I32Mul);
+    let m = MemArg {
+        offset: u64::from(cells),
+        ..Emitter::mem_arg(0, 2)
+    };
+    f.instruction(&if ty == ValType::F32 {
+        I::F32Load(m)
+    } else {
+        I::I32Load(m)
+    });
+    f.instruction(&I::Else);
+    f.instruction(&if ty == ValType::F32 {
+        I::F32Const(0.0.into())
+    } else {
+        I::I32Const(0)
+    });
+    f.instruction(&I::End);
+}
+
+/// `input_text(i, ptr, cap) -> n` (also `param_text`): copies `n = min(cap, len)` bytes of the
+/// string of slot `i` to `ptr` of the block's window and returns `n`; 0 for a slot that is no
+/// string or when the bytes do not fit the window.
+fn text_in_shim(u: &DriverUse, slots: &[(u32, Str)]) -> Function {
+    let window = u.driver.window;
+    // Locals: 0 i, 1 ptr, 2 cap, 3 n.
+    let mut f = Function::new([(1, ValType::I32)]);
+    let mut i = |x: I<'static>| {
+        f.instruction(&x);
+    };
+    for &(slot, s) in slots {
+        let len = |i: &mut dyn FnMut(I<'static>)| match s.len {
+            Len::Const(n) => i(I::I32Const(n as i32)),
+            Len::Global(g) => i(I::GlobalGet(g)),
+        };
+        i(I::LocalGet(0));
+        i(I::I32Const(slot as i32));
+        i(I::I32Eq);
+        i(I::If(BlockType::Empty));
+        // n = cap > len ? len : cap
+        len(&mut i);
+        i(I::LocalGet(2));
+        i(I::LocalGet(2));
+        len(&mut i);
+        i(I::I32GtU);
+        i(I::Select);
+        i(I::LocalSet(3));
+        // Does not fit the window: nothing is copied.
+        i(I::LocalGet(1));
+        i(I::I32Const(window as i32));
+        i(I::I32GtU);
+        i(I::If(BlockType::Empty));
+        i(I::I32Const(0));
+        i(I::Return);
+        i(I::End);
+        i(I::LocalGet(3));
+        i(I::I32Const(window as i32));
+        i(I::LocalGet(1));
+        i(I::I32Sub);
+        i(I::I32GtU);
+        i(I::If(BlockType::Empty));
+        i(I::I32Const(0));
+        i(I::Return);
+        i(I::End);
+        i(I::LocalGet(1));
+        i(I::I32Const(u.base as i32));
+        i(I::I32Add);
+        i(I::I32Const(s.ptr as i32));
+        i(I::LocalGet(3));
+        i(I::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+        i(I::LocalGet(3));
+        i(I::Return);
+        i(I::End);
+    }
+    i(I::I32Const(0));
+    i(I::End);
+    f
+}
+
+/// `output_text(i, ptr, len)`: copies `min(len, capacity)` bytes from `ptr` of the window into
+/// the buffer of the string output `i` and sets its length; nothing for a bad range.
+fn text_out_shim(u: &DriverUse) -> Function {
+    let window = u.driver.window;
+    // Locals: 0 i, 1 ptr, 2 len, 3 n.
+    let mut f = Function::new([(1, ValType::I32)]);
+    let mut i = |x: I<'static>| {
+        f.instruction(&x);
+    };
+    for &(slot, b) in &u.text_out {
+        i(I::LocalGet(0));
+        i(I::I32Const(slot as i32));
+        i(I::I32Eq);
+        i(I::If(BlockType::Empty));
+        // n = len > cap ? cap : len
+        i(I::I32Const(b.cap as i32));
+        i(I::LocalGet(2));
+        i(I::LocalGet(2));
+        i(I::I32Const(b.cap as i32));
+        i(I::I32GtU);
+        i(I::Select);
+        i(I::LocalSet(3));
+        i(I::LocalGet(1));
+        i(I::I32Const(window as i32));
+        i(I::I32GtU);
+        i(I::If(BlockType::Empty));
+        i(I::Return);
+        i(I::End);
+        i(I::LocalGet(3));
+        i(I::I32Const(window as i32));
+        i(I::LocalGet(1));
+        i(I::I32Sub);
+        i(I::I32GtU);
+        i(I::If(BlockType::Empty));
+        i(I::Return);
+        i(I::End);
+        i(I::I32Const(b.ptr as i32));
+        i(I::LocalGet(1));
+        i(I::I32Const(u.base as i32));
+        i(I::I32Add);
+        i(I::LocalGet(3));
+        i(I::MemoryCopy {
+            src_mem: 0,
+            dst_mem: 0,
+        });
+        i(I::LocalGet(3));
+        i(I::GlobalSet(b.len));
+        i(I::Return);
+        i(I::End);
+    }
+    i(I::End);
     f
 }
 
@@ -736,5 +1104,81 @@ mod tests {
         )
         .unwrap();
         assert!(inspect_block_wasm(&bad).unwrap_err().contains("сигнатур"));
+    }
+}
+
+#[cfg(test)]
+mod v2_tests {
+    use super::inspect_block_wasm;
+    use crate::wasm::driver::OLD_F64;
+
+    fn wasm(imports: &str) -> Vec<u8> {
+        wat::parse_str(format!(
+            "(module {imports} (func (export \"step\") (param i32)))"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn v2_imports_are_known_and_typed() {
+        let ok = wasm(
+            r#"(import "crab" "input_i" (func (param i32) (result i32)))
+               (import "crab" "input_f" (func (param i32) (result f32)))
+               (import "crab" "param_i" (func (param i32) (result i32)))
+               (import "crab" "param_f" (func (param i32) (result f32)))
+               (import "crab" "output_i" (func (param i32 i32)))
+               (import "crab" "output_f" (func (param i32 f32)))
+               (import "crab" "input_text" (func (param i32 i32 i32) (result i32)))
+               (import "crab" "param_text" (func (param i32 i32 i32) (result i32)))
+               (import "crab" "output_text" (func (param i32 i32 i32)))"#,
+        );
+        let info = inspect_block_wasm(&ok).unwrap();
+        assert!(info.v2 && !info.driver);
+        // `input_f` that returns f64 is the old interface: refused.
+        let bad = wasm(r#"(import "crab" "input_f" (func (param i32) (result f64)))"#);
+        assert!(inspect_block_wasm(&bad).unwrap_err().contains(OLD_F64));
+        // The legacy module name has no imports any more.
+        let flp = wasm(r#"(import "flp" "input_i" (func (param i32) (result i32)))"#);
+        assert!(inspect_block_wasm(&flp).unwrap_err().contains(OLD_F64));
+    }
+
+    #[test]
+    fn the_old_interface_is_refused() {
+        for imports in [
+            r#"(import "crab" "input" (func (param i32) (result f64)))"#,
+            r#"(import "crab" "param" (func (param i32) (result f64)))"#,
+            r#"(import "crab" "output" (func (param i32 f64)))"#,
+            r#"(import "flp" "log" (func (param i32 i32)))"#,
+            r#"(import "crab" "input" (func (param i32) (result f64)))
+               (import "crab" "output_i" (func (param i32 i32)))"#,
+        ] {
+            let e = inspect_block_wasm(&wasm(imports)).unwrap_err();
+            assert!(e.contains(OLD_F64), "{imports}: {e}");
+        }
+    }
+
+    #[test]
+    fn any_f64_is_refused() {
+        // A body with an f64 instruction, no old imports.
+        let op = wat::parse_str(
+            r#"(module (func (export "step") (param i32)
+                 (drop (f64.add (f64.const 1) (f64.const 2)))))"#,
+        )
+        .unwrap();
+        assert!(inspect_block_wasm(&op).unwrap_err().contains(OLD_F64));
+        // An f64 local that is never used.
+        let local =
+            wat::parse_str(r#"(module (func (export "step") (param i32) (local f64)))"#).unwrap();
+        assert!(inspect_block_wasm(&local).unwrap_err().contains(OLD_F64));
+        // An f64 global.
+        let global = wat::parse_str(
+            r#"(module (global (mut f64) (f64.const 0)) (func (export "step") (param i32)))"#,
+        )
+        .unwrap();
+        assert!(inspect_block_wasm(&global).unwrap_err().contains(OLD_F64));
+        // Without f64: fine.
+        let ok =
+            wat::parse_str(r#"(module (func (export "step") (param i32) (local f32)))"#).unwrap();
+        assert!(inspect_block_wasm(&ok).is_ok());
     }
 }

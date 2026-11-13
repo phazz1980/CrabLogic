@@ -53,17 +53,10 @@ pub(super) fn confirm_close(
     }
 }
 
-pub(super) fn status(ui: &mut Ui, ed: &BlockEditor, def: &Result<BlockDef, String>, pal: &Palette) {
-    let (color, text): (Color32, String) = match (def, &ed.generated) {
-        (Err(e), _) => (pal.error, crate::i18n::fmt("Описание: {0}", &[&e])),
-        (Ok(_), Some(Generated { result: Err(e), .. })) => {
-            let first = e.lines().next().unwrap_or_default();
-            (pal.error, crate::i18n::fmt("Код: {0}", &[&first]))
-        }
-        _ => (
-            pal.ok,
-            crate::i18n::tr("Описание и код в порядке").to_owned(),
-        ),
+pub(super) fn status(ui: &mut Ui, def: &Result<BlockDef, String>, pal: &Palette) {
+    let (color, text): (Color32, String) = match def {
+        Err(e) => (pal.error, crate::i18n::fmt("Описание: {0}", &[&e])),
+        Ok(_) => (pal.ok, crate::i18n::tr("Описание в порядке").to_owned()),
     };
     ui.colored_label(color, text);
 }
@@ -212,41 +205,8 @@ pub(super) fn save(
             }
         }
     }
-    // The wizard with mistakes cannot be saved: its code would not match the fields.
-    if let Some(w) = &ed.form.wizard {
-        let errors = w.validate();
-        if !errors.is_empty() {
-            app.info(
-                LogLevel::Error,
-                crate::i18n::msg(
-                    "Блок не сохранён: мастер кода C++ для платы не закончен ({0})",
-                    &[&errors.join("; ")],
-                ),
-            );
-            return false;
-        }
-    }
-    // A native part that does not parse never lands in the library.
-    if !ed.form.native.trim().is_empty() {
-        if let Err(errors) = crab_core::native::parse_native(&ed.form.native, def) {
-            app.info(
-                LogLevel::Error,
-                crate::i18n::msg(
-                    "Блок не сохранён: в коде C++ для платы {0}",
-                    &[&crab_core::native::join_errors(&errors)],
-                ),
-            );
-            return false;
-        }
-    }
-    match crab_core::save_block(&lib_dir, def, &ed.form.template, &ed.form.docs) {
+    match crab_core::save_block(&lib_dir, def, &ed.form.docs) {
         Ok(dir) => {
-            if let Err(e) = crab_core::save_native(&lib_dir, &def.info.kind, &ed.form.native) {
-                app.info(
-                    LogLevel::Error,
-                    crate::i18n::msg("Код C++ для платы не сохранён: {0}", &[&e]),
-                );
-            }
             app.info(
                 LogLevel::Ok,
                 crate::i18n::msg(
@@ -259,16 +219,6 @@ pub(super) fn save(
                     LogLevel::Error,
                     crate::i18n::msg("Библиотека или пример не сохранены: {0}", &[&e]),
                 );
-            }
-            ed.sim_build.start(&dir, def, &ed.form.template);
-            // A block without a template runs from its module: translate it for the firmware.
-            if ed.form.template.trim().is_empty() {
-                if let Some(w2c2) = crate::theme::w2c2() {
-                    let (dir, kind) = (dir.clone(), kind.clone());
-                    std::thread::spawn(move || {
-                        let _ = crab_build::wasm_c::translate_firmware(&w2c2, &dir, &kind);
-                    });
-                }
             }
             ed.original = Some(kind.clone());
             ed.clean = ed.form.clone();

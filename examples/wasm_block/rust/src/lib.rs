@@ -5,12 +5,12 @@
 
 #[link(wasm_import_module = "crab")]
 extern "C" {
-    fn input(index: i32) -> f64;
-    fn param(index: i32) -> f64;
-    fn output(index: i32, value: f64);
+    fn input_f(index: i32) -> f32;
+    fn param_f(index: i32) -> f32;
+    fn output_f(index: i32, value: f32);
 }
 
-static mut Y: f64 = 0.0;
+static mut Y: f32 = 0.0;
 
 #[no_mangle]
 pub extern "C" fn init() {
@@ -20,10 +20,10 @@ pub extern "C" fn init() {
 #[no_mangle]
 pub extern "C" fn step(dt_ms: i32) {
     unsafe {
-        let tau = param(0);
-        let dt = f64::from(dt_ms);
-        Y += dt / (tau + dt) * (input(0) - Y);
-        output(0, Y);
+        let tau = param_f(0);
+        let dt = dt_ms as f32;
+        Y += dt / (tau + dt) * (input_f(0) - Y);
+        output_f(0, Y);
     }
 }
 

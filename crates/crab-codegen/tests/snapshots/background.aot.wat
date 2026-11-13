@@ -34,7 +34,7 @@
   (export "step" (func 9))
   (export "init" (func 10))
   (func (;8;) (type 4) (result i32)
-    i32.const 4
+    i32.const 5
   )
   (func (;9;) (type 5) (param i32)
     global.get 1

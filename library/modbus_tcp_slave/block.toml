@@ -6,7 +6,6 @@ group = "Сеть"
 shared = "network"
 description = "Ведомое устройство Modbus TCP через Wi-Fi или Ethernet: таблицы регистров для SCADA и панелей."
 single = true
-includes = ["flprogModbusTCP.h"]
 
 [[output]]
 name = "error"

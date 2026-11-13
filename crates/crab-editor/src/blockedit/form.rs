@@ -193,21 +193,11 @@ pub(super) struct Form {
     pub(super) expander: bool,
     /// `[block.uart]`: kept as it is, the form has no field for it yet.
     pub(super) uart: Option<crab_core::UartUse>,
-    /// Comma-separated.
-    pub(super) includes: String,
-    pub(super) libraries: String,
     pub(super) inputs: Vec<PortRow>,
     pub(super) outputs: Vec<PortRow>,
     pub(super) params: Vec<ParamRow>,
-    pub(super) template: String,
-    /// `native.cpp`: C++ built into the master firmware; empty when the block has none.
-    pub(super) native: String,
-    /// Wizard fields when `native` was made by the wizard and not edited by hand.
-    pub(super) wizard: Option<LibraryWizard>,
-    /// The wizard as last applied to the rows of the form.
-    pub(super) synced: Option<LibraryWizard>,
     pub(super) docs: String,
-    /// Arduino libraries and the example attached to the block.
+    /// The example and the pictures attached to the block.
     pub(super) attach: Attach,
 }
 
@@ -223,15 +213,9 @@ impl Form {
             single: false,
             expander: false,
             uart: None,
-            includes: String::new(),
-            libraries: String::new(),
             inputs: vec![PortRow::new("in")],
             outputs: vec![PortRow::new("out")],
             params: Vec::new(),
-            template: NEW_TEMPLATE.into(),
-            native: String::new(),
-            wizard: None,
-            synced: None,
             docs: String::new(),
             attach: Attach::default(),
         }
@@ -240,16 +224,6 @@ impl Form {
     pub(super) fn from_block(block: &LibraryBlock) -> Self {
         let def = &block.def;
         let info = &def.info;
-        let template = block
-            .template(ESP32_CPP_TEMPLATE)
-            .and_then(Result::ok)
-            // Blocks written in Rust show their generated C++ as a starting point.
-            .or_else(|| crab_codegen::builtin_cpp_preview(def))
-            .unwrap_or_default();
-        let native = block
-            .native_path()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .unwrap_or_default();
         let docs = block
             .docs_path()
             .and_then(|p| fs::read_to_string(p).ok())
@@ -264,35 +238,12 @@ impl Form {
             single: info.single,
             expander: info.expander,
             uart: info.uart.clone(),
-            includes: info.includes.join(", "),
-            libraries: info.libraries.join(", "),
             inputs: def.inputs.iter().map(PortRow::from_def).collect(),
             outputs: def.outputs.iter().map(PortRow::from_def).collect(),
             params: def.params.iter().map(ParamRow::from_def).collect(),
-            template,
-            wizard: LibraryWizard::parse(&native),
-            synced: LibraryWizard::parse(&native),
-            native,
             docs,
             attach: Attach::from_dir(&block.dir),
         }
-    }
-
-    /// Group (`input`, `output`, `param`) and trimmed name of every row, in table order.
-    pub(super) fn row_names(&self) -> Vec<(&'static str, String)> {
-        let rows = |group, names: Vec<&String>| {
-            names
-                .into_iter()
-                .map(|n| (group, n.trim().to_owned()))
-                .collect::<Vec<_>>()
-        };
-        let mut all = rows("input", self.inputs.iter().map(|p| &p.name).collect());
-        all.extend(rows(
-            "output",
-            self.outputs.iter().map(|p| &p.name).collect(),
-        ));
-        all.extend(rows("param", self.params.iter().map(|p| &p.name).collect()));
-        all
     }
 
     /// Block definition from the form, checked the same way the library checks it.
@@ -316,8 +267,6 @@ impl Form {
                 shared: String::new(),
                 description: self.description.trim().to_owned(),
                 memory: self.memory,
-                includes: list(&self.includes),
-                libraries: list(&self.libraries),
                 single: self.single,
                 hidden: false,
                 pullable: false,
@@ -350,14 +299,6 @@ impl Form {
 pub(super) fn optional(text: &str) -> Option<String> {
     let t = text.trim();
     (!t.is_empty()).then(|| t.to_owned())
-}
-
-pub(super) fn list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 pub(super) fn parse_bool(t: &str) -> Option<bool> {

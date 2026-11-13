@@ -1,4 +1,4 @@
-//! Browser demo: view an example schema, build it (check and sketch) and simulate it.
+//! Browser demo: view an example schema, build it (check and sheet modules) and simulate it.
 //! View only: the schema cannot be edited here.
 
 mod data {
@@ -8,7 +8,6 @@ mod sheet;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
-use crab_codegen::ArduinoCpp;
 use crab_core::{Library, ParamValue, Project};
 use crab_sim::{BenchInput, Computed, Simulation};
 use eframe::egui;
@@ -19,14 +18,33 @@ enum Tab {
     Build,
 }
 
+/// One line per sheet: the size of its WASM module.
+fn sheet_modules(project: &Project, lib: &Library) -> Result<String, String> {
+    let project = crab_codegen::prepare(project, lib);
+    let program = crab_codegen::Program::build(&project, lib).map_err(|e| e.to_string())?;
+    let mut lines = Vec::new();
+    for sheet in program.sheets() {
+        let module = program.wasm_module(sheet).map_err(|e| e.to_string())?;
+        lines.push(format!(
+            "лист {sheet}: модуль «{}», {} байт",
+            module.name,
+            module.wasm.len()
+        ));
+    }
+    Ok(lines.join(
+        "
+",
+    ))
+}
+
 pub struct DemoApp {
     lib: Library,
     project: Project,
     example: usize,
     tab: Tab,
-    /// Result of the build: report lines and the sketch.
+    /// Result of the build: report lines and the sheet modules.
     report: String,
-    sketch: String,
+    modules: String,
     sim: Option<Simulation>,
     running: bool,
     speed: f64,
@@ -46,7 +64,7 @@ impl DemoApp {
             example: 0,
             tab: Tab::Sheet,
             report: String::new(),
-            sketch: String::new(),
+            modules: String::new(),
             sim: None,
             running: true,
             speed: 1.0,
@@ -62,7 +80,7 @@ impl DemoApp {
         self.project = project;
         self.selected = None;
         self.report.clear();
-        self.sketch.clear();
+        self.modules.clear();
         self.tab = Tab::Sheet;
         self.start_sim();
     }
@@ -93,9 +111,9 @@ impl DemoApp {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        self.sketch = match crab_codegen::generate(&self.project, &self.lib, &ArduinoCpp::RELEASE) {
-            Ok(code) => code,
-            Err(e) => format!("// Скетч не собран: {e}"),
+        self.modules = match sheet_modules(&self.project, &self.lib) {
+            Ok(text) => text,
+            Err(e) => format!("Модули не собраны: {e}"),
         };
         self.tab = Tab::Build;
     }
@@ -516,18 +534,7 @@ impl eframe::App for DemoApp {
                     egui::ScrollArea::both().show(ui, |ui| {
                         ui.label(egui::RichText::new(&self.report).monospace());
                         ui.separator();
-                        #[cfg(target_arch = "wasm32")]
-                        if ui.button("Скачать .ino").clicked() {
-                            web::download(
-                                &format!("{}.ino", self.project.file_stem()),
-                                &self.sketch,
-                            );
-                        }
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.sketch.as_str())
-                                .code_editor()
-                                .desired_width(f32::INFINITY),
-                        );
+                        ui.label(egui::RichText::new(&self.modules).monospace());
                     });
                 }
             }
@@ -546,9 +553,8 @@ mod tests {
         for i in 0..data::EXAMPLES.len() {
             let name = data::EXAMPLES[i].0;
             let project = load_example(i);
-            let code = crab_codegen::generate(&project, &lib, &ArduinoCpp::RELEASE)
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert!(code.contains("void loop()"), "{name}");
+            let text = sheet_modules(&project, &lib).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(text.contains("лист"), "{name}");
             let mut sim = Simulation::new(&project.without_disabled().logic, &lib)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             sim.step(100).unwrap();

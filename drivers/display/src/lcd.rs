@@ -3,7 +3,7 @@
 
 use crate::font::{glyph, known, latin_twin, ICON_BASE};
 use crate::safe::Safe;
-use crate::text::{clamp, fmt_value, round, Grid, Txt};
+use crate::text::{bar_fill, fmt_value, scaled_f32, Grid, Txt};
 use crab_ui_format::{DisplayKind, WidgetKindView, WidgetView};
 
 /// Widest supported display (2004).
@@ -32,8 +32,9 @@ pub fn size(kind: DisplayKind) -> (usize, usize) {
     }
 }
 
-/// Writes a widget into the grid; coordinates and sizes are in character cells.
-pub fn draw_widget(g: &mut Grid, w: &WidgetView, v: f64) {
+/// Writes a widget into the grid; coordinates and sizes are in character cells. `v` is the cell
+/// of its input (`f32` bits for a value or a bar, an `i32` for a LED), `s` the text of a string widget.
+pub fn draw_widget(g: &mut Grid, w: &WidgetView, v: u32, s: &str) {
     let (x, y) = (w.x as usize, w.y as usize);
     match w.kind {
         WidgetKindView::Text { text } => g.put_str(x, y, text),
@@ -43,23 +44,12 @@ pub fn draw_widget(g: &mut Grid, w: &WidgetView, v: f64) {
             unit,
         } => {
             let mut t = Txt::new();
-            fmt_value(&mut t, v, format, decimals, unit);
+            fmt_value(&mut t, scaled_f32(v, decimals), format, decimals, unit);
             g.put(x, y, t.chars());
         }
         WidgetKindView::Bar { min, max } => {
             let cells = if w.w > 0 { w.w as usize } else { 8 };
-            let span = (max - min) as f64;
-            let frac = if span > 0.0 {
-                (v - min as f64) / span
-            } else {
-                0.0
-            };
-            let frac = if frac.is_nan() {
-                0.0
-            } else {
-                clamp(frac, 0.0, 1.0)
-            };
-            let fill = round(frac * cells as f64) as usize;
+            let fill = bar_fill(f32::from_bits(v), min, max, cells as i32) as usize;
             for k in 0..cells {
                 g.put(
                     x + k,
@@ -75,13 +65,20 @@ pub fn draw_widget(g: &mut Grid, w: &WidgetView, v: f64) {
         WidgetKindView::Led => g.put(
             x,
             y,
-            &[if v > 0.5 {
+            &[if (v as i32) > 0 {
                 ROM_BLOCK as u16
             } else {
                 b'o' as u16
             }],
         ),
         WidgetKindView::Icon { id } => g.put(x, y, &[ICON_BASE + id as u16]),
+        WidgetKindView::String => {
+            // Clipped to the width in cells (0: up to the edge of the display).
+            let mut t = Txt::new();
+            t.push_str(s);
+            let fit = if w.w == 0 { t.len() } else { w.w as usize };
+            g.put(x, y, t.chars().get(..t.len().min(fit)).unwrap_or(&[]));
+        }
     }
 }
 

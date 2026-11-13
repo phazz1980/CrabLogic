@@ -595,7 +595,7 @@ mod tests {
     fn search_ignores_case_and_finds_cyrillic() {
         let pages = [
             page("a", "Схема", "# Схема\n\nБлоки соединяют связями."),
-            page("b", "Сборка", "# Сборка\n\narduino-cli собирает скетч."),
+            page("b", "Сборка", "# Сборка\n\nМодули заливаются на плату."),
         ];
         let hits = search(pages.iter(), "СВЯЗЯМИ");
         assert_eq!(hits.len(), 1);
@@ -614,7 +614,6 @@ mod tests {
         let block = LibraryBlock {
             def,
             dir: std::path::PathBuf::from("нет-такой-папки"),
-            inline_templates: Default::default(),
         };
         let page = block_page(&block);
         assert_eq!(page.id, "blocks/t");

@@ -51,7 +51,7 @@
   (export "step" (func 10))
   (export "init" (func 11))
   (func (;9;) (type 4) (result i32)
-    i32.const 4
+    i32.const 5
   )
   (func (;10;) (type 5) (param i32)
     (local i32 i32 i32 i32 f32)

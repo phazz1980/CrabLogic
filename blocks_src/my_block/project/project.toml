@@ -1,0 +1,6 @@
+[project]
+name = "my_block"
+description = "Test project for the user block my_block (block lives in library/my_block)."
+
+[board]
+fqbn = "esp32:esp32:esp32"

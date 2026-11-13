@@ -11,8 +11,6 @@
 Значения пишут и читают блоки «Запись Modbus» и «Чтение Modbus» с `slave = "rtu"`.
 UART0 занят USB и онлайн-отладкой, поэтому берите UART1 или UART2.
 
-Нужна Arduino-библиотека FLProg_Utilites (`flprogUart.h`), она лежит в `libs/`.
-
 Пример: `examples/modbus_rtu`.
 
 В модуле WASM протокол ведёт мастер-прошивка (в неё включается Modbus, около +14% flash на ESP32-C3); на плате не проверено.

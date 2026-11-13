@@ -362,14 +362,19 @@ fn math(op: i32, a: f32, b: f32) -> f32 {
         0 => a.sin(),
         1 => a.cos(),
         2 => a.tan(),
-        _ => a.powf(b),
+        3 => a.powf(b),
+        // fmod: the sign of `a` (Rust `%` on floats is C `fmodf`)
+        4 => a % b,
+        _ => 0.0,
     };
     #[cfg(not(feature = "std"))]
     match op {
         0 => libm::sinf(a),
         1 => libm::cosf(a),
         2 => libm::tanf(a),
-        _ => libm::powf(a, b),
+        3 => libm::powf(a, b),
+        4 => libm::fmodf(a, b),
+        _ => 0.0,
     }
 }
 

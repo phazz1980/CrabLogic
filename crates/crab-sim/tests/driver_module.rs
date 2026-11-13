@@ -10,27 +10,29 @@ use crab_core::{Library, Project};
 use crab_sim::mcu::{Manifest, McuModule, Word};
 
 const DRIVER: &str = r#"(module
-  (import "crab" "input" (func $in (param i32) (result f64)))
-  (import "crab" "param" (func $param (param i32) (result f64)))
-  (import "crab" "output" (func $out (param i32 f64)))
+  (import "crab" "input_f" (func $in (param i32) (result f32)))
+  (import "crab" "param_i" (func $param_i (param i32) (result i32)))
+  (import "crab" "param_f" (func $param_f (param i32) (result f32)))
+  (import "crab" "output_f" (func $out_f (param i32 f32)))
+  (import "crab" "output_i" (func $out_i (param i32 i32)))
   (import "bus" "i2c_read" (func $rd (param i32 i32 i32) (result i32)))
   (memory 1)
   (global $n (mut i32) (i32.const 0))
   (global $hb i32 (i32.const 256))
   (export "__heap_base" (global $hb))
-  (data (i32.const 64) "\00\00\00\00\00\00\59\40")
+  (data (i32.const 64) "\00\00\c8\42")
   (func (export "init")
-    (global.set $n (i32.add (i32.const 10) (i32.trunc_f64_s (call $param (i32.const 1))))))
+    (global.set $n (i32.add (i32.const 10) (i32.trunc_f32_s (call $param_f (i32.const 1))))))
   (func (export "step") (param i32)
     (global.set $n (i32.add (global.get $n) (i32.const 1)))
-    (call $out (i32.const 0)
-      (f64.add (f64.mul (call $in (i32.const 0)) (f64.const 2)) (call $param (i32.const 1))))
-    (call $out (i32.const 1)
-      (f64.add (f64.load (i32.const 64)) (f64.convert_i32_s (global.get $n))))
-    (drop (call $rd (i32.trunc_f64_s (call $param (i32.const 0))) (i32.const 128) (i32.const 2)))
-    (call $out (i32.const 2)
-      (f64.convert_i32_u (i32.or (i32.shl (i32.load8_u (i32.const 128)) (i32.const 8))
-                                 (i32.load8_u (i32.const 129)))))
+    (call $out_f (i32.const 0)
+      (f32.add (f32.mul (call $in (i32.const 0)) (f32.const 2)) (call $param_f (i32.const 1))))
+    (call $out_f (i32.const 1)
+      (f32.add (f32.load (i32.const 64)) (f32.convert_i32_s (global.get $n))))
+    (drop (call $rd (call $param_i (i32.const 0)) (i32.const 128) (i32.const 2)))
+    (call $out_i (i32.const 2)
+      (i32.or (i32.shl (i32.load8_u (i32.const 128)) (i32.const 8))
+              (i32.load8_u (i32.const 129))))
     (loop $l (br_if $l (i32.const 0)))))"#;
 
 const BLOCK: &str = r#"[block]
@@ -134,7 +136,7 @@ fn driver_runs_inside_the_sheet_module() {
         module.outputs()[i]
     };
     assert_eq!(out(&module, "sensor.a"), Word::float(3.25));
-    // Data segment (100.0) plus the counter set by `init` (10) and one step.
+    // Data segment (100.0 as f32) plus the counter set by `init` (10) and one step.
     assert_eq!(out(&module, "sensor.b"), Word::float(111.0));
     assert_eq!(out(&module, "sensor.raw"), Word::int(0x1234));
 
@@ -273,7 +275,7 @@ fn spi_and_onewire_calls_reach_the_master() {
 /// and the sum of the bytes; a second copy with a window-sized `cap` and a bad `ptr` must be
 /// ignored.
 const CONFIG_DRIVER: &str = r#"(module
-  (import "crab" "output" (func $out (param i32 f64)))
+  (import "crab" "output_f" (func $out (param i32 f32)))
   (import "crab" "config" (func $cfg (param i32 i32) (result i32)))
   (memory 1)
   (global $hb i32 (i32.const 512))
@@ -289,8 +291,8 @@ const CONFIG_DRIVER: &str = r#"(module
       (local.set $sum (i32.add (local.get $sum) (i32.load8_u (i32.add (i32.const 100) (local.get $i)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
-    (call $out (i32.const 0) (f64.convert_i32_u (local.get $len)))
-    (call $out (i32.const 1) (f64.convert_i32_u (local.get $sum)))))"#;
+    (call $out (i32.const 0) (f32.convert_i32_u (local.get $len)))
+    (call $out (i32.const 1) (f32.convert_i32_u (local.get $sum)))))"#;
 
 #[test]
 fn crab_config_reaches_the_driver_per_instance() {

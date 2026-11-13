@@ -45,7 +45,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if !matches!(kind, "uart_read" | "uart_send" | "uart_config") {
             return Ok(false);
         }
-        let Some((u, _)) = crate::arduino::uart_of(self.program, inst) else {
+        let Some((u, _)) = crate::program::uart_of(self.program, inst) else {
             return Err(self.unsupported(inst, "не найден UART блока"));
         };
         // Sending on USB / UART0 goes to the console of the master (its lines, shown by the editor);

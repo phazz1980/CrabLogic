@@ -24,7 +24,10 @@ pub fn holds_blocks(dir: &std::path::Path) -> bool {
             .any(|e| e.path().join(BLOCK_FILE).is_file())
     })
 }
+/// Old C++ template of a block: not supported any more; its presence is reported (`DiagKind::CppBlock`).
 pub const ESP32_CPP_TEMPLATE: &str = "esp32.cpp.tmpl";
+/// Old native part of a block (C++ built into the master): not supported any more.
+pub const NATIVE_FILE: &str = "native.cpp";
 pub const DOCS_FILE: &str = "docs.md";
 /// WASM module that simulates the block on the PC (any source language).
 pub const WASM_FILE: &str = "block.wasm";
@@ -53,7 +56,7 @@ pub enum SignalType {
     Bool,
     Int,
     Float,
-    /// Text (Arduino `String`): IP addresses, messages, names.
+    /// Text: IP addresses, messages, names.
     String,
     /// Inputs only: takes a signal of any type; the template sees the real one
     /// in `{{ input_type.<port> }}`. Not in [`SignalType::ALL`].
@@ -276,13 +279,6 @@ pub struct BlockInfo {
     /// The block keeps state between scans (timers, triggers, counters).
     #[serde(default, skip_serializing_if = "is_false")]
     pub memory: bool,
-    /// Headers the generated code needs, e.g. `DallasTemperature.h`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub includes: Vec<String>,
-    /// Arduino libraries to install before building, as arduino-cli names them
-    /// (`DallasTemperature`, optionally with a version: `OneWire@2.3.8`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub libraries: Vec<String>,
     /// Only one instance per project (Wi-Fi, NTP, deep sleep).
     #[serde(default, skip_serializing_if = "is_false")]
     pub single: bool,
@@ -820,11 +816,11 @@ fn condition_value(kind: ParamKind, value: &ParamValue) -> minijinja::Value {
 /// Where the firmware code of a block comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirmwareSource {
-    /// The Arduino template `esp32.cpp.tmpl`; it wins over the module.
+    /// The old C++ template `esp32.cpp.tmpl`: not supported any more (the block needs a `block.wasm`).
     Template,
-    /// The WASM module `block.wasm`, translated to C.
+    /// The WASM module `block.wasm`.
     Module,
-    /// Neither: the block cannot be built into firmware.
+    /// Neither: the block is built into the program (a built-in block) or cannot run.
     None,
 }
 
@@ -833,21 +829,10 @@ pub enum FirmwareSource {
 pub struct LibraryBlock {
     pub def: BlockDef,
     pub dir: PathBuf,
-    /// Templates kept in memory: built-in blocks, which have no folder, and blocks
-    /// being edited before they are saved. File name → source.
-    pub inline_templates: BTreeMap<&'static str, String>,
 }
 
 impl LibraryBlock {
-    /// Template source: inline for built-in blocks, otherwise read from the folder.
-    pub fn template(&self, file: &str) -> Option<std::io::Result<String>> {
-        if let Some(src) = self.inline_templates.get(file) {
-            return Some(Ok(src.clone()));
-        }
-        self.template_path(file).map(fs::read_to_string)
-    }
-
-    /// Path to a template (e.g. [`ESP32_CPP_TEMPLATE`]) if the block has one.
+    /// Path to a file of the block folder, if the block has it.
     pub fn template_path(&self, file: &str) -> Option<PathBuf> {
         let path = self.dir.join(file);
         path.is_file().then_some(path)
@@ -857,26 +842,9 @@ impl LibraryBlock {
         self.template_path(DOCS_FILE)
     }
 
-    /// The native part `native.cpp` (C++ built into the master), if the block has one.
+    /// The old native part `native.cpp`, if the block folder has one (not supported any more).
     pub fn native_path(&self) -> Option<PathBuf> {
-        self.template_path(crate::native::NATIVE_FILE)
-    }
-
-    /// Reads and checks `native.cpp`; `None` when the block has no native part.
-    pub fn native_part(&self) -> Result<Option<crate::native::NativePart>> {
-        let Some(path) = self.native_path() else {
-            return Ok(None);
-        };
-        let source = fs::read_to_string(&path).map_err(|source| Error::Read {
-            path: path.clone(),
-            source,
-        })?;
-        crate::native::parse_native(&source, &self.def)
-            .map(Some)
-            .map_err(|errors| Error::InvalidNative {
-                message: crate::native::join_errors(&errors),
-                path,
-            })
+        self.template_path(NATIVE_FILE)
     }
 
     /// The simulation module `block.wasm`, if the block has one.
@@ -884,11 +852,9 @@ impl LibraryBlock {
         self.template_path(WASM_FILE)
     }
 
-    /// Source of the firmware code: the template if there is one, otherwise the module.
+    /// Source of the firmware code: the old template if there is one, otherwise the module.
     pub fn firmware_source(&self) -> FirmwareSource {
-        if self.inline_templates.contains_key(ESP32_CPP_TEMPLATE)
-            || self.template_path(ESP32_CPP_TEMPLATE).is_some()
-        {
+        if self.template_path(ESP32_CPP_TEMPLATE).is_some() {
             FirmwareSource::Template
         } else if self.wasm_path().is_some() {
             FirmwareSource::Module
@@ -903,22 +869,17 @@ impl LibraryBlock {
         let folder = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         def.validate(folder)
             .map_err(|message| Error::InvalidBlockDef { path, message })?;
-        let block = Self {
+        Ok(Self {
             def,
             dir: dir.to_owned(),
-            inline_templates: BTreeMap::new(),
-        };
-        // A broken native part keeps the block out of the library, like a broken block.toml.
-        block.native_part()?;
-        Ok(block)
+        })
     }
 }
 
-/// Writes a block folder `<lib_dir>/<type>/`: `block.toml`, the ESP32 template and
-/// `docs.md`. The definition is validated first, so a broken block never lands in
+/// Writes a block folder `<lib_dir>/<type>/`: `block.toml` and `docs.md`. The definition is validated first, so a broken block never lands in
 /// the library. Only files whose contents changed are rewritten (hand-written
 /// comments in an unchanged `block.toml` survive); empty docs create no file.
-pub fn save_block(lib_dir: &Path, def: &BlockDef, template: &str, docs: &str) -> Result<PathBuf> {
+pub fn save_block(lib_dir: &Path, def: &BlockDef, docs: &str) -> Result<PathBuf> {
     let dir = lib_dir.join(&def.info.kind);
     def.validate(&def.info.kind)
         .map_err(|message| Error::InvalidBlockDef {
@@ -942,7 +903,7 @@ pub fn save_block(lib_dir: &Path, def: &BlockDef, template: &str, docs: &str) ->
         })?;
         fs::write(&toml_path, text).map_err(write_err(&toml_path))?;
     }
-    for (file, text) in [(ESP32_CPP_TEMPLATE, template), (DOCS_FILE, docs)] {
+    for (file, text) in [(DOCS_FILE, docs)] {
         let path = dir.join(file);
         let old = fs::read_to_string(&path).ok();
         if old.as_deref() == Some(text) || (old.is_none() && text.trim().is_empty()) {
@@ -957,37 +918,6 @@ pub fn save_block(lib_dir: &Path, def: &BlockDef, template: &str, docs: &str) ->
         crate::pack::record(&dir);
     }
     Ok(dir)
-}
-
-/// Writes the native part `native.cpp` of the block folder `<lib_dir>/<kind>/`, or removes the
-/// file when `source` is empty. The folder must exist (save the block first); only a file whose
-/// contents changed is rewritten. Returns whether anything changed.
-pub fn save_native(lib_dir: &Path, kind: &str, source: &str) -> Result<bool> {
-    let path = lib_dir.join(kind).join(crate::native::NATIVE_FILE);
-    let old = fs::read_to_string(&path).ok();
-    let changed = if source.trim().is_empty() {
-        if old.is_none() {
-            return Ok(false);
-        }
-        fs::remove_file(&path).map_err(|source| Error::Write {
-            path: path.clone(),
-            source,
-        })?;
-        true
-    } else if old.as_deref() == Some(source) {
-        false
-    } else {
-        fs::write(&path, source).map_err(|source| Error::Write {
-            path: path.clone(),
-            source,
-        })?;
-        true
-    };
-    if changed {
-        crate::pack::bump(lib_dir);
-        crate::pack::record(&lib_dir.join(kind));
-    }
-    Ok(changed)
 }
 
 /// All known block types: built-in ones from `library/` and user ones from
@@ -1084,14 +1014,8 @@ impl Library {
                 .and_then(|def| def.validate(folder).map(|()| def));
             match def {
                 Ok(def) => {
-                    lib.blocks.insert(
-                        def.info.kind.clone(),
-                        LibraryBlock {
-                            def,
-                            dir,
-                            inline_templates: BTreeMap::new(),
-                        },
-                    );
+                    lib.blocks
+                        .insert(def.info.kind.clone(), LibraryBlock { def, dir });
                 }
                 Err(message) => errors.push(Error::InvalidBlockDef { path, message }),
             }
@@ -1595,14 +1519,7 @@ name = \"in\"
 type = \"bool\"
 "
         ));
-        let dir = save_block(
-            &lib,
-            &d,
-            "// @loop
-",
-            "",
-        )
-        .unwrap();
+        let dir = save_block(&lib, &d, "").unwrap();
         assert!(!dir.join(DOCS_FILE).exists());
         let loaded = LibraryBlock::load(&dir).unwrap();
         assert_eq!(loaded.def, d);
@@ -1615,30 +1532,16 @@ type = \"bool\"
             fs::read_to_string(&toml_path).unwrap()
         );
         fs::write(&toml_path, &commented).unwrap();
-        save_block(
-            &lib,
-            &d,
-            "// @loop
-",
-            "Описание",
-        )
-        .unwrap();
+        save_block(&lib, &d, "Описание").unwrap();
         assert_eq!(fs::read_to_string(&toml_path).unwrap(), commented);
         assert!(dir.join(DOCS_FILE).exists());
 
         d.info.name = "Другое".into();
-        save_block(
-            &lib,
-            &d,
-            "// @loop
-",
-            "",
-        )
-        .unwrap();
+        save_block(&lib, &d, "").unwrap();
         assert_eq!(LibraryBlock::load(&dir).unwrap().def.info.name, "Другое");
 
         d.inputs[0].name = "id".into();
-        assert!(save_block(&lib, &d, "", "").is_err());
+        assert!(save_block(&lib, &d, "").is_err());
         fs::remove_dir_all(&lib).unwrap();
     }
 
@@ -1678,9 +1581,9 @@ group = \"G\"
 "
             ))
         };
-        save_block(&builtin, &block("and"), "", "").unwrap();
-        save_block(&user, &block("mine"), "", "").unwrap();
-        save_block(&user, &block("and"), "", "").unwrap();
+        save_block(&builtin, &block("and"), "").unwrap();
+        save_block(&user, &block("mine"), "").unwrap();
+        save_block(&user, &block("and"), "").unwrap();
 
         let (lib, errors) = Library::load_with_user(&builtin).unwrap();
         assert_eq!(lib.len(), 2);
@@ -1700,98 +1603,6 @@ group = \"G\"
     }
 
     #[test]
-    fn native_part_is_loaded_and_checked() {
-        let root = std::env::temp_dir().join(format!("crab_native_part_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let block = |kind: &str| {
-            def(&format!(
-                "[block]
-type = \"{kind}\"
-name = \"N\"
-group = \"G\"
-
-[[output]]
-name = \"t\"
-type = \"float\"
-"
-            ))
-        };
-        save_block(&root, &block("good"), "", "").unwrap();
-        save_block(&root, &block("bad"), "", "").unwrap();
-        save_block(&root, &block("plain"), "", "").unwrap();
-        fs::write(
-            root.join("good").join(crate::native::NATIVE_FILE),
-            "// crab:native libs=\"Wire\"\n// crab:sim t=1.5\nCRAB_STEP(State& s, In in, Out& out) {}\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("bad").join(crate::native::NATIVE_FILE),
-            "// crab:sim x=1\n",
-        )
-        .unwrap();
-
-        let (lib, errors) = Library::load(&root).unwrap();
-        let part = lib.get("good").unwrap().native_part().unwrap().unwrap();
-        assert_eq!(part.libs, ["Wire"]);
-        assert!(lib.get("plain").unwrap().native_part().unwrap().is_none());
-        // A broken native part keeps the block out of the library, with a Russian message.
-        assert!(lib.get("bad").is_none());
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        let text = errors[0].to_string();
-        assert!(
-            text.contains("нативная часть") && text.contains("CRAB_STEP"),
-            "{text}"
-        );
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn save_native_writes_changes_and_removes_an_empty_part() {
-        let root = std::env::temp_dir().join(format!("crab_save_native_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let d = def("[block]
-type = \"n\"
-name = \"N\"
-group = \"G\"
-");
-        save_block(&root, &d, "", "").unwrap();
-        let file = root.join("n").join(crate::native::NATIVE_FILE);
-        assert!(
-            !save_native(
-                &root, "n", "  
-"
-            )
-            .unwrap(),
-            "nothing to remove"
-        );
-        assert!(save_native(
-            &root,
-            "n",
-            "CRAB_STEP(a) {}
-"
-        )
-        .unwrap());
-        assert_eq!(
-            fs::read_to_string(&file).unwrap(),
-            "CRAB_STEP(a) {}
-"
-        );
-        assert!(
-            !save_native(
-                &root,
-                "n",
-                "CRAB_STEP(a) {}
-"
-            )
-            .unwrap(),
-            "unchanged"
-        );
-        assert!(save_native(&root, "n", "").unwrap());
-        assert!(!file.exists());
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
     fn user_sections_and_folders() {
         let root = std::env::temp_dir().join(format!("crab_user_tree_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1803,15 +1614,9 @@ group = \"G\"
                 "[block]\ntype = \"{kind}\"\nname = \"N\"\ngroup = \"старая\"\n"
             ))
         };
-        save_block(&user, &block("top"), "", "").unwrap();
-        save_block(
-            &user.join("Насосы").join("Управление"),
-            &block("pump"),
-            "",
-            "",
-        )
-        .unwrap();
-        save_block(&user.join("Другой"), &block("pump"), "", "").unwrap();
+        save_block(&user, &block("top"), "").unwrap();
+        save_block(&user.join("Насосы").join("Управление"), &block("pump"), "").unwrap();
+        save_block(&user.join("Другой"), &block("pump"), "").unwrap();
         fs::create_dir_all(user.join("Пустой раздел")).unwrap();
 
         let (lib, errors) = Library::load_with_user(&builtin).unwrap();
@@ -1837,7 +1642,7 @@ group = \"G\"
         fs::create_dir_all(&builtin).unwrap();
         let user = user_library_dir(&builtin);
         let block = def("[block]\ntype = \"top\"\nname = \"N\"\ngroup = \"\"\n");
-        save_block(&user, &block, "", "").unwrap();
+        save_block(&user, &block, "").unwrap();
         let board = crate::boards::BoardDef {
             info: crate::boards::BoardInfo {
                 id: "my_board".into(),

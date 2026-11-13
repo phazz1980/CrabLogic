@@ -1,5 +1,5 @@
 //! Import and export of user blocks: a pack of blocks is one `.crabblocks` file with the
-//! Arduino libraries and examples of its blocks. Single blocks can be taken from a project.
+//! modules, docs and examples of its blocks. Single blocks can be taken from a project.
 
 use std::path::{Path, PathBuf};
 
@@ -208,10 +208,17 @@ pub fn window(app: &mut EditorApp, ctx: &egui::Context) {
                 ui.weak(format!("← {}", e.source));
             });
             ui.indent(("import", e.block.kind()), |ui| {
-                let libs = e.block.libraries();
                 let mut parts = Vec::new();
-                if !libs.is_empty() {
-                    parts.push(format!("библиотеки: {}", libs.join(", ")));
+                // A block of the C++ times has no module and does not run any more.
+                if !e
+                    .block
+                    .files
+                    .iter()
+                    .any(|(n, _)| n == crab_core::library::WASM_FILE)
+                {
+                    parts.push(
+                        crate::i18n::tr("нет block.wasm: блок на C++ не заработает").to_owned(),
+                    );
                 }
                 if e.block.has_example() {
                     parts.push("есть пример".to_owned());

@@ -1,5 +1,5 @@
 //! Sparkplug B edge node of the master (`specs/wasm-kernel/plan.md`, 4.1в). Modules reach it through
-//! the `net` import, ops 30..=33; the ABI is the one of the C++ master (`specs/wasm-on-mcu/proto/master`).
+//! the `net` import, ops 30..=33; the ABI is fixed in `crab-kernel` (`abi.rs`).
 //!
 //! A module names the node (group, node id) and declares metrics; the master owns the session: the
 //! will is NDEATH, after every connect NBIRTH goes out with all metrics, then NDATA with the changed

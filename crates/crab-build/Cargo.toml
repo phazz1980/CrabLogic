@@ -1,22 +1,18 @@
 [package]
 name = "crab-build"
-description = "Building and uploading CrabLogic firmware with arduino-cli"
+description = "Putting CrabLogic onto a board: the Rust master firmware and WASM sheet modules"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-crab-blocks = { path = "../crab-blocks" }
 crab-codegen = { path = "../crab-codegen" }
 crab-core = { path = "../crab-core" }
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 sha2 = "0.10"
 wasmparser = "0.263"
 ureq = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-sevenz-rust = { version = "0.6.1", default-features = false }
 espflash = { version = "4.7", default-features = false, features = ["serialport"] }
 serialport = { version = "4", default-features = false }
-

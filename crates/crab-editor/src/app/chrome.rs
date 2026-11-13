@@ -1,71 +1,8 @@
 use super::*;
 
 impl EditorApp {
-    /// Menu part: build simulation modules of user blocks with zig.
-    pub(super) fn sim_settings_menu(&mut self, ui: &mut egui::Ui) {
-        if ui
-            .checkbox(
-                &mut self.template_sim,
-                crate::i18n::tr("Собирать симуляцию пользовательских блоков"),
-            )
-            .on_hover_text(crate::i18n::tr(
-                "При сохранении блока его код превращается в модуль симуляции; нужен компилятор zig",
-            ))
-            .changed()
-        {
-            theme::save_template_sim(self.template_sim);
-        }
-        ui.horizontal(|ui| {
-            ui.label(crate::i18n::tr("Путь к zig:"));
-            if ui.text_edit_singleline(&mut self.zig_path).changed() {
-                theme::save_zig_path(&self.zig_path);
-                self.zig_status.clear();
-            }
-            if ui.button(crate::i18n::tr("Обзор...")).clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.zig_path = path.to_string_lossy().into_owned();
-                    theme::save_zig_path(&self.zig_path);
-                    self.zig_status.clear();
-                }
-            }
-        });
-        if ui.button(crate::i18n::tr("Проверить")).clicked() {
-            self.zig_status =
-                match crab_build::wasm::zig_version(std::path::Path::new(self.zig_path.trim())) {
-                    Ok(v) => crate::i18n::fmt("zig {0} найден", &[&v]),
-                    Err(e) => e,
-                };
-        }
-        if !self.zig_status.is_empty() {
-            ui.label(&self.zig_status);
-        }
-        ui.horizontal(|ui| {
-            ui.label(crate::i18n::tr("Путь к w2c2:"))
-                .on_hover_text(crate::i18n::tr(
-                "Нужен блокам на Rust/WASM без шаблона C++: переводит block.wasm в C для прошивки",
-            ));
-            if ui.text_edit_singleline(&mut self.w2c2_path).changed() {
-                theme::save_w2c2_path(&self.w2c2_path);
-                self.w2c2_status.clear();
-            }
-            if ui.button(crate::i18n::tr("Обзор...")).clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                    self.w2c2_path = path.to_string_lossy().into_owned();
-                    theme::save_w2c2_path(&self.w2c2_path);
-                    self.w2c2_status.clear();
-                }
-            }
-        });
-        if ui.button(crate::i18n::tr("Проверить w2c2")).clicked() {
-            self.w2c2_status =
-                match crab_build::wasm_c::w2c2_check(std::path::Path::new(self.w2c2_path.trim())) {
-                    Ok(()) => crate::i18n::tr("w2c2 найден").to_owned(),
-                    Err(e) => e,
-                };
-        }
-        if !self.w2c2_status.is_empty() {
-            ui.label(&self.w2c2_status);
-        }
+    /// Menu part: the AOT compiler (wamrc) of the modules.
+    pub(super) fn aot_settings_menu(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(crate::i18n::tr("Путь к wamrc (AOT-компилятор модулей):"))
                 .on_hover_text(crate::i18n::tr(
@@ -140,7 +77,8 @@ impl EditorApp {
             self.run_check();
         }
         if pressed(shortcut(Modifiers::NONE, Key::F5)) {
-            self.start_job(JobKind::Build, ctx);
+            let port = self.port_choice();
+            self.start_job(JobKind::UploadModules { port }, ctx);
         }
         // Delete only when no text field or window has focus.
         if self.dialog.is_none()
@@ -487,11 +425,9 @@ impl EditorApp {
                     self.set_autosave(minutes);
                 }
             });
-            ui.menu_button(crate::i18n::tr("Симуляция блоков"), |ui| self.sim_settings_menu(ui));
-            if ui.button(crate::i18n::tr("Ядра ESP32...")).clicked() {
-                self.cores_conf.show();
-                ui.close();
-            }
+            ui.menu_button(crate::i18n::tr("AOT-компилятор модулей"), |ui| {
+                self.aot_settings_menu(ui)
+            });
             ui.separator();
             if ui.button(crate::i18n::tr("Выход")).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -643,32 +579,17 @@ impl EditorApp {
                 self.run_check();
             }
             if ui
-                .add_enabled(has_doc, egui::Button::new(crate::i18n::tr("Код C++")))
-                .clicked()
-            {
-                self.code_view = Some(crate::codeview::CodeView::new());
-            }
-            if ui
                 .add_enabled(
                     has_doc && idle,
-                    egui::Button::new(crate::i18n::tr("Собрать")).shortcut_text("F5"),
-                )
-                .clicked()
-            {
-                self.start_job(JobKind::Build, ui.ctx());
-            }
-            if ui
-                .add_enabled(
-                    has_doc && idle,
-                    egui::Button::new(crate::i18n::tr("Пересобрать полностью")),
+                    egui::Button::new(crate::i18n::tr("Залить модули")).shortcut_text("F5"),
                 )
                 .on_hover_text(crate::i18n::tr(
-                    "Собрать заново, даже если схема не менялась: \
-                     после обновления библиотек или ядра ESP32",
+                    "Листы схемы как WASM-модули в мастер-прошивку на плате, без перепрошивки",
                 ))
                 .clicked()
             {
-                self.start_job(JobKind::Rebuild, ui.ctx());
+                let port = self.port_choice();
+                self.start_job(JobKind::UploadModules { port }, ui.ctx());
             }
             if ui
                 .add_enabled(
@@ -886,7 +807,6 @@ impl EditorApp {
             users,
             from_blocks,
             self.lib.boards(),
-            ctx,
         );
         self.dialog = Some(Dialog::Board(dialog));
         self.scan_ports(ctx);
@@ -1184,22 +1104,6 @@ impl EditorApp {
                 if doc.dirty { " *" } else { "" }
             ),
             None => "CrabLogic".to_owned(),
-        }
-    }
-
-    /// Comments of the generated sketch follow the interface: Russian for the Russian
-    /// interface, English for all others.
-    pub(super) fn sync_comment_lang(&mut self) {
-        let want = if crate::i18n::current() == crate::i18n::Lang::Ru {
-            ""
-        } else {
-            "en"
-        };
-        if let Some(doc) = self.doc.as_mut() {
-            if doc.project.config.project.comment_lang != want {
-                doc.project.config.project.comment_lang = want.to_owned();
-                doc.revision += 1;
-            }
         }
     }
 

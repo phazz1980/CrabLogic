@@ -45,8 +45,8 @@ impl Context for Mem {
         Ok(())
     }
 
-    fn build(&mut self, _: bool, _: Option<String>, _: bool) -> Result<String, String> {
-        Err("сборка в тестах не нужна".into())
+    fn upload_modules(&mut self, _: Option<String>, _: bool) -> Result<String, String> {
+        Err("заливка в тестах не нужна".into())
     }
 
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String> {
@@ -120,10 +120,11 @@ fn builds_a_schema_step_by_step() {
     assert_eq!(blocks.len(), 3);
     assert_eq!(schema["placement"]["delay"]["sheet"], 1);
 
-    let r = run(&mut c, "generate", json!({})).unwrap();
-    let code = r["sketch"].as_str().unwrap();
-    assert!(code.contains("// delay: timer_on"));
-    assert!(code.contains("2000UL"));
+    let r = run(&mut c, "build", json!({})).unwrap();
+    let modules = r["modules"].as_array().unwrap();
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0]["sheet"], 1);
+    assert!(modules[0]["wasm_bytes"].as_u64().unwrap() > 0);
 }
 
 #[test]
@@ -159,8 +160,8 @@ fn constants_and_inversion() {
     .unwrap();
     let schema = run(&mut c, "get_schema", json!({})).unwrap();
     assert!(schema["logic"].to_string().contains("\"invert\":[\"out\"]"));
-    let r = run(&mut c, "generate", json!({})).unwrap();
-    assert!(r["sketch"].as_str().unwrap().contains("!button_out"));
+    let r = run(&mut c, "build", json!({})).unwrap();
+    assert!(!r["modules"].as_array().unwrap().is_empty());
     // Not an input of the button, and not a logical constant.
     assert!(run(
         &mut c,
@@ -306,38 +307,71 @@ fn library_queries() {
         .map(|b| b["type"].as_str().unwrap())
         .collect();
     assert!(kinds.contains(&"timer_on"), "{kinds:?}");
-    let t = run(&mut c, "get_block_type", json!({"type": "bit_and"})).unwrap();
-    assert!(t["template"].as_str().unwrap().contains("@loop"));
     let t = run(&mut c, "get_block_type", json!({"type": "timer_on"})).unwrap();
     assert!(t["docs"].as_str().unwrap().contains("TON"));
-    // Written in Rust: the C++ comes from the generator.
-    let cpp = t["template"].as_str().unwrap();
-    assert!(cpp.contains("@loop") && cpp.contains("millis()"), "{cpp}");
+    // Built-in blocks run from Rust code of the program: no module file of their own.
+    assert_eq!(t["has_wasm"], false);
+}
+
+/// Standard base64 of `data` (the tool takes `block.wasm` as text).
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..=chunk.len() {
+            out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+        out.extend(std::iter::repeat_n('=', 3 - chunk.len()));
+    }
+    out
 }
 
 #[test]
 fn creates_block_types_only_when_valid() {
     let mut c = ctx("create");
+    let example =
+        repo_path("skills/crablogic-block/examples/window_check/project/library/window_check");
+    let toml = fs::read_to_string(example.join("block.toml")).unwrap();
+    let wasm = base64(&fs::read(example.join("block.wasm")).unwrap());
+
+    // The type in block.toml must match the requested one.
     let bad = run(
         &mut c,
         "create_block_type",
-        json!({"type": "twice", "block_toml": "[block]\ntype = \"other\"\nname = \"x\"\ngroup = \"g\"\n", "template": ""}),
+        json!({"type": "twice", "block_toml": toml, "wasm_base64": wasm}),
     );
     assert!(bad.is_err());
     assert!(!c.lib_dir.join("twice").exists());
 
-    let toml = "[block]\ntype = \"twice\"\nname = \"Удвоение\"\ngroup = \"Числа\"\n\
-                [[input]]\nname = \"in\"\ntype = \"float\"\n\
-                [[output]]\nname = \"out\"\ntype = \"float\"\n";
+    // A block without a module (the old C++ way) is refused.
+    let none = run(
+        &mut c,
+        "create_block_type",
+        json!({"type": "window_check", "block_toml": toml, "wasm_base64": "", "template": "// @loop\n"}),
+    );
+    assert!(none.is_err());
+    assert!(!c.lib_dir.join("window_check").exists());
+    let junk = run(
+        &mut c,
+        "create_block_type",
+        json!({"type": "window_check", "block_toml": toml, "wasm_base64": "это не base64"}),
+    );
+    assert!(junk.unwrap_err().contains("base64"));
+
     run(
         &mut c,
         "create_block_type",
-        json!({"type": "twice", "block_toml": toml,
-               "template": "// @loop\n{{ output.out }} = {{ input.in }} * 2.0f;\n",
-               "docs": "# Удвоение\n"}),
+        json!({"type": "window_check", "block_toml": toml, "wasm_base64": wasm,
+               "docs": "# Окно\n"}),
     )
     .unwrap();
-    assert!(c.lib.get("twice").is_some() && c.lib.is_user("twice"));
+    assert!(c.lib.get("window_check").is_some() && c.lib.is_user("window_check"));
+    let t = run(&mut c, "get_block_type", json!({"type": "window_check"})).unwrap();
+    assert_eq!(t["has_wasm"], true);
     let builtin = "[block]
 type = \"and\"
 name = \"И\"
@@ -346,53 +380,15 @@ group = \"Логика\"
     let taken = run(
         &mut c,
         "create_block_type",
-        json!({"type": "and", "block_toml": builtin, "template": ""}),
+        json!({"type": "and", "block_toml": builtin, "wasm_base64": wasm}),
     );
     assert!(taken.unwrap_err().contains("встроенным"));
-    let r = run(&mut c, "add_block", json!({"type": "twice"})).unwrap();
-    assert_eq!(r["id"], "twice_1");
-}
-
-#[test]
-fn creates_a_block_with_a_native_part() {
-    let mut c = ctx("native");
-    let toml = "[block]
-type = \"bmp\"
-name = \"Датчик\"
-group = \"Датчики\"
-                [[output]]
-name = \"temperature\"
-type = \"float\"
-";
-    let bad = run(
+    let again = run(
         &mut c,
         "create_block_type",
-        json!({"type": "bmp", "block_toml": toml, "native": "// crab:native
-int x;
-"}),
+        json!({"type": "window_check", "block_toml": toml, "wasm_base64": wasm}),
     );
-    assert!(bad.unwrap_err().contains("native.cpp"));
-    assert!(!c.lib_dir.join("bmp").exists());
-    let none = run(
-        &mut c,
-        "create_block_type",
-        json!({"type": "bmp", "block_toml": toml}),
-    );
-    assert!(none.unwrap_err().contains("native"));
-
-    let code = "// crab:native libs=\"Wire\" i2c=0x76
-// crab:sim temperature=21
-                CRAB_STEP(State& s, In in, Out& out) { out.temperature = 21.0f; }
-";
-    run(
-        &mut c,
-        "create_block_type",
-        json!({"type": "bmp", "block_toml": toml, "native": code}),
-    )
-    .unwrap();
-    assert!(c.lib.get("bmp").is_some());
-    let t = run(&mut c, "get_block_type", json!({"type": "bmp"})).unwrap();
-    assert_eq!(t["native"], code);
+    assert!(again.unwrap_err().contains("уже есть"));
 }
 
 #[test]
@@ -453,8 +449,8 @@ fn parameter_becomes_an_input() {
         json!({"input": "t.in", "value": true}),
     )
     .unwrap();
-    let r = run(&mut c, "generate", json!({})).unwrap();
-    assert!(r["sketch"].as_str().unwrap().contains(">= (uint32_t)(750)"));
+    let r = run(&mut c, "build", json!({})).unwrap();
+    assert!(!r["modules"].as_array().unwrap().is_empty());
     run(
         &mut c,
         "set_param_input",

@@ -53,9 +53,9 @@ pub struct UartConfig {
     pub speed: u32,
     /// Data bits, parity (N, E, O) and stop bits: `8N1`, `8E1`, `7E2`...
     pub format: String,
-    /// RX pin; -1 — the default pin of the Arduino core.
+    /// RX pin; -1 — the default pin of the chip.
     pub rx: i64,
-    /// TX pin; -1 — the default pin of the Arduino core.
+    /// TX pin; -1 — the default pin of the chip.
     pub tx: i64,
     /// RS-485 direction pin (DE/RE); -1 — not used.
     pub de: i64,
@@ -110,16 +110,6 @@ impl UartConfig {
         }
     }
 
-    /// Arduino `HardwareSerial` name.
-    pub fn serial(&self) -> String {
-        serial_name(self.number)
-    }
-
-    /// Arduino frame constant, e.g. `SERIAL_8N1`.
-    pub fn arduino_config(&self) -> String {
-        format!("SERIAL_{}", self.format.trim().to_ascii_uppercase())
-    }
-
     /// Pins taken by the UART, as the check counts them.
     pub(crate) fn pin_uses(&self) -> Vec<PinUse> {
         [
@@ -139,14 +129,6 @@ impl UartConfig {
             bus: String::new(),
         })
         .collect()
-    }
-}
-
-/// `Serial` for USB, `Serial0`, `Serial1`, `Serial2` for the UARTs.
-pub fn serial_name(number: u8) -> String {
-    match number {
-        USB => "Serial".into(),
-        n => format!("Serial{n}"),
     }
 }
 
@@ -480,7 +462,7 @@ pub fn check_project_uarts(project: &crate::Project, lib: &Library) -> Report {
     report
 }
 
-/// Settings of a port for templates and setup code; USB gets its fixed settings.
+/// Settings of a port for the module setup code; USB gets its fixed settings.
 pub fn config_of(uarts: &[UartConfig], number: u8) -> Option<UartConfig> {
     if number == USB {
         return Some(UartConfig {
@@ -621,18 +603,13 @@ mod tests {
     fn formats() {
         let mut u = UartConfig::new(1);
         assert_eq!(u.frame(), Some((8, 'N', 1)));
-        assert_eq!(u.arduino_config(), "SERIAL_8N1");
         u.format = "7e2".into();
         assert_eq!(u.frame(), Some((7, 'E', 2)));
-        assert_eq!(u.arduino_config(), "SERIAL_7E2");
         assert_eq!(u.parity_code(), 1);
         for bad in ["8X1", "9N1", "8N3", "8N", "8N11", ""] {
             u.format = bad.into();
             assert_eq!(u.frame(), None, "{bad}");
         }
-        assert_eq!(UartConfig::new(2).serial(), "Serial2");
-        assert_eq!(serial_name(USB), "Serial");
-        assert_eq!(serial_name(0), "Serial0");
     }
 
     fn messages(

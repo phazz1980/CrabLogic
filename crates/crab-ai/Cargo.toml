@@ -5,7 +5,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-crab-build = { path = "../crab-build" }
 crab-codegen = { path = "../crab-codegen" }
 crab-core = { path = "../crab-core" }
 crab-pdf = { path = "../crab-pdf" }

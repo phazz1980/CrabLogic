@@ -324,7 +324,6 @@ local = "ssid"
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
         lib
     }

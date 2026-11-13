@@ -26,9 +26,7 @@ pub fn check_project(project: &Project, lib: &Library) -> crab_core::Report {
 
 /// Whether a library block carries C++ code of its own (and no `block.wasm` that would replace it).
 pub fn block_has_cpp(b: &crab_core::LibraryBlock) -> bool {
-    let cpp = b.inline_templates.contains_key(ESP32_CPP_TEMPLATE)
-        || b.template_path(ESP32_CPP_TEMPLATE).is_some()
-        || matches!(b.native_part(), Ok(Some(_)));
+    let cpp = b.template_path(ESP32_CPP_TEMPLATE).is_some() || b.native_path().is_some();
     cpp && b.wasm_path().is_none()
 }
 

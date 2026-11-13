@@ -7,8 +7,9 @@
 
 #[link(wasm_import_module = "crab")]
 extern "C" {
-    fn param(index: i32) -> f64;
-    fn output(index: i32, value: f64);
+    fn param_i(index: i32) -> i32;
+    fn output_i(index: i32, value: i32);
+    fn output_f(index: i32, value: f32);
 }
 
 #[link(wasm_import_module = "bus")]
@@ -51,7 +52,7 @@ static mut MEASURING: bool = false;
 static mut BUF: [u8; 24] = [0; 24];
 
 fn addr() -> i32 {
-    unsafe { param(P_ADDRESS) as i32 }
+    unsafe { param_i(P_ADDRESS) }
 }
 
 /// Reads `n` bytes from register `reg` into `BUF`.
@@ -96,12 +97,13 @@ fn connect() -> Option<Calib> {
 }
 
 /// Compensation formulas of the BMP280 datasheet (integer versions): °C and Pa.
-fn compensate(c: &Calib, adc_t: i32, adc_p: i32) -> (f64, f64) {
+/// Returns (hundredths of C, Pa in Q24.8); all in integers.
+fn compensate(c: &Calib, adc_t: i32, adc_p: i32) -> (i32, i64) {
     let var1 = (((adc_t >> 3) - (c.t1 << 1)) * c.t2) >> 11;
     let d = (adc_t >> 4) - c.t1;
     let var2 = (((d * d) >> 12) * c.t3) >> 14;
     let t_fine = var1 + var2;
-    let t = ((t_fine * 5 + 128) >> 8) as f64 / 100.0;
+    let t = (t_fine * 5 + 128) >> 8;
 
     let p = &c.p;
     let mut v1 = t_fine as i64 - 128_000;
@@ -111,20 +113,20 @@ fn compensate(c: &Calib, adc_t: i32, adc_p: i32) -> (f64, f64) {
     v1 = ((v1 * v1 * p[2]) >> 8) + ((v1 * p[1]) << 12);
     v1 = (((1i64 << 47) + v1) * p[0]) >> 33;
     if v1 == 0 {
-        return (t, 0.0);
+        return (t, 0);
     }
     let mut pr = 1_048_576 - adc_p as i64;
     pr = (((pr << 31) - v2) * 3125) / v1;
     let v1 = (p[8] * (pr >> 13) * (pr >> 13)) >> 25;
     let v2 = (p[7] * pr) >> 19;
     pr = ((pr + v1 + v2) >> 8) + (p[6] << 4);
-    (t, pr as f64 / 256.0)
+    (t, pr)
 }
 
 #[no_mangle]
 pub extern "C" fn init() {
     unsafe {
-        i2c_open(param(P_SDA) as i32, param(P_SCL) as i32, 400_000);
+        i2c_open(param_i(P_SDA), param_i(P_SCL), 400_000);
         CALIB = connect();
         WAIT_MS = 0;
         MEASURING = false;
@@ -142,24 +144,24 @@ pub extern "C" fn step(dt_ms: i32) {
             // Not answering yet (no chip, wrong address): try again a period later.
             CALIB = connect();
             if (*core::ptr::addr_of!(CALIB)).is_none() {
-                output(O_OK, 0.0);
-                WAIT_MS = param(P_PERIOD) as i32;
+                output_i(O_OK, 0);
+                WAIT_MS = param_i(P_PERIOD);
                 return;
             }
         }
         if !MEASURING {
             // Start a measurement and come back when it is done: no waiting inside a step.
             MEASURING = write(REG_CTRL_MEAS, FORCED_X1);
-            WAIT_MS = if MEASURING { MEASURE_MS } else { param(P_PERIOD) as i32 };
+            WAIT_MS = if MEASURING { MEASURE_MS } else { param_i(P_PERIOD) };
             if !MEASURING {
-                output(O_OK, 0.0);
+                output_i(O_OK, 0);
             }
             return;
         }
         MEASURING = false;
-        WAIT_MS = param(P_PERIOD) as i32 - MEASURE_MS;
+        WAIT_MS = param_i(P_PERIOD) - MEASURE_MS;
         if !read(REG_DATA, 6) {
-            output(O_OK, 0.0);
+            output_i(O_OK, 0);
             return;
         }
         let b = &*core::ptr::addr_of!(BUF);
@@ -167,9 +169,10 @@ pub extern "C" fn step(dt_ms: i32) {
             (i32::from(b[at]) << 12) | (i32::from(b[at + 1]) << 4) | (i32::from(b[at + 2]) >> 4)
         };
         let (t, p) = compensate((*core::ptr::addr_of!(CALIB)).as_ref().unwrap_unchecked(), raw(3), raw(0));
-        output(O_TEMPERATURE, t);
-        output(O_PRESSURE, p / 100.0);
-        output(O_OK, 1.0);
+        // Only the result for the `float` ports is `f32`.
+        output_f(O_TEMPERATURE, t as f32 / 100.0);
+        output_f(O_PRESSURE, p as f32 / 25_600.0);
+        output_i(O_OK, 1);
     }
 }
 

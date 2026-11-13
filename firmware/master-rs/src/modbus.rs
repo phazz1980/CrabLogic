@@ -1,7 +1,6 @@
 //! Modbus (RTU and TCP, master and slave) for the Rust master, without any hardware.
 //!
-//! This is a port of the part of the FLProg Modbus library that the C++ master used (see
-//! `h_modbus` in `specs/wasm-on-mcu/proto/master/master.ino`). The board glue only moves bytes
+//! This is a port of the part of the FLProg Modbus library that the old C++ master used. The board glue only moves bytes
 //! between a [`Transport`] (a UART driver or a TCP stream) and the engines here; time is passed in
 //! as `now_ms`, so everything runs in desktop tests.
 //!

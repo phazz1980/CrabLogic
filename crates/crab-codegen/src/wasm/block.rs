@@ -178,27 +178,16 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 self.choose(
                     w,
                     |e| {
-                        e.op(I::LocalGet(a));
                         if w == Ty::I {
+                            e.op(I::LocalGet(a));
                             e.op(I::LocalGet(b));
                             e.op(I::I32RemS);
                         } else {
-                            // fmod through `f64`: a - b * trunc(a / b), with the sign of `a`
-                            e.op(I::F64PromoteF32);
-                            e.op(I::LocalGet(b));
-                            e.op(I::F64PromoteF32);
+                            // fmod by the master (`crab.math`, op 4): no `f64` in the module.
+                            e.c_i(4);
                             e.op(I::LocalGet(a));
-                            e.op(I::F64PromoteF32);
                             e.op(I::LocalGet(b));
-                            e.op(I::F64PromoteF32);
-                            e.op(I::F64Div);
-                            e.op(I::F64Trunc);
-                            e.op(I::F64Mul);
-                            e.op(I::F64Sub);
-                            e.op(I::LocalGet(a));
-                            e.op(I::F64PromoteF32);
-                            e.op(I::F64Copysign);
-                            e.op(I::F32DemoteF64);
+                            e.hw_call(HW_MATH);
                         }
                     },
                     |e| e.c(w, 0.0),
@@ -646,18 +635,28 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 self.input_as(inst, 0, Ty::F);
                 match mode {
                     0 => {
-                        // x + copysign(0.5, x) in f64 is exact for any f32, then cut.
+                        // Half away from zero in `f32` only: t = trunc(x); the difference
+                        // |x - t| is exact; add copysign(1, x) when it is at least a half.
                         let x = self.tmp_f();
+                        let t = self.tmp_f();
                         self.op(I::LocalSet(x));
                         self.op(I::LocalGet(x));
-                        self.op(I::F64PromoteF32);
-                        self.op(I::F64Const(0.5.into()));
+                        self.op(I::F32Trunc);
+                        self.op(I::LocalSet(t));
+                        self.op(I::LocalGet(t));
+                        self.c_f(1.0);
                         self.op(I::LocalGet(x));
-                        self.op(I::F64PromoteF32);
-                        self.op(I::F64Copysign);
-                        self.op(I::F64Add);
-                        self.op(I::F64Trunc);
-                        self.op(I::I32TruncSatF64S);
+                        self.op(I::F32Copysign);
+                        self.c_f(0.0);
+                        self.op(I::LocalGet(x));
+                        self.op(I::LocalGet(t));
+                        self.op(I::F32Sub);
+                        self.op(I::F32Abs);
+                        self.c_f(0.5);
+                        self.op(I::F32Ge);
+                        self.op(I::Select);
+                        self.op(I::F32Add);
+                        self.op(I::I32TruncSatF32S);
                     }
                     1 => {
                         self.op(I::F32Floor);

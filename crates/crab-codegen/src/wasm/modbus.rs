@@ -83,7 +83,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 }
                 s
             } else {
-                let Some((uart, _)) = crate::arduino::uart_of(self.program, inst) else {
+                let Some((uart, _)) = crate::program::uart_of(self.program, inst) else {
                     return Err(self.unsupported(inst, "не найден UART блока"));
                 };
                 vec![

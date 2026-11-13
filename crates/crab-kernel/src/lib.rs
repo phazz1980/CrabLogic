@@ -1,5 +1,5 @@
 //! `crab-kernel`: the module microkernel shared by the PC simulator and the board master
-//! (`specs/wasm-kernel`). No GUI, no arduino-cli, no network; `no_std` + `alloc`.
+//! (`specs/wasm-kernel`). No GUI, no board tools, no network; `no_std` + `alloc`.
 //!
 //! * [`handle`] — generational handles and the slot map behind them;
 //! * [`bus`] — topics, mailboxes, loss and refusal counters;

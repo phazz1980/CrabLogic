@@ -7,7 +7,6 @@ description = "Точное время и дата из интернета (SNTP
 memory = true
 single = true
 shared = "network"
-includes = ["flprogNetwork.h"]
 
 [[output]]
 name = "valid"

@@ -1,13 +1,15 @@
-//! Host ABI v4: the one list of imports a module may use, with signatures and permissions.
+//! Host ABI v5: the one list of imports a module may use, with signatures and permissions.
 //!
 //! Values are 32 bit: `bool` and `int` travel as `i32`, `float` as `f32` (see `specs/numeric-model`).
-//! Exports of a module: `abi_version() -> i32` (must be 4), `step(dt_ms: i32)`; optional
+//! Exports of a module: `abi_version() -> i32` (must be 5), `step(dt_ms: i32)`; optional
 //! `init()`, `alloc(len: i32) -> i32` (where the host puts message bytes) and
 //! `on_message(topic_ptr, topic_len, ptr, len)`.
 //!
 //! ABI 4 adds `crab.yield() -> i32`: a module counts its work (one unit per `step` and per loop
 //! pass) and calls it when the count runs out; the host may suspend the module there until its
-//! next quantum and returns the next budget. Modules of an older ABI must be rebuilt.
+//! next quantum and returns the next budget. ABI 5: `math` op 4 is `fmod` (modules have no `f64`; the
+//! float remainder goes through it); an older master reads an unknown op as `powf`, so modules of
+//! ABI 4 and older must be rebuilt.
 //!
 //! Imports come from module `crab`. Those marked [`Perm::Always`] every module may use; the
 //! others touch the hardware (or a costly service) and work only if the manifest `allow` list
@@ -18,7 +20,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The ABI version this host speaks.
-pub const ABI_VERSION: i32 = 4;
+pub const ABI_VERSION: i32 = 5;
 
 /// The module name all imports come from.
 pub const MODULE: &str = "crab";

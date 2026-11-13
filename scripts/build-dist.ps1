@@ -2,7 +2,7 @@
 # Usage: build.cmd (double-click) or `powershell -File scripts\build-dist.ps1 [-NoZip] [-Release]`. `-Release` (for a published release) leaves out the build-time mark.
 # `-BuildMaster` builds the Rust master for ESP32 and ESP32-C3 first (needs the esp toolchain);
 # without it the last built master images are copied into firmware\<chip>\.
-param([switch]$NoZip, [switch]$WithCore, [switch]$Release, [switch]$BuildMaster)
+param([switch]$NoZip, [switch]$Release, [switch]$BuildMaster)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -98,16 +98,19 @@ foreach ($bin in $bins) {
 }
 
 # Folders are mirrored; user_library in dist is left alone: it holds the user's own blocks.
-# The libraries used to live in Flprog_Network; drop the old copy from dist.
-if (Test-Path (Join-Path $dist 'Flprog_Network')) { Remove-Item (Join-Path $dist 'Flprog_Network') -Recurse -Force }
-foreach ($dir in 'library', 'examples', 'libs') {
+# Leftovers of the C++ sketch build from earlier versions (`libs`, the ESP32 core, the CLI) are dropped from dist.
+foreach ($old in 'Flprog_Network', 'libs', 'esp32core', 'arduino-cli.exe') {
+    $oldPath = Join-Path $dist $old
+    if (Test-Path $oldPath) { Remove-Item $oldPath -Recurse -Force }
+}
+foreach ($dir in 'library', 'examples') {
     $src = Join-Path $root $dir
     $dst = Join-Path $dist $dir
     if (-not (Test-Path $src)) {
         Write-Host "Пропуск: нет папки $dir" -ForegroundColor Yellow
         continue
     }
-    # .crab (and .flp, its name before the rename) holds per-project arduino-cli build caches: hundreds of MB, not for distribution.
+    # .crab (and .flp, its name before the rename) holds per-project caches (AOT images, board memo): not for distribution.
     & robocopy $src $dst /MIR /XD .crab .flp /NFL /NDL /NJH /NJS /NP | Out-Null
     # robocopy: codes below 8 mean success.
     if ($LASTEXITCODE -ge 8) { Fail "не удалось скопировать $dir (robocopy $LASTEXITCODE)." }
@@ -115,26 +118,6 @@ foreach ($dir in 'library', 'examples', 'libs') {
     foreach ($cache in '.crab', '.flp') {
         Get-ChildItem $dst -Recurse -Directory -Force -Filter $cache | Remove-Item -Recurse -Force
     }
-}
-# -WithCore: the ESP32 core goes into esp32core (arduino-cli data folder) so builds work offline.
-if ($WithCore) {
-    $data = Join-Path $env:LOCALAPPDATA 'Arduino15'
-    if (-not (Test-Path (Join-Path $data 'packages\esp32'))) {
-        Fail 'ядро ESP32 не установлено (arduino-cli core install esp32:esp32) — нечего класть в esp32core.'
-    }
-    & robocopy $data (Join-Path $dist 'esp32core') /MIR /XD staging tmp /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -ge 8) { Fail "не удалось скопировать ядро (robocopy $LASTEXITCODE)." }
-}
-# arduino-cli is shipped next to the editor (crab-build looks for it beside the exe first).
-$cli = Get-Command arduino-cli.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-if (-not $cli) {
-    $pf = Join-Path $env:ProgramFiles 'Arduino CLIrduino-cli.exe'
-    if (Test-Path $pf) { $cli = $pf }
-}
-if ($cli) {
-    Copy-Item $cli (Join-Path $dist 'arduino-cli.exe') -Force
-} else {
-    Write-Host 'Пропуск: arduino-cli.exe не найден (скачайте с github.com/arduino/arduino-cli/releases) — в архив он не попадёт.' -ForegroundColor Yellow
 }
 Copy-Item (Join-Path $PSScriptRoot 'dist-README.txt') (Join-Path $dist 'README.txt') -Force
 # AI instructions (skills, AGENTS.md/CLAUDE.md, Claude Code hooks, Cursor rules) and blocks_src\.

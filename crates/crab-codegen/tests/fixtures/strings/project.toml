@@ -1,6 +1,0 @@
-[project]
-name = "strings"
-description = "Строковая переменная во флеше и блок со строковыми входами"
-
-[board]
-fqbn = "esp32:esp32:esp32"

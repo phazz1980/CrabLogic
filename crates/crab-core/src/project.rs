@@ -96,9 +96,6 @@ pub struct ProjectInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// Language of the comments in the generated sketch (`ru`, `en`); empty means `ru`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub comment_lang: String,
     /// Password of the project copy kept in the board's flash; empty means no protection.
     /// The `.crab` file itself stays readable.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -118,7 +115,7 @@ fn is_true(value: &bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoardConfig {
-    /// Fully qualified board name for arduino-cli, e.g. `esp32:esp32:esp32`.
+    /// Fully qualified board name (FQBN), e.g. `esp32:esp32:esp32`.
     pub fqbn: String,
     /// Exact board on top of the FQBN when it differs in brought-out pins, e.g.
     /// `esp32c3_supermini` (see [`crate::pins::BOARD_MODELS`]).
@@ -127,7 +124,7 @@ pub struct BoardConfig {
     /// Serial port for upload and debugging, e.g. `COM3`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<String>,
-    /// Board menu options passed to arduino-cli as `--board-options`.
+    /// Old board menu options of the sketch build (dropped on save, see `drop_sketch_settings`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }
@@ -340,7 +337,7 @@ impl Project {
         self
     }
 
-    /// Drops the settings only the C++ sketch build used (`[board.options]`, the Arduino board menus:
+    /// Drops the settings only the C++ sketch build used (`[board.options]`, the old board menus:
     /// partition scheme, USB CDC and the like) and returns their names. The Rust master is a prebuilt
     /// image (`specs/rust-only`): the next save writes the project without them.
     pub fn drop_sketch_settings(&mut self) -> Vec<String> {

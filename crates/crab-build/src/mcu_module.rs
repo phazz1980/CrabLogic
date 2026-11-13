@@ -367,7 +367,7 @@ pub const OLD_STORAGE_MESSAGE: &str = "Мастер на плате старой
 /// What a master feature of `modcaps=` is for, in words.
 fn cap_title(cap: &str) -> &str {
     match cap {
-        "math" => "математика (sin/cos/tan/pow)",
+        "math" => "математика (sin/cos/tan/pow, остаток float)",
         "retain" => "сохранение значений во флеш",
         "tag_text" => "текстовые теги между листами",
         "retain_text" => "сохранение текста во флеш",
@@ -376,7 +376,7 @@ fn cap_title(cap: &str) -> &str {
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
         "modbus" => "Modbus RTU/TCP",
-        "abi4" => "модули нового формата (ABI 4)",
+        "abi5" => "модули нового формата (ABI 5)",
         "bus" => {
             "шины для драйверов (GPIO, I²C, SPI, UART, 1-Wire из block.wasm; только мастер на Rust)"
         }
@@ -807,7 +807,7 @@ end
             };
             wait_for_master_info(&mut port, Duration::from_secs(2)).unwrap()
         };
-        assert!(info("modcaps=flashmod,abi4,aot\nend\n").takes_aot());
+        assert!(info("modcaps=flashmod,abi5,aot\nend\n").takes_aot());
         assert!(!info("modcaps=math,retain\nend\n").takes_aot());
         assert!(!info("free=1 largest=1\nend\n").takes_aot());
     }

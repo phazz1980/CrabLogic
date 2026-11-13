@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-use crab_build::{ArduinoCli, BuildMode, CompileOptions};
-use crab_codegen::{ArduinoCpp, Backend, Program};
+use crab_codegen::Program;
 use crab_core::{Library, LocalValues, Project};
 
 use crate::Context;
@@ -91,8 +90,8 @@ impl Context for FolderContext {
         Ok(())
     }
 
-    fn build(&mut self, upload: bool, port: Option<String>, debug: bool) -> Result<String, String> {
-        build_project(&self.project, &self.lib, upload, port, debug)
+    fn upload_modules(&mut self, port: Option<String>, debug: bool) -> Result<String, String> {
+        upload_with_cli(&self.project, port, debug)
     }
 
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String> {
@@ -152,49 +151,44 @@ impl Context for FolderContext {
     }
 }
 
-/// Generates, builds and optionally uploads the firmware of `project` (synchronously);
-/// returns the tail of the arduino-cli output.
-pub fn build_project(
-    project: &Project,
-    lib: &Library,
-    upload: bool,
-    port: Option<String>,
-    debug: bool,
-) -> Result<String, String> {
-    let store = LocalValues::open_default().map_err(|e| e.to_string())?;
-    let project = &project.with_local(lib, &store);
-    let program = Program::build(project, lib).map_err(|e| e.to_string())?;
-    let code = ArduinoCpp { debug }
-        .generate(&program)
-        .map_err(|e| e.to_string())?;
-    crab_codegen::write_sketch(&project.work_dir(), &code).map_err(|e| e.to_string())?;
-    let cli = ArduinoCli::locate().map_err(|e| e.to_string())?;
-    let mut log = Vec::new();
-    let mut collect = |line: &str| log.push(line.to_owned());
-    let board = &project.config.board;
-    cli.ensure_libraries(&program.libraries(), &mut collect)
-        .map_err(|e| e.to_string())?;
-    let opts = CompileOptions {
-        mode: if debug {
-            BuildMode::Debug
-        } else {
-            BuildMode::Release
-        },
-        libraries: program.attached_libraries(),
-        ..Default::default()
+/// Uploads the modules of `project` through the command line of the program (`crablogic gen-wasm
+/// --upload`, found next to this executable): it owns the whole upload (planning, AOT, replacing
+/// the modules in place). Returns the tail of its output.
+fn upload_with_cli(project: &Project, port: Option<String>, debug: bool) -> Result<String, String> {
+    let exe_name = if cfg!(windows) {
+        "crablogic.exe"
+    } else {
+        "crablogic"
     };
-    let tail = |log: &[String]| log[log.len().saturating_sub(15)..].join("\n");
-    if let Err(e) = cli.compile(&project.work_dir(), board, &opts, &mut collect) {
-        return Err(format!("{e}\n{}", tail(&log)));
+    let cli = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(exe_name)))
+        .filter(|p| p.is_file())
+        .ok_or(
+            "рядом с программой нет crablogic: залейте модули командой crablogic gen-wasm --upload",
+        )?;
+    let mut command = std::process::Command::new(cli);
+    command.arg("gen-wasm").arg(&project.path).arg("--upload");
+    if debug {
+        command.arg("--watch");
     }
-    if !upload {
-        return Ok(tail(&log));
+    if let Some(port) = port.or_else(|| project.config.board.port.clone()) {
+        command.arg("--port").arg(port);
     }
-    let port = cli
-        .choose_port(port.as_deref(), board)
-        .map_err(|e| e.to_string())?;
-    if let Err(e) = cli.upload(&project.work_dir(), board, &port, &mut collect) {
-        return Err(format!("{e}\n{}", tail(&log)));
+    let output = command.output().map_err(|e| e.to_string())?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(15)..].join(
+        "
+",
+    );
+    if output.status.success() {
+        Ok(tail)
+    } else {
+        Err(tail)
     }
-    Ok(format!("Прошивка залита на {port}\n{}", tail(&log)))
 }

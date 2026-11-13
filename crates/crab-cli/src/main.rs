@@ -3,23 +3,21 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-mod audit;
 mod bench;
 
 use clap::{Parser, Subcommand};
 use crab_build::upload_plan::{self, SheetModule, StopReport, UploadReport};
-use crab_build::{ArduinoCli, BuildMode, CompileOptions, Compiled};
-use crab_codegen::{ArduinoCpp, Backend, GenError, Program};
+use crab_codegen::{GenError, Program};
 use crab_core::logic::SheetSpeed;
-use crab_core::{Diagnostic, Library, LocalValues, Project, Severity};
+use crab_core::{Diagnostic, Library, Project, Severity};
 
 /// Exit code when the schema has errors.
 const EXIT_SCHEMA_ERRORS: u8 = 1;
 /// Exit code when the project or library cannot be loaded.
 const EXIT_LOAD_FAILED: u8 = 2;
-/// Exit code when code generation fails for another reason (templates, files).
+/// Exit code when module generation fails for another reason (a block the generator refuses, files).
 const EXIT_GEN_FAILED: u8 = 3;
-/// Exit code when arduino-cli fails to build or upload.
+/// Exit code when an upload to the board fails.
 const EXIT_BUILD_FAILED: u8 = 4;
 
 #[derive(Parser)]
@@ -45,32 +43,7 @@ enum Command {
         /// Файл проекта .crab (или папка с ним)
         project: PathBuf,
     },
-    /// Сгенерировать скетч Arduino в .crab/<проект>/sketch/sketch.ino рядом с проектом
-    Gen {
-        /// Файл проекта .crab (или папка с ним)
-        project: PathBuf,
-        /// Вывести скетч в консоль вместо записи в файл
-        #[arg(long)]
-        stdout: bool,
-        /// Встроить модуль онлайн-отладки
-        #[arg(long)]
-        debug: bool,
-        /// Язык комментариев в скетче: ru или en (по умолчанию из project.toml)
-        #[arg(long)]
-        lang: Option<String>,
-    },
-    /// Сгенерировать скетч и собрать прошивку через arduino-cli
-    Build {
-        /// Файл проекта .crab (или папка с ним)
-        project: PathBuf,
-        /// Отладочная сборка: модуль онлайн-отладки, без сильной оптимизации
-        #[arg(long)]
-        debug: bool,
-        /// Собрать заново, даже если прошивка уже собрана из того же скетча
-        #[arg(long)]
-        force: bool,
-    },
-    /// Показывать живые значения с платы (прошивка собрана с --debug)
+    /// Показывать живые значения с платы (модули собраны с --watch)
     Monitor {
         /// Файл проекта .crab (или папка с ним)
         project: PathBuf,
@@ -94,20 +67,6 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
         /// Заменить файл, если он уже есть
-        #[arg(long)]
-        force: bool,
-    },
-    /// Собрать прошивку и залить её на плату
-    Upload {
-        /// Файл проекта .crab (или папка с ним)
-        project: PathBuf,
-        /// Порт платы, например COM3 (по умолчанию из настроек проекта или единственный найденный)
-        #[arg(long, short)]
-        port: Option<String>,
-        /// Отладочная сборка: модуль онлайн-отладки, без сильной оптимизации
-        #[arg(long)]
-        debug: bool,
-        /// Собрать заново, даже если прошивка уже собрана из того же скетча
         #[arg(long)]
         force: bool,
     },
@@ -175,12 +134,6 @@ enum Command {
         /// Сравнить два готовых отчёта .toml вместо замера: --compare a.toml b.toml
         #[arg(long, num_args = 2, value_names = ["A", "B"])]
         compare: Option<Vec<PathBuf>>,
-    },
-    /// Временная: что из библиотеки и примеров ещё не собирается модулями для мастера на Rust
-    AuditRust {
-        /// Папка примеров (по умолчанию examples рядом с библиотекой)
-        #[arg(long)]
-        examples: Option<PathBuf>,
     },
     /// Записать на плату мастер-прошивку (Rust) из папки firmware дистрибутива
     FlashMaster {
@@ -267,23 +220,6 @@ fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { project } => run_check(&project, cli.library.as_deref()),
-        Command::Gen {
-            project,
-            stdout,
-            debug,
-            lang,
-        } => run_gen(&project, cli.library.as_deref(), stdout, debug, lang),
-        Command::Build {
-            project,
-            debug,
-            force,
-        } => run_build(&project, cli.library.as_deref(), debug, force, None),
-        Command::Upload {
-            project,
-            port,
-            debug,
-            force,
-        } => run_build(&project, cli.library.as_deref(), debug, force, Some(port)),
         Command::Monitor { project, port } => run_monitor(&project, cli.library.as_deref(), port),
         Command::Hash { project } => match Project::load(&project)
             .map_err(|e| e.to_string())
@@ -360,7 +296,6 @@ fn run() -> ExitCode {
                 cli.library.as_deref(),
             ),
         },
-        Command::AuditRust { examples } => run_audit(cli.library.as_deref(), examples),
         Command::FlashMaster {
             project,
             chip,
@@ -571,117 +506,6 @@ fn run_check(project_dir: &Path, library: Option<&Path>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_gen(
-    project_dir: &Path,
-    library: Option<&Path>,
-    stdout: bool,
-    debug: bool,
-    lang: Option<String>,
-) -> ExitCode {
-    let (mut project, lib) = match load(project_dir, library) {
-        Ok(loaded) => loaded,
-        Err(code) => return code,
-    };
-    if let Some(lang) = lang {
-        if !["ru", "en"].contains(&lang.as_str()) {
-            eprintln!("Язык комментариев «{lang}» не поддерживается: допустимы ru и en");
-            return ExitCode::FAILURE;
-        }
-        project.config.project.comment_lang = lang;
-    }
-    let code = match generate(&project, &lib, debug) {
-        Ok((code, ..)) => code,
-        Err(exit) => return exit,
-    };
-    if stdout {
-        print!("{code}");
-        return ExitCode::SUCCESS;
-    }
-    match write_sketch(&project, &code) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(exit) => exit,
-    }
-}
-
-/// Generates, writes and compiles the sketch; with `upload = Some(port)` also uploads it.
-fn run_build(
-    project_dir: &Path,
-    library: Option<&Path>,
-    debug: bool,
-    force: bool,
-    upload: Option<Option<String>>,
-) -> ExitCode {
-    let (project, lib) = match load(project_dir, library) {
-        Ok(loaded) => loaded,
-        Err(code) => return code,
-    };
-    let (libraries, attached) = match generate(&project, &lib, debug) {
-        Ok((code, libraries, attached)) => match write_sketch(&project, &code) {
-            Ok(()) => (libraries, attached),
-            Err(exit) => return exit,
-        },
-        Err(exit) => return exit,
-    };
-    let build_failed = |e: crab_build::BuildError| {
-        eprintln!("ошибка: {e}");
-        ExitCode::from(EXIT_BUILD_FAILED)
-    };
-    let cli = match ArduinoCli::locate() {
-        Ok(cli) => cli,
-        Err(e) => return build_failed(e),
-    };
-    let board = &project.config.board;
-    let opts = CompileOptions {
-        mode: if debug {
-            BuildMode::Debug
-        } else {
-            BuildMode::Release
-        },
-        force,
-        libraries: attached,
-        ..Default::default()
-    };
-    let mut print = |line: &str| println!("{line}");
-
-    let required: Vec<&str> = libraries.iter().map(String::as_str).collect();
-    match cli.ensure_libraries(&required, &mut print) {
-        Ok(installed) if !installed.is_empty() => {
-            println!("Установлены библиотеки: {}", installed.join(", "));
-        }
-        Ok(_) => {}
-        Err(e) => return build_failed(e),
-    }
-    println!("Сборка для {}...", board.fqbn);
-    if let Some(reason) = cli.cli_reason(&project.work_dir(), board, &opts) {
-        println!("Сборка через arduino-cli: {reason}");
-    }
-    match cli.compile(&project.work_dir(), board, &opts, &mut print) {
-        Ok(Compiled::UpToDate) => println!("Прошивка уже собрана, скетч не менялся"),
-        Ok(Compiled::Direct) => {
-            println!("Прямая сборка: изменился только скетч, arduino-cli не запускался")
-        }
-        Ok(Compiled::Built) => {}
-        Err(e) => return build_failed(e),
-    }
-    let Some(port) = upload else {
-        println!(
-            "Сборка готова: {}",
-            crab_build::build_dir(&project.work_dir()).display()
-        );
-        return ExitCode::SUCCESS;
-    };
-    let port = match cli.choose_port(port.as_deref(), board) {
-        Ok(port) => port,
-        Err(e) => return build_failed(e),
-    };
-    println!("Заливка на {port}...");
-    if let Err(e) = cli.upload(&project.work_dir(), board, &port, &mut print) {
-        return build_failed(e);
-    }
-    println!("Прошивка залита на {port}");
-    ExitCode::SUCCESS
-}
-
 /// Uploads one `.wasm` module to the master firmware over serial (as an AOT image if the master runs AOT).
 fn run_upload_wasm(
     file: &Path,
@@ -836,7 +660,7 @@ fn run_board_check(dir: &Path, library: Option<&Path>) -> ExitCode {
     }
     if !info.options.is_empty() {
         eprintln!(
-            "предупреждение: [board.options] ({}) нужны только сборке скетча Arduino — мастер на Rust их не читает, уберите",
+            "предупреждение: [board.options] ({}) были нужны только сборке скетча (её больше нет) — мастер на Rust их не читает, уберите",
             info.options.keys().cloned().collect::<Vec<_>>().join(", ")
         );
     }
@@ -892,52 +716,6 @@ fn run_board_check(dir: &Path, library: Option<&Path>) -> ExitCode {
     }
 }
 
-/// `audit-rust`: prints a line per block and example; exit code 1 when anything does not go.
-fn run_audit(library: Option<&Path>, examples: Option<PathBuf>) -> ExitCode {
-    let here = std::env::current_dir().unwrap_or_default();
-    let Some(lib_dir) = library
-        .map(Path::to_path_buf)
-        .or_else(|| find_library(&here))
-    else {
-        eprintln!(
-            "ошибка: не найдена папка библиотеки блоков `library/`; укажите её через --library"
-        );
-        return ExitCode::from(EXIT_LOAD_FAILED);
-    };
-    let lib = match Library::load(&lib_dir) {
-        Ok((lib, _)) => lib,
-        Err(e) => {
-            eprintln!("ошибка: {e}");
-            return ExitCode::from(EXIT_LOAD_FAILED);
-        }
-    };
-    let caps = audit::master_caps();
-    let examples = examples.unwrap_or_else(|| {
-        lib_dir
-            .parent()
-            .map_or_else(|| PathBuf::from("examples"), |p| p.join("examples"))
-    });
-    let mut bad = 0;
-    for (title, rows) in [
-        ("Блоки", audit::audit_blocks(&lib, &caps)),
-        ("Примеры", audit::audit_examples(&examples, &lib, &caps)),
-    ] {
-        println!("== {title} ==");
-        for row in rows {
-            if row.verdict != audit::Verdict::Ok {
-                bad += 1;
-            }
-            println!("{}", row.line());
-        }
-    }
-    println!("Не идут на мастер на Rust: {bad}");
-    if bad == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
-}
-
 /// `flash-master`: the prebuilt Rust master for the board of the project (or `--chip`).
 fn run_flash_master(
     project: Option<&Path>,
@@ -972,8 +750,7 @@ fn open_master_port(
 ) -> Result<(Box<dyn serialport::SerialPort>, String), String> {
     let port = match port {
         Some(port) => port,
-        None => ArduinoCli::locate()
-            .and_then(|cli| cli.serial_ports())
+        None => crab_build::serial_ports()
             .and_then(|ports| crab_build::auto_port(&ports))
             .map_err(|e| e.to_string())?,
     };
@@ -1238,58 +1015,6 @@ fn run_gen_wasm(
         );
     }
     ExitCode::SUCCESS
-}
-
-/// Generates the sketch, printing schema errors. Also returns the Arduino libraries it needs.
-fn generate(
-    project: &Project,
-    lib: &Library,
-    debug: bool,
-) -> Result<(String, Vec<String>, Vec<PathBuf>), ExitCode> {
-    let backend = ArduinoCpp { debug };
-    // Blocks written as WASM modules need their C translation next to the module.
-    if let Some(w2c2) = crab_build::wasm_c::find_w2c2(None) {
-        for problem in crab_build::wasm_c::translate_library(&w2c2, lib) {
-            eprintln!("предупреждение: {problem}");
-        }
-    }
-    // Wi-Fi passwords and other `local` values are kept by the program, not in the file.
-    let store = LocalValues::open_default().unwrap_or_else(|e| {
-        eprintln!("предупреждение: {e}");
-        LocalValues::default()
-    });
-    let source = project;
-    let project = &project.with_local(lib, &store);
-    let result = Program::build(project, lib).and_then(|program| {
-        let code = backend.generate(&program)?;
-        let code = crab_codegen::embed_project(&code, source)?;
-        let libraries = program.libraries().into_iter().map(String::from).collect();
-        Ok((code, libraries, program.attached_libraries()))
-    });
-    match result {
-        Ok(generated) => Ok(generated),
-        Err(GenError::Schema(diagnostics)) => {
-            print_diagnostics(&diagnostics);
-            eprintln!("Генерация отменена: в схеме есть ошибки (подробнее — crablogic check)");
-            Err(ExitCode::from(EXIT_SCHEMA_ERRORS))
-        }
-        Err(e) => {
-            eprintln!("ошибка: {e}");
-            Err(ExitCode::from(EXIT_GEN_FAILED))
-        }
-    }
-}
-
-fn write_sketch(project: &Project, code: &str) -> Result<(), ExitCode> {
-    match crab_codegen::write_sketch(&project.work_dir(), code) {
-        Ok((path, true)) => println!("Скетч записан: {}", path.display()),
-        Ok((path, false)) => println!("Скетч не изменился: {}", path.display()),
-        Err(e) => {
-            eprintln!("ошибка: {e}");
-            return Err(ExitCode::from(EXIT_GEN_FAILED));
-        }
-    }
-    Ok(())
 }
 
 /// Prints live values every half second until Ctrl+C.

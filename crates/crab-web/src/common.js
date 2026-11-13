@@ -68,7 +68,7 @@ const PALETTE_MIME = "application/x-crab-widget";
 const GLYPHS = {
   button: "▶", chart: "∿", clock: "◷", gauge: "◔", icon: "★", image: "▣", input: "⌨", label: "T", led: "●",
   net: "⇄", shape: "◆", slider: "⇔", switch: "⏻", tank: "▥", text: "Aa", text_input: "✎", value: "12",
-  disp_text: "Aa", disp_value: "12", disp_bar: "▰", disp_led: "●", disp_icon: "★", item: "≡", submenu: "☰",
+  disp_text: "Aa", disp_value: "12", disp_bar: "▰", disp_led: "●", disp_icon: "★", disp_string: "Abc", item: "≡", submenu: "☰",
 };
 // items: [{ key, name }]; onAdd(key) is called on a click. Rebuilt only when the item list changes.
 function buildPalette(items, onAdd, title) {
@@ -114,12 +114,22 @@ function acceptDrops(el, onDrop, other) {
 }
 
 // ---- properties form helpers ----
+// Mirrors `SignalType::can_feed` in crab-core: which output type may feed which input type.
+function canFeed(from, to) {
+  if (from === "any") return false;
+  if (to === "any" || to === "same" || from === "same") return true;
+  const num = ["int", "float", "number"];
+  if (to === "number") return num.includes(from);
+  if (from === "number") return to === "int" || to === "float";
+  if (from === "int" && to === "float") return true;
+  return from === to;
+}
 function sources(inputType) {
   // all block outputs of a compatible type (the schema view lists the active ports)
   const out = [];
   for (const [id, v] of Object.entries(schema.view || {})) {
     for (const o of v.outputs || []) {
-      if (o.type === inputType || o.type === "any" || inputType === "any") out.push(`${id}.${o.name}`);
+      if (canFeed(o.type, inputType)) out.push(`${id}.${o.name}`);
     }
   }
   return out;

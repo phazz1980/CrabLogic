@@ -381,7 +381,7 @@ mod tests {
             "[block]\ntype = \"{kind}\"\nname = \"{name}\"\ngroup = \"{pack}\"\n"
         ))
         .unwrap();
-        save_block(&user.join(pack), &def, "// code", "").unwrap();
+        save_block(&user.join(pack), &def, "").unwrap();
     }
 
     fn version(user: &Path, pack: &str) -> u32 {

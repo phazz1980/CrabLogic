@@ -1,12 +1,11 @@
 //! "Block editor" window: create a library block or change one — header, inputs,
-//! outputs, parameters, the ESP32 code template and docs — with a live picture of
-//! the block and a trial generation of its code.
+//! outputs, parameters and docs — with a live picture of the block and a trial run of its
+//! `block.wasm`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crab_core::ident::ident_from_name;
-use crab_core::library::ESP32_CPP_TEMPLATE;
 use crab_core::vars::{VAR_GET, VAR_SET};
 use crab_core::{
     BlockDef, Choice, LibraryBlock, ParamDef, ParamKind, ParamShow, ParamValue, PinMode, PortDef,
@@ -14,30 +13,23 @@ use crab_core::{
 };
 use eframe::egui::{self, Color32, Id, RichText, ScrollArea, TextEdit, Ui};
 
-use crab_core::native_wizard::{LibraryWizard, WizType};
-
 use crate::app::{EditorApp, LogLevel};
 use crate::dialogs::{type_name, value_text};
 use crate::pictures::Pictures;
 use crate::theme::Palette;
 
 mod attach;
-mod code;
 mod docs;
 mod form;
-mod native;
 mod rows;
 mod save;
-mod simbuild;
-mod snippets;
 #[cfg(test)]
 mod tests;
+mod trial;
 
 pub use self::docs::docs_editor;
 pub use self::save::delete_dialog;
-use self::{
-    attach::*, code::*, docs::*, form::*, native::*, rows::*, save::*, simbuild::*, snippets::*,
-};
+use self::{attach::*, docs::*, form::*, rows::*, save::*, trial::*};
 
 const PARAM_KINDS: [ParamKind; 6] = [
     ParamKind::Bool,
@@ -48,22 +40,12 @@ const PARAM_KINDS: [ParamKind; 6] = [
     ParamKind::Pin,
 ];
 
-const NEW_TEMPLATE: &str =
-    "// @global\n\n// @setup\n\n// @loop\n{{ output.out }} = {{ input.in }};\n";
-
-const SECTIONS_HINT: &str = "Разделы: // @global — переменные блока, // @setup — код в setup(), \
-// @loop — код цикла, // @functions — функции. С пометкой once (// @global once) раздел \
-попадает в скетч один раз на все блоки. Имена в разделах без once начинайте с {{ id }}.";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Ports,
     Params,
-    Code,
-    Native,
     Docs,
     Files,
-    Sketch,
     Trial,
 }
 
@@ -75,12 +57,6 @@ pub struct BlockEditor {
     clean: Form,
     tab: Tab,
     trial: crate::trialrun::TrialRun,
-    sim_build: SimBuild,
-    /// Test build of the master with the native part, on the "Код C++ для платы" tab.
-    native_build: NativeBuild,
-    /// Step of the native-part wizard being shown (0-based).
-    wizard_step: usize,
-    generated: Option<Generated>,
     /// Closing with unsaved changes: asking what to do.
     confirm_close: bool,
     /// The window fills the whole application window.
@@ -89,8 +65,6 @@ pub struct BlockEditor {
     read_only: bool,
     /// Sections, packs and folders a new block may be put into.
     folders: Vec<String>,
-    /// Names of inputs, outputs and parameters as of the last frame, to follow renames.
-    names: Vec<(&'static str, String)>,
 }
 
 impl BlockEditor {
@@ -142,33 +116,10 @@ impl BlockEditor {
             form,
             tab: Tab::Ports,
             trial: Default::default(),
-            sim_build: SimBuild::default(),
-            native_build: NativeBuild::default(),
-            wizard_step: 0,
-            generated: None,
             confirm_close: false,
             maximized: false,
             read_only: false,
             folders: Vec::new(),
-            names: Vec::new(),
-        }
-    }
-
-    /// When a port or parameter is renamed, its references in the template follow,
-    /// so the code tab does not fail on the old name while the new one is typed.
-    fn follow_renames(&mut self) {
-        let now = self.form.row_names();
-        if self.names.len() != now.len() {
-            self.names = now;
-            return;
-        }
-        for (old, new) in self.names.iter_mut().zip(now) {
-            // A field cleared on the way to a new name keeps the old name until it is typed.
-            if new.1.is_empty() || old.0 != new.0 || old.1 == new.1 {
-                continue;
-            }
-            self.form.template = rename_in_template(&self.form.template, old.0, &old.1, &new.1);
-            old.1 = new.1;
         }
     }
 
@@ -179,23 +130,6 @@ impl BlockEditor {
     /// Asks "save changes?" on the next frame, as when its window is closed.
     pub fn ask_to_close(&mut self) {
         self.confirm_close = true;
-    }
-
-    /// Regenerates the trial sketch when the definition or template changed.
-    fn update_generated(&mut self, def: &BlockDef) {
-        let fresh = self
-            .generated
-            .as_ref()
-            .is_some_and(|g| g.def == *def && g.template == self.form.template);
-        if !fresh {
-            let result =
-                crab_codegen::preview_block(def, &self.form.template).map_err(|e| e.to_string());
-            self.generated = Some(Generated {
-                def: def.clone(),
-                template: self.form.template.clone(),
-                result,
-            });
-        }
     }
 }
 
@@ -270,19 +204,13 @@ fn body(app: &mut EditorApp, ui: &mut Ui, ed: &mut BlockEditor) -> bool {
         ed.clean.kind.clone_from(&kind);
         ed.form.kind = kind;
     }
-    if !ed.read_only {
-        ed.follow_renames();
-    }
     let def = ed.form.to_def();
-    if let Ok(def) = &def {
-        ed.update_generated(def);
-    }
 
     // Panels inside the window: the footer stays visible and the tab gets the rest.
     let mut close = false;
     let mut help = None;
     egui::Panel::bottom("block_editor_footer").show(ui, |ui| {
-        status(ui, ed, &def, &pal);
+        status(ui, &def, &pal);
         close = footer(app, ui, ed, &def);
     });
     egui::Panel::top("block_editor_header").show(ui, |ui| {
@@ -305,11 +233,8 @@ fn body(app: &mut EditorApp, ui: &mut Ui, ed: &mut BlockEditor) -> bool {
             let tabs = [
                 (Tab::Ports, crate::i18n::tr("Входы и выходы")),
                 (Tab::Params, crate::i18n::tr("Параметры")),
-                (Tab::Code, crate::i18n::tr("Код ESP32")),
-                (Tab::Native, crate::i18n::tr("Код C++ для платы")),
                 (Tab::Docs, crate::i18n::tr("Описание")),
-                (Tab::Files, crate::i18n::tr("Библиотека и пример")),
-                (Tab::Sketch, crate::i18n::tr("Пробная генерация")),
+                (Tab::Files, crate::i18n::tr("Модуль и пример")),
                 (Tab::Trial, crate::i18n::tr("Пробный прогон")),
             ];
             for (tab, text) in tabs {
@@ -326,11 +251,8 @@ fn body(app: &mut EditorApp, ui: &mut Ui, ed: &mut BlockEditor) -> bool {
                     let anchor = match ed.tab {
                         Tab::Ports => crate::i18n::tr("входы-и-выходы"),
                         Tab::Params => crate::i18n::tr("параметры"),
-                        Tab::Code => crate::i18n::tr("код-esp32"),
-                        Tab::Native => crate::i18n::tr("код-c-для-платы"),
                         Tab::Docs => crate::i18n::tr("описание"),
-                        Tab::Files => crate::i18n::tr("библиотека-и-пример"),
-                        Tab::Sketch => crate::i18n::tr("пробная-генерация"),
+                        Tab::Files => crate::i18n::tr("модуль-и-пример"),
                         Tab::Trial => crate::i18n::tr("пробный-прогон"),
                     };
                     help = Some(format!("{}#{anchor}", crate::help::BLOCK_EDITOR));
@@ -339,21 +261,12 @@ fn body(app: &mut EditorApp, ui: &mut Ui, ed: &mut BlockEditor) -> bool {
         });
     });
     let editable = !ed.read_only;
-    // The board of the open project (ESP32 DevKit without one) for the test build of the native part.
-    let board = app.doc.as_ref().map_or_else(
-        || crab_core::BoardConfig {
-            fqbn: "esp32:esp32:esp32".into(),
-            model: None,
-            port: None,
-            options: Default::default(),
-        },
-        |d| d.project.config.board.clone(),
-    );
     let trial_dir = ed
         .original
         .as_deref()
         .and_then(|k| app.lib.get(k))
         .map(|b| b.dir.clone());
+    let module = ModuleInfo::of_dir(trial_dir.as_deref());
     egui::CentralPanel::default().show(ui, |ui| {
         ScrollArea::both()
             .id_salt("block_editor_tab")
@@ -365,13 +278,10 @@ fn body(app: &mut EditorApp, ui: &mut Ui, ed: &mut BlockEditor) -> bool {
                 Tab::Params => {
                     ui.add_enabled_ui(editable, |ui| params_tab(ui, &mut ed.form));
                 }
-                Tab::Code => code_tab(ui, &mut ed.form, editable),
-                Tab::Native => native_tab(ui, ed, &def, &board, &pal),
                 Tab::Docs => docs_tab(ui, &mut ed.form, editable),
                 Tab::Files => {
-                    ui.add_enabled_ui(editable, |ui| files_tab(ui, &mut ed.form));
+                    ui.add_enabled_ui(editable, |ui| files_tab(ui, &mut ed.form, &module));
                 }
-                Tab::Sketch => sketch_tab(ui, ed, &pal),
                 Tab::Trial => trial_tab(ui, ed, trial_dir.as_deref(), &pal),
             });
     });
@@ -458,17 +368,6 @@ fn header(ui: &mut Ui, ed: &mut BlockEditor) {
                         "В проекте может быть только один такой блок (Wi-Fi, NTP)",
                     ));
             });
-            ui.end_row();
-
-            ui.label(crate::i18n::tr("Библиотеки"));
-            ui.add_sized(
-                [220.0, 20.0],
-                TextEdit::singleline(&mut f.libraries).hint_text("DHT sensor library"),
-            )
-            .on_hover_text(crate::i18n::tr(
-                "Библиотеки arduino-cli через запятую, можно с версией: OneWire@2.3.8. \
-                 Сборка ставит недостающие сама.",
-            ));
             ui.end_row();
         });
 }

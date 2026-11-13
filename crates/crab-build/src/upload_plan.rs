@@ -686,7 +686,7 @@ mod tests {
     }
 
     fn aot_info() -> MasterInfo {
-        info("flashmod,abi4,aot,rv32imc")
+        info("flashmod,abi5,aot,rv32imc")
     }
 
     fn wasm(fill: u8, len: usize) -> Vec<u8> {
@@ -729,7 +729,7 @@ mod tests {
         let dir = TempDir::new("pv-fits");
         let w = wasm(1, 300);
         let m = [module(2, &w, SheetSpeed::Normal)];
-        let r = preview(&memo("flashmod,abi4,aot,rv32imc", 65536), &m, &dir.0).unwrap();
+        let r = preview(&memo("flashmod,abi5,aot,rv32imc", 65536), &m, &dir.0).unwrap();
         assert!(r.is_empty());
     }
 
@@ -922,7 +922,7 @@ mod tests {
             vec![area("sheet2", 0, 100, 1), area("other", 4096, 100, 1)],
         );
         let plan = plan_upload(
-            &info("flashmod,abi4"),
+            &info("flashmod,abi5"),
             Some(&space),
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
@@ -944,7 +944,7 @@ mod tests {
         let w = wasm(1, 100);
         let t = TempDir::new("beside");
         let plan = plan_upload(
-            &info("flashmod,abi4"),
+            &info("flashmod,abi5"),
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,
@@ -980,7 +980,7 @@ mod tests {
         let w = wasm(1, 100);
         let t = TempDir::new("noaot");
         let plan = plan_upload(
-            &info("flashmod,abi4"),
+            &info("flashmod,abi5"),
             None,
             &[module(2, &w, SheetSpeed::Normal)],
             &t.0,

@@ -36,6 +36,12 @@ impl<'a> Rd<'a> {
         let v = self.u16()?;
         Ok(if v == NONE_U16 { None } else { Some(v) })
     }
+    fn i32(&mut self) -> Res<i32> {
+        match self.take(4)? {
+            [a, b, c, d] => Ok(i32::from_le_bytes([*a, *b, *c, *d])),
+            _ => Err(FormatError::Truncated),
+        }
+    }
     fn f32(&mut self) -> Res<f32> {
         match self.take(4)? {
             [a, b, c, d] => Ok(f32::from_le_bytes([*a, *b, *c, *d])),
@@ -73,6 +79,8 @@ pub enum WidgetKindView<'a> {
     Icon {
         id: u8,
     },
+    /// A string input slot (`input` of the widget), clipped to the widget width.
+    String,
 }
 
 /// One widget of a screen.
@@ -113,6 +121,7 @@ fn widget_in<'a>(r: &mut Rd<'a>) -> Res<WidgetView<'a>> {
         }
         3 => WidgetKindView::Led,
         4 => WidgetKindView::Icon { id: r.u8()? },
+        5 => WidgetKindView::String,
         _ => return Err(FormatError::BadKind),
     };
     Ok(WidgetView {
@@ -243,10 +252,11 @@ impl<'a> Iterator for ChoiceIter<'a> {
 #[derive(Clone)]
 pub enum ItemKindView<'a> {
     Submenu,
+    /// `min`, `max`, `step` in units of `10^-decimals`.
     Number {
-        min: f32,
-        max: f32,
-        step: f32,
+        min: i32,
+        max: i32,
+        step: i32,
         decimals: u8,
         unit: &'a str,
     },
@@ -267,12 +277,36 @@ pub struct ItemView<'a> {
     pub caption: &'a str,
     /// Index of the driver variable slot, if the item is bound to a variable.
     pub var_slot: Option<u16>,
+    /// The variable is `float`: its cell is read and written as `f32`, otherwise as `i32`.
+    pub var_float: bool,
 }
 
-fn item_in<'a>(r: &mut Rd<'a>, index: u16) -> Res<ItemView<'a>> {
+/// Legacy (version 1 and 2) limit: an `f32` in units of `1` as an integer in units of
+/// `10^-decimals`, rounded half away from zero (`f32` arithmetic only; saturates, NaN is 0).
+fn legacy_scaled(x: f32, decimals: u8) -> i32 {
+    let mut p = 1.0f32;
+    for _ in 0..decimals.min(6) {
+        p *= 10.0;
+    }
+    let y = x * p;
+    let t = y as i32;
+    let d = y - t as f32;
+    if d >= 0.5 {
+        t.saturating_add(1)
+    } else if d <= -0.5 {
+        t.saturating_sub(1)
+    } else {
+        t
+    }
+}
+
+fn item_in<'a>(r: &mut Rd<'a>, index: u16, version: u8) -> Res<ItemView<'a>> {
     let k = r.u8()?;
     let parent = r.opt()?;
     let var_slot = r.opt()?;
+    // Version 3 has the variable flags; older blobs had none (decided by the item below).
+    let vflags = if version >= 3 { r.u8()? } else { 0 };
+    let mut legacy_float = false;
     let caption = r.str()?;
     if let Some(p) = parent {
         if p >= index {
@@ -282,10 +316,26 @@ fn item_in<'a>(r: &mut Rd<'a>, index: u16) -> Res<ItemView<'a>> {
     let kind = match k {
         0 => ItemKindView::Submenu,
         1 => {
-            let min = r.f32()?;
-            let max = r.f32()?;
-            let step = r.f32()?;
+            let (fmin, fmax, fstep) = if version >= 3 {
+                (0.0, 0.0, 0.0)
+            } else {
+                (r.f32()?, r.f32()?, r.f32()?)
+            };
+            let (mut min, mut max, mut step) = if version >= 3 {
+                (r.i32()?, r.i32()?, r.i32()?)
+            } else {
+                (0, 0, 0)
+            };
             let decimals = r.u8()?;
+            if version < 3 {
+                (min, max, step) = (
+                    legacy_scaled(fmin, decimals),
+                    legacy_scaled(fmax, decimals),
+                    legacy_scaled(fstep, decimals),
+                );
+                // No flags in old blobs: a number with decimals is taken for a `float` variable.
+                legacy_float = decimals > 0;
+            }
             ItemKindView::Number {
                 min,
                 max,
@@ -314,6 +364,7 @@ fn item_in<'a>(r: &mut Rd<'a>, index: u16) -> Res<ItemView<'a>> {
         kind,
         caption,
         var_slot,
+        var_float: vflags & 1 != 0 || legacy_float,
     })
 }
 
@@ -323,6 +374,7 @@ pub struct ItemIter<'a> {
     r: Rd<'a>,
     index: u16,
     n: u16,
+    version: u8,
 }
 
 impl<'a> Iterator for ItemIter<'a> {
@@ -331,7 +383,7 @@ impl<'a> Iterator for ItemIter<'a> {
         if self.index >= self.n {
             return None;
         }
-        match item_in(&mut self.r, self.index) {
+        match item_in(&mut self.r, self.index, self.version) {
             Ok(i) => {
                 self.index += 1;
                 Some(i)
@@ -355,6 +407,7 @@ pub struct MenuView<'a> {
     pub hints: bool,
     n_items: u16,
     items: &'a [u8],
+    version: u8,
 }
 
 impl<'a> MenuView<'a> {
@@ -372,6 +425,7 @@ impl<'a> MenuView<'a> {
             r: Rd::new(self.items),
             index: 0,
             n: self.n_items,
+            version: self.version,
         }
     }
 }
@@ -406,6 +460,7 @@ impl<'a> ConfigView<'a> {
         let screens = data.get(start..r.p).ok_or(FormatError::Truncated)?;
         let menu = if flags & 1 != 0 {
             let timeout_s = r.u16()?;
+            // Version 1 has no menu style: font 16, hints on.
             let (font, hints) = if version >= 2 {
                 (r.u8()?, r.u8()? != 0)
             } else {
@@ -414,7 +469,7 @@ impl<'a> ConfigView<'a> {
             let n_items = r.u16()?;
             let istart = r.p;
             for i in 0..n_items {
-                item_in(&mut r, i)?;
+                item_in(&mut r, i, version)?;
             }
             let items = data.get(istart..r.p).ok_or(FormatError::Truncated)?;
             Some(MenuView {
@@ -423,6 +478,7 @@ impl<'a> ConfigView<'a> {
                 hints,
                 n_items,
                 items,
+                version,
             })
         } else {
             None

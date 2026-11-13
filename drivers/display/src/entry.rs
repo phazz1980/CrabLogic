@@ -6,9 +6,12 @@ use crab_ui_format::DisplayKind;
 
 #[link(wasm_import_module = "crab")]
 extern "C" {
-    fn input(index: i32) -> f64;
-    fn param(index: i32) -> f64;
-    fn output(index: i32, value: f64);
+    fn input_i(index: i32) -> i32;
+    fn input_f(index: i32) -> f32;
+    fn input_text(index: i32, ptr: *mut u8, cap: i32) -> i32;
+    fn param_i(index: i32) -> i32;
+    fn output_i(index: i32, value: i32);
+    fn output_f(index: i32, value: f32);
     fn config(ptr: *mut u8, cap: i32) -> i32;
 }
 
@@ -38,11 +41,21 @@ static mut ADDR: i32 = 0;
 struct Master;
 
 impl Io for Master {
-    fn input(&self, i: usize) -> f64 {
-        unsafe { input(i as i32) }
+    fn input_i(&self, i: usize) -> i32 {
+        unsafe { input_i(i as i32) }
     }
-    fn output(&mut self, i: usize, v: f64) {
-        unsafe { output(i as i32, v) }
+    fn input_f(&self, i: usize) -> f32 {
+        unsafe { input_f(i as i32) }
+    }
+    fn input_text(&self, i: usize, buf: &mut [u8]) -> usize {
+        let n = unsafe { input_text(i as i32, buf.as_mut_ptr(), buf.len() as i32) };
+        (n.max(0) as usize).min(buf.len())
+    }
+    fn output_i(&mut self, i: usize, v: i32) {
+        unsafe { output_i(i as i32, v) }
+    }
+    fn output_f(&mut self, i: usize, v: f32) {
+        unsafe { output_f(i as i32, v) }
     }
     fn write(&mut self, data: &[u8]) -> bool {
         unsafe { i2c_write(ADDR, data.as_ptr(), data.len() as i32) == data.len() as i32 }
@@ -58,8 +71,8 @@ fn matches_block(kind: DisplayKind) -> bool {
 #[no_mangle]
 pub extern "C" fn init() {
     unsafe {
-        ADDR = param(P_ADDRESS) as i32;
-        i2c_open(param(P_SDA) as i32, param(P_SCL) as i32, I2C_HZ);
+        ADDR = param_i(P_ADDRESS);
+        i2c_open(param_i(P_SDA), param_i(P_SCL), I2C_HZ);
         let cfg = core::ptr::addr_of_mut!(CFG).cast::<u8>();
         let n = config(cfg, CFG_CAP as i32);
         if n <= 0 || n as usize > CFG_CAP {

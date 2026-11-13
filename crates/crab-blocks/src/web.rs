@@ -1,7 +1,6 @@
 //! The device page of the web interface. Widgets and pages live in the project's `web.toml`
-//! and are served by the master firmware of WASM modules; the plain Arduino C++ sketch has
-//! no web code. The page text is kept here so the constructor preview shows exactly the page
-//! the master serves.
+//! and are served by the master firmware of WASM modules. The page text is kept here so the constructor preview shows
+//! exactly the page the master serves.
 
 /// The page served at `/`.
 const UI_PAGE: &str = r##"const char @ID@_html[] PROGMEM = R"CRABUI(<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CrabLogic</title>

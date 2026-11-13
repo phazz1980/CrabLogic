@@ -1,0 +1,21 @@
+[[block]]
+id = "btn"
+type = "digital_in"
+pin = 4
+
+[[block]]
+id = "cp"
+type = "my_block"
+
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "btn.out"
+to = "cp.in"
+
+[[link]]
+from = "cp.out"
+to = "led.in"

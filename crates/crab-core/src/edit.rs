@@ -1319,7 +1319,6 @@ mod tests {
             lib.insert(LibraryBlock {
                 def,
                 dir: Default::default(),
-                inline_templates: Default::default(),
             });
         }
         lib
@@ -1335,7 +1334,6 @@ mod tests {
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
         lib
     }
@@ -1389,7 +1387,6 @@ type = \"pin\"
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
         let mut p = project();
         let src = p.add_block(&lib, "src", POS).unwrap();
@@ -1456,7 +1453,6 @@ group = \"Тест\"
             lib.insert(LibraryBlock {
                 def,
                 dir: Default::default(),
-                inline_templates: Default::default(),
             });
         }
         let mut p = project();

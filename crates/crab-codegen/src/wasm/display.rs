@@ -2,10 +2,12 @@
 //! (`crab-ui-format`) and the layout of the extra driver inputs and outputs the generator
 //! and the driver agree on (`specs/display/plan.md`, "Договорённость генератора и драйвера").
 //!
-//! Inputs of the driver: its own ports (`P`), the live values of the widgets that have an
-//! input (`W`), `up/down/ok/back` of the menu (4) and the current values of the menu variables
-//! (`V`). Outputs: its own ports (`Q`), `open/item/changed` of the menu (3), `changed_slot`
-//! and the new value of every menu variable (`V`).
+//! Inputs of the driver: its own ports (`P`), the live values of the numeric widgets that have
+//! an input (`W`), the strings of the string widgets (`S`, `disp_string`), `up/down/ok/back` of
+//! the menu (4) and the current values of the menu variables (`V`). Outputs: its own ports
+//! (`Q`), `open/item/changed` of the menu (3), `changed_slot` and the new value of every menu
+//! variable (`V`). The config is `crab-ui-format` version 3 (menu numbers in whole units of
+//! `10^-decimals`, `float`-ness of every menu variable).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -16,16 +18,17 @@ use crab_ui_format::{
 
 use crate::program::{Instance, Program};
 
-/// Names of the icons of `disp_icon`, in the order of the ids of the format.
+/// Names of the icons of `disp_icon`, in the order of the icon glyphs of the display driver
+/// (`drivers/display/src/font.rs`, `ICON_ART`): the position is the id of the format.
 const ICONS: [&str; 8] = [
+    "thermometer",
     "drop",
-    "flame",
-    "bell",
+    "fan",
+    "lamp",
+    "alarm",
     "wifi",
     "check",
     "cross",
-    "arrow_up",
-    "arrow_down",
 ];
 
 /// A variable a menu item edits (one slot per variable).
@@ -44,8 +47,10 @@ pub(super) struct MenuPlan {
 /// Everything the generator needs to know about one display block.
 pub(super) struct DisplayPlan {
     pub config: Config,
-    /// Widget blocks with an input, in the order of their input slots.
+    /// Numeric widget blocks with an input, in the order of their input slots.
     pub widgets: Vec<String>,
+    /// String widget blocks (`disp_string`), in the order of their slots after the numeric ones.
+    pub string_widgets: Vec<String>,
     pub menu: Option<MenuPlan>,
 }
 
@@ -69,6 +74,11 @@ fn byte(i: &Instance, name: &str, default: f64) -> u8 {
     num(i, name, default).clamp(0.0, 255.0) as u8
 }
 
+/// `x` in units of `10^-decimals`, rounded half away from zero and saturated to `i32`.
+fn scaled(x: f64, decimals: u8) -> i32 {
+    (x * 10f64.powi(i32::from(decimals))).round() as i32
+}
+
 /// Digits after the point of a step (`0.1` -> 1), at most 6.
 fn decimals_of(step: f64) -> u8 {
     let s = format!("{step}");
@@ -86,14 +96,22 @@ fn display_kind(d: &Instance) -> Option<DisplayKind> {
     })
 }
 
-/// The widget of the format and whether it has an input slot.
-fn widget_of(w: &Instance) -> Option<(Widget, bool)> {
+/// How a widget takes its value.
+#[derive(Clone, Copy, PartialEq)]
+enum Slot {
+    None,
+    Numeric,
+    Text,
+}
+
+/// The widget of the format and what kind of input slot it has.
+fn widget_of(w: &Instance) -> Option<(Widget, Slot)> {
     let (kind, input) = match w.block.kind.as_str() {
         "disp_text" => (
             WidgetKind::Text {
                 text: text(w, "text"),
             },
-            false,
+            Slot::None,
         ),
         "disp_value" => {
             // `format` 0: the number and the unit; 1: `unit` holds the whole template with `%v`.
@@ -112,7 +130,7 @@ fn widget_of(w: &Instance) -> Option<(Widget, bool)> {
                     decimals: byte(w, "decimals", 1.0).min(6),
                     unit,
                 },
-                true,
+                Slot::Numeric,
             )
         }
         "disp_bar" => (
@@ -120,13 +138,14 @@ fn widget_of(w: &Instance) -> Option<(Widget, bool)> {
                 min: num(w, "min", 0.0) as f32,
                 max: num(w, "max", 100.0) as f32,
             },
-            true,
+            Slot::Numeric,
         ),
-        "disp_led" => (WidgetKind::Led, true),
+        "disp_led" => (WidgetKind::Led, Slot::Numeric),
+        "disp_string" => (WidgetKind::String, Slot::Text),
         "disp_icon" => {
             let name = text(w, "icon");
             let id = ICONS.iter().position(|i| *i == name).unwrap_or(0) as u8;
-            (WidgetKind::Icon { id }, false)
+            (WidgetKind::Icon { id }, Slot::None)
         }
         _ => return None,
     };
@@ -164,6 +183,7 @@ impl Program<'_> {
         // Screens: widgets by their screen number, in the order of declaration.
         let mut screens: BTreeMap<u32, Vec<Widget>> = BTreeMap::new();
         let mut inputs: Vec<(u32, usize, String)> = Vec::new();
+        let mut text_inputs: Vec<(u32, usize, String)> = Vec::new();
         for block in &logic.blocks {
             let Some(w) = by_id.get(block.id.as_str()).copied() else {
                 continue;
@@ -175,21 +195,33 @@ impl Program<'_> {
             if !(1..=255).contains(&screen) {
                 continue;
             }
-            let Some((widget, has_input)) = widget_of(w) else {
+            let Some((widget, slot)) = widget_of(w) else {
                 continue;
             };
             let list = screens.entry(screen as u32).or_default();
-            if has_input {
-                inputs.push((screen as u32, list.len(), block.id.clone()));
+            let entry = (screen as u32, list.len(), block.id.clone());
+            match slot {
+                Slot::Numeric => inputs.push(entry),
+                Slot::Text => text_inputs.push(entry),
+                Slot::None => {}
             }
             list.push(widget);
         }
-        // Input slots follow the order of the screens and the widgets on them.
+        // Input slots follow the order of the screens and the widgets on them: the numeric
+        // widgets first, the string widgets after them.
         inputs.sort();
+        text_inputs.sort();
         let mut widgets = Vec::new();
+        let mut string_widgets = Vec::new();
+        let n_numeric = inputs.len();
         for (k, (screen, at, block)) in inputs.into_iter().enumerate() {
             screens.get_mut(&screen).expect("screen of a widget")[at].input = Some(k as u16);
             widgets.push(block);
+        }
+        for (k, (screen, at, block)) in text_inputs.into_iter().enumerate() {
+            screens.get_mut(&screen).expect("screen of a widget")[at].input =
+                Some((n_numeric + k) as u16);
+            string_widgets.push(block);
         }
         let n = screens.keys().next_back().copied().unwrap_or(1);
         config.screens = (1..=n)
@@ -218,6 +250,7 @@ impl Program<'_> {
         Some(DisplayPlan {
             config,
             widgets,
+            string_widgets,
             menu,
         })
     }
@@ -303,15 +336,16 @@ impl Program<'_> {
                 },
                 _ => {
                     let step = num(item, "step", 1.0);
+                    let decimals = if var_ty == Some(SignalType::Int) {
+                        0
+                    } else {
+                        decimals_of(step)
+                    };
                     MenuItemKind::Number {
-                        min: num(item, "min", 0.0) as f32,
-                        max: num(item, "max", 100.0) as f32,
-                        step: step as f32,
-                        decimals: if var_ty == Some(SignalType::Int) {
-                            0
-                        } else {
-                            decimals_of(step)
-                        },
+                        min: scaled(num(item, "min", 0.0), decimals),
+                        max: scaled(num(item, "max", 100.0), decimals),
+                        step: scaled(step, decimals),
+                        decimals,
                         unit: text(item, "unit"),
                     }
                 }
@@ -322,6 +356,7 @@ impl Program<'_> {
                 kind: payload,
                 caption: text(item, "caption"),
                 var_slot,
+                var_float: var_slot.is_some() && var_ty == Some(SignalType::Float),
             });
             for &c in children[k].iter().rev() {
                 stack.push((c, Some(at)));

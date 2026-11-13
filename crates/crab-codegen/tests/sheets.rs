@@ -185,7 +185,7 @@ fn module_with_a_loop_spends_fuel() {
     let project = Project::load(repo_path("examples/text_wasm")).unwrap();
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module(1).unwrap();
-    assert!(built.manifest.contains("abi = 4"), "{}", built.manifest);
+    assert!(built.manifest.contains("abi = 5"), "{}", built.manifest);
     let text = wasmprinter::print_bytes(&built.wasm).unwrap();
     assert!(text.contains("(import \"crab\" \"yield\" (func"), "{text}");
     let after_loop = text.split_once("loop").expect("a loop").1;
@@ -305,4 +305,167 @@ fn aot_module_snapshot() {
         return;
     }
     panic!("модуль отличается от снимка {}", path.display());
+}
+
+/// Panics when the module has an `f64` type, global, local or instruction (any operator whose
+/// name mentions `F64`, conversions included).
+fn assert_no_f64(wasm: &[u8], what: &str) {
+    use wasmparser::{Parser, Payload, ValType};
+    let f64_ty = |t: &ValType| *t == ValType::F64;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload.unwrap() {
+            Payload::TypeSection(s) => {
+                for rec in s {
+                    for ty in rec.unwrap().types() {
+                        if let wasmparser::CompositeInnerType::Func(f) = &ty.composite_type.inner {
+                            assert!(
+                                !f.params().iter().chain(f.results()).any(f64_ty),
+                                "{what}: f64 in a function type"
+                            );
+                        }
+                    }
+                }
+            }
+            Payload::GlobalSection(s) => {
+                for g in s {
+                    assert!(!f64_ty(&g.unwrap().ty.content_type), "{what}: f64 global");
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                for local in body.get_locals_reader().unwrap() {
+                    assert!(!f64_ty(&local.unwrap().1), "{what}: f64 local");
+                }
+                for op in body.get_operators_reader().unwrap() {
+                    let op = format!("{:?}", op.unwrap());
+                    assert!(!op.contains("F64"), "{what}: {op}");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `specs/no-f64`: the sheet modules of the examples have no `f64` types and no `f64`
+/// instructions (the boards emulate them in software). Drivers (oled, lcd, sensors) are pasted
+/// into the module, so they are checked too. Nothing is skipped: an example that cannot be
+/// built is a failure.
+#[test]
+fn example_modules_have_no_f64() {
+    let base = library();
+    let session = std::env::temp_dir().join(format!("crab_nof64_{}", std::process::id()));
+    let mut checked = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut dirs: Vec<_> = std::fs::read_dir(repo_path("examples"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        // Folders that are not projects (sources of example blocks).
+        if !dir.join("logic.toml").exists() {
+            continue;
+        }
+        let Ok(project) = Project::load(&dir) else {
+            skipped.push(format!("{name} (not loadable)"));
+            continue;
+        };
+        // The example's own blocks and boards, for this example only.
+        let mut lib = base.clone();
+        crab_core::packed::add_project_blocks(&dir, &session, &mut lib);
+        let boards = dir.join(crab_core::packed::PACKED_BOARDS);
+        if boards.is_dir() {
+            let (b, _) = crab_core::boards::Boards::load(&boards);
+            lib.set_boards(b);
+        }
+        let Ok(program) = Program::build(&project, &lib) else {
+            skipped.push(format!("{name} (does not build)"));
+            continue;
+        };
+        for sheet in program.sheets() {
+            let Ok(built) = program.wasm_module(sheet) else {
+                skipped.push(format!("{name}/{sheet} (no wasm module)"));
+                continue;
+            };
+            assert_no_f64(&built.wasm, &format!("{name}/{sheet}"));
+            checked.push(format!("{name}/{sheet}"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&session);
+    println!(
+        "checked: {checked:?}
+skipped: {skipped:?}"
+    );
+    assert!(checked.len() >= 10, "{checked:?}");
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
+/// The `block.wasm` of every library block (drivers) has no `f64` itself.
+#[test]
+fn library_block_wasm_has_no_f64() {
+    let mut seen = 0;
+    for entry in std::fs::read_dir(repo_path("library")).unwrap().flatten() {
+        let path = entry.path().join("block.wasm");
+        if let Ok(bytes) = std::fs::read(&path) {
+            assert_no_f64(&bytes, &path.display().to_string());
+            seen += 1;
+        }
+    }
+    assert!(seen >= 4, "block.wasm found: {seen}");
+}
+
+/// A block with `f64` (the old interface, a computation or a bare local) is refused, with the
+/// hint to rebuild it.
+#[test]
+fn a_block_with_f64_is_refused() {
+    let lib_dir = std::env::temp_dir().join(format!("crab_f64_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&lib_dir);
+    let cases = [
+        (
+            "old_io",
+            r#"(module (import "crab" "input" (func (param i32) (result f64)))
+                 (func (export "step") (param i32)))"#,
+        ),
+        (
+            "math",
+            r#"(module (func (export "step") (param i32)
+                 (drop (f64.sqrt (f64.const 2)))))"#,
+        ),
+        (
+            "local",
+            r#"(module (func (export "step") (param i32) (local f64)))"#,
+        ),
+    ];
+    for (kind, wat) in cases {
+        let dir = lib_dir.join(kind);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("block.toml"),
+            format!(
+                "[block]
+type = \"{kind}\"
+name = \"{kind}\"
+group = \"T\"
+description = \"t\"
+
+[[output]]
+name = \"out\"
+type = \"int\"
+"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("block.wasm"), wat::parse_str(wat).unwrap()).unwrap();
+        let check = crab_codegen::check_block(&dir, &library());
+        assert!(
+            check
+                .diags
+                .iter()
+                .any(|d| d.code == "wasm-f64" && d.message.contains("пересоберите блок")),
+            "{kind}: {:?}",
+            check.diags
+        );
+    }
+    let _ = std::fs::remove_dir_all(&lib_dir);
 }

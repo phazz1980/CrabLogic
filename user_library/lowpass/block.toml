@@ -3,16 +3,16 @@ type = "lowpass"
 name = "Фильтр сглаживания"
 symbol = "LPF"
 group = "Алгебра"
-description = "Экспоненциальное сглаживание: out стремится к in с постоянной времени tau. Пример блока с модулем симуляции block.wasm."
+description = "Экспоненциальное сглаживание: out стремится к in с постоянной времени tau. Код блока — block.wasm (исходник в blocks_src/lowpass)."
 memory = true
 
 [[input]]
 name = "in"
-type = "number"
+type = "float"
 
 [[output]]
 name = "out"
-type = "number"
+type = "float"
 
 [[param]]
 name = "tau"

@@ -5,8 +5,6 @@ symbol = "DS18B20"
 group = "Датчики"
 description = "Цифровой датчик температуры DS18B20 на шине 1-Wire."
 memory = true
-includes = ["OneWire.h", "DallasTemperature.h"]
-libraries = ["OneWire", "DallasTemperature"]
 
 [[output]]
 name = "temp"

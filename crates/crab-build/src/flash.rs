@@ -1,4 +1,4 @@
-//! Flashing the prebuilt Rust master (`firmware/<chip>/` next to the program) without arduino-cli:
+//! Flashing the prebuilt Rust master (`firmware/<chip>/` next to the program) from the editor and the CLI:
 //! `espflash` as a library builds the ESP-IDF image from the master's ELF (its own second-stage
 //! bootloader, the partition table of the image) and writes it over the USB serial port.
 
@@ -363,7 +363,7 @@ mod tests {
             Some(MasterChip::Esp32c3)
         );
         assert_eq!(MasterChip::of_fqbn("esp32:esp32:esp32s3"), None);
-        assert_eq!(MasterChip::of_fqbn("arduino:avr:uno"), None);
+        assert_eq!(MasterChip::of_fqbn("avr:avr:uno"), None);
     }
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
         std::fs::write(dir.join(PARTITIONS_FILE), b"csv").unwrap();
         std::fs::write(
             dir.join(INFO_FILE),
-            "version = \"2.0.0\"\nmodcaps = \"flashmod,abi4\"\n",
+            "version = \"2.0.0\"\nmodcaps = \"flashmod,abi5\"\n",
         )
         .unwrap();
         let image = find_image(&root, "esp32:esp32:esp32c3").unwrap();

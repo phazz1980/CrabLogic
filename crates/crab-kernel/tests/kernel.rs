@@ -63,7 +63,7 @@ fn wat(writes: &str) -> Vec<u8> {
   (memory (export "memory") 1)
   (data (i32.const 0) "e")
   (global $bump (mut i32) (i32.const 1024))
-  (func (export "abi_version") (result i32) i32.const 4)
+  (func (export "abi_version") (result i32) i32.const 5)
   (func (export "init") (call $sub (i32.const 0) (i32.const 1)))
   (func (export "alloc") (param i32) (result i32) (local i32)
     global.get $bump
@@ -204,7 +204,7 @@ fn endless() -> Vec<u8> {
   (global $fuel (mut i32) (i32.const 10000))
   (global $n (mut i32) (i32.const 0))
   {SPEND}
-  (func (export "abi_version") (result i32) i32.const 4)
+  (func (export "abi_version") (result i32) i32.const 5)
   (func (export "step") (param i32)
     call $spend
     (loop $l
@@ -248,7 +248,7 @@ fn endless_loop_yields_and_continues_where_it_stopped() {
     let mut k: Kernel<Module, Board> = Kernel::new();
     let hung = k.add(load_wasm(&endless(), &hal).unwrap(), &[], 0).unwrap();
     let other = k
-        .add(load_wasm(&counter(4), &hal).unwrap(), &[], 0)
+        .add(load_wasm(&counter(5), &hal).unwrap(), &[], 0)
         .unwrap();
 
     let out = |k: &Kernel<Module, Board>, h| k.get(h).unwrap().host().outputs[0].0;

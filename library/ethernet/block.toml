@@ -8,7 +8,6 @@ description = "Проводная сеть: модуль W5500 (W5100, W5200) п
 single = true
 hidden = true
 pullable = true
-includes = ["flprogNetwork.h", "flprogWebServer.h", "service/flprogNetworkOta.h", "Update.h"]
 
 [[output]]
 name = "ready"

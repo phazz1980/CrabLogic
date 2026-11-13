@@ -1,5 +1,7 @@
 /target
-# Per-project build cache (persistent build folder of arduino-cli)
+# Build folders of block sources (skills/crablogic-block: blocks_src/<type>/)
+/blocks_src/*/target/
+# Per-project build cache
 .crab/
 
 # Bundled Arduino libraries (FLProg_Network, Modbus...), kept locally

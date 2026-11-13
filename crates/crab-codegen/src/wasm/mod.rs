@@ -36,6 +36,7 @@ mod user_block;
 pub use user_block::MAX_BLOCK_CONFIG;
 mod web;
 use block_emit::BlockEmit;
+pub(crate) use driver::OLD_F64;
 use text::{Buf, A, MEM_START, STR_CAP};
 pub(crate) use user_block::{inspect_block_wasm, takes_text_params};
 
@@ -62,7 +63,7 @@ const GLOBAL_FUEL: u32 = 1;
 /// The counter a module starts with, before the host gives the first budget.
 const FUEL_START: i32 = 10_000;
 /// The ABI the emitted modules speak (`abi_version`, `abi` in the manifest).
-const ABI_VERSION: i32 = 4;
+const ABI_VERSION: i32 = 5;
 
 /// Hardware imports are numbered after the fixed ones once the used set is known; code is
 /// emitted with these placeholders (`HW_BASE + position in HW_NAMES`) and remapped in `finish`.
@@ -134,8 +135,8 @@ pub const MASTER_CAPS: [&str; 12] = [
     "uart_console",
     "sparkplug",
     "on_fault",
-    // ABI 4 (fuel counter and `crab.yield`): every module needs it.
-    "abi4",
+    // ABI 5 (fuel counter, `crab.yield`, `crab.math` fmod): every module needs it.
+    "abi5",
     // Bus functions of driver blocks (`specs/wasm-drivers`).
     "bus",
     // Modbus RTU/TCP of the Rust master (`specs/rust-only`).
@@ -1234,7 +1235,6 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     driver::ConstVal::I32(v) => ConstExpr::i32_const(v),
                     driver::ConstVal::I64(v) => ConstExpr::i64_const(v),
                     driver::ConstVal::F32(b) => ConstExpr::f32_const(f32::from_bits(b).into()),
-                    driver::ConstVal::F64(b) => ConstExpr::f64_const(f64::from_bits(b).into()),
                 };
                 globals.global(
                     GlobalType {
@@ -1536,7 +1536,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             .map(str::to_owned)
             .collect();
         needs.extend(self.extras.iter().map(|n| (*n).to_owned()));
-        needs.push("abi4".to_owned());
+        needs.push("abi5".to_owned());
         needs.sort();
         (module.finish(), manifest, needs)
     }

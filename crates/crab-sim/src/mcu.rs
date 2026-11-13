@@ -1,7 +1,7 @@
 //! Host ABI v4: modules that run on the PC in wasmi and on the board in the master firmware.
 //!
 //! Values are 32 bit: `bool` and `int` travel as `i32`, `float` as `f32` (see `specs/numeric-model`).
-//! Exports of a module: `abi_version() -> i32` (must be 4), `step(dt_ms: i32)`; optional
+//! Exports of a module: `abi_version() -> i32` (must be 5), `step(dt_ms: i32)`; optional
 //! `init()`, `alloc(len: i32) -> i32` (where the host puts message bytes) and
 //! `on_message(topic_ptr, topic_len, ptr, len)`.
 //!

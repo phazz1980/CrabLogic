@@ -15,5 +15,4 @@ toml.workspace = true
 
 [dev-dependencies]
 wat = "1.263.0"
-crab-build = { path = "../crab-build" }
 crab-codegen = { path = "../crab-codegen" }

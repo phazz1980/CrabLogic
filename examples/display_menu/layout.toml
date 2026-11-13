@@ -161,3 +161,11 @@ y = 420.0
 [block.temp_w]
 x = 480.0
 y = 40.0
+
+[block.t_txt]
+x = 480.0
+y = 560.0
+
+[block.t_str]
+x = 700.0
+y = 560.0

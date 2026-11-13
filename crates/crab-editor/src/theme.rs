@@ -278,12 +278,6 @@ struct Settings {
     /// Name and contacts entered as the author of a block pack; offered for new packs.
     author: Option<Author>,
     ai: Option<AiSettings>,
-    /// Build a simulation module from the code of a user block when it is saved
-    /// (off by default; needs zig).
-    template_sim: Option<bool>,
-    /// Path to the zig compiler used for that.
-    zig_path: Option<PathBuf>,
-    w2c2_path: Option<PathBuf>,
     /// Hand-installed `wamrc` (AOT compiler of modules); empty means "download on first use".
     wamrc_path: Option<PathBuf>,
 }
@@ -454,53 +448,6 @@ pub fn save_update_beta(on: bool) {
     update_settings(|s| s.update_beta = Some(on));
 }
 
-pub fn template_sim() -> bool {
-    load_settings().template_sim.unwrap_or(false)
-}
-
-pub fn save_template_sim(on: bool) {
-    update_settings(|s| s.template_sim = Some(on));
-}
-
-/// Path to zig as entered in the settings; empty means "not set".
-pub fn zig_path() -> String {
-    load_settings()
-        .zig_path
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-pub fn save_zig_path(path: &str) {
-    let path = path.trim();
-    update_settings(|s| s.zig_path = (!path.is_empty()).then(|| PathBuf::from(path)));
-}
-
-/// The zig to build simulation modules with: `None` while the option is off, the path
-/// is empty or the file does not exist.
-pub fn sim_compiler() -> Option<PathBuf> {
-    let settings = load_settings();
-    let path = settings.zig_path?;
-    (settings.template_sim.unwrap_or(false) && path.is_file()).then_some(path)
-}
-
-/// Path to w2c2 as entered in the settings; empty means "not set".
-pub fn w2c2_path() -> String {
-    load_settings()
-        .w2c2_path
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default()
-}
-
-pub fn save_w2c2_path(path: &str) {
-    let path = path.trim();
-    update_settings(|s| s.w2c2_path = (!path.is_empty()).then(|| PathBuf::from(path)));
-}
-
-/// The w2c2 that translates WASM firmware blocks: the setting, `CRAB_W2C2` or `PATH`.
-pub fn w2c2() -> Option<PathBuf> {
-    crab_build::wasm_c::find_w2c2(load_settings().w2c2_path.as_deref())
-}
-
 /// Path to wamrc as entered in the settings; empty means "not set".
 pub fn wamrc_path() -> String {
     load_settings()
@@ -614,16 +561,20 @@ mod tests {
     }
 
     #[test]
-    fn simulation_settings_round_trip() {
+    fn settings_round_trip_and_old_keys_are_ignored() {
         let settings = Settings {
-            template_sim: Some(true),
-            zig_path: Some(PathBuf::from(r"C:	ools\zig\zig.exe")),
+            wamrc_path: Some(PathBuf::from("wamrc")),
             ..Default::default()
         };
         let back: Settings = toml::from_str(&toml::to_string(&settings).unwrap()).unwrap();
-        assert_eq!(back.template_sim, Some(true));
-        assert_eq!(back.zig_path, settings.zig_path);
-        let old: Settings = toml::from_str("").unwrap();
-        assert_eq!(old.template_sim, None);
+        assert_eq!(back.wamrc_path, settings.wamrc_path);
+        // Settings files of older versions still have the keys of the removed C++ tools.
+        let old: Settings = toml::from_str(
+            "template_sim = true
+zig_path = \"zig\"
+",
+        )
+        .unwrap();
+        assert_eq!(old.wamrc_path, None);
     }
 }

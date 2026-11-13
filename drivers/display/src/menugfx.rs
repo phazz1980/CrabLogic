@@ -98,7 +98,7 @@ fn text_width(n: usize, scale: i32) -> i32 {
 
 impl Menu {
     /// Draws the menu into the cleared framebuffer.
-    pub fn draw_fb(&self, m: &MenuView, fb: &mut Fb, var: &impl Fn(u16) -> f64) {
+    pub fn draw_fb(&self, m: &MenuView, fb: &mut Fb, var: &impl Fn(u16, bool) -> u32) {
         let lay = layout(fb.pages, m.font, m.hints);
         let parent = self.parent();
         // Title and the line under it.

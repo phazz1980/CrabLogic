@@ -242,22 +242,6 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
     if icon(ui, has_doc, "✔", crate::i18n::tr("Проверить схему (F7)")) {
         app.run_check();
     }
-    if icon(
-        ui,
-        has_doc,
-        "</>",
-        crate::i18n::tr("Код C++: скетч Arduino, сгенерированный из схемы"),
-    ) {
-        app.code_view = Some(crate::codeview::CodeView::new());
-    }
-    if icon(
-        ui,
-        has_doc && idle,
-        "🔨",
-        crate::i18n::tr("Собрать (F5): сгенерировать скетч и собрать прошивку"),
-    ) {
-        app.start_job(JobKind::Build, ui.ctx());
-    }
     if app.job_running() {
         if icon(
             ui,

@@ -433,11 +433,14 @@ fn bench_mode(
         // SAFETY: stopping an expired one-shot fails harmlessly.
         unsafe { sys::esp_timer_stop(stop_timer) };
     }
-    let n = f64::from(runs);
+    // Integer statistics: levels in tenths (rounded), call time in whole microseconds.
+    let n = u64::from(runs.max(1));
+    let tenths = (levels_sum * 10 + n / 2) / n;
+    let call_avg = (call_sum + (n / 2) as i64) / n as i64;
     println!(
-        "bench {mode} n={runs} levels={:.1} call_us={:.0}/{call_max} timer_late_us={} timer_calls={}",
-        levels_sum as f64 / n,
-        call_sum as f64 / n,
+        "bench {mode} n={runs} levels={}.{} call_us={call_avg}/{call_max} timer_late_us={} timer_calls={}",
+        tenths / 10,
+        tenths % 10,
         LATE_MAX.load(Ordering::Relaxed),
         LATE_CALLS.load(Ordering::Relaxed),
     );

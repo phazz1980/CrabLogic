@@ -4,7 +4,6 @@ name = "PCF8574: входы"
 symbol = "PCF8574"
 group = "Расширители"
 description = "Восемь дискретных входов на микросхеме PCF8574 или PCF8574A (шина I²C), например оптоизолированные входы плат Kincony."
-includes = ["Wire.h"]
 
 [[output]]
 name = "p0"

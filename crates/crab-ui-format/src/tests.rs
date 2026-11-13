@@ -21,6 +21,7 @@ fn item(parent: Option<u16>, kind: MenuItemKind, cap: &str, var: Option<u16>) ->
         kind,
         caption: cap.to_string(),
         var_slot: var,
+        var_float: var == Some(0),
     }
 }
 
@@ -61,6 +62,7 @@ fn sample() -> Config {
         widgets: vec![
             w(WidgetKind::Led, 100, 0, Some(1)),
             w(WidgetKind::Icon { id: 3 }, 110, 0, None),
+            w(WidgetKind::String, 0, 20, Some(2)),
         ],
     });
     c.menu = Some(Menu {
@@ -73,9 +75,9 @@ fn sample() -> Config {
             item(
                 Some(1),
                 MenuItemKind::Number {
-                    min: 0.0,
-                    max: 10.0,
-                    step: 0.5,
+                    min: 0,
+                    max: 100,
+                    step: 5,
                     decimals: 1,
                     unit: "бар".to_string(),
                 },
@@ -136,6 +138,7 @@ fn round_trip() {
                 }
                 (WidgetKindView::Led, WidgetKind::Led) => {}
                 (WidgetKindView::Icon { id }, WidgetKind::Icon { id: i }) => assert_eq!(id, i),
+                (WidgetKindView::String, WidgetKind::String) => {}
                 _ => panic!("kind mismatch"),
             }
         }
@@ -148,6 +151,7 @@ fn round_trip() {
     for (g, e) in m.items().zip(&em.items) {
         assert_eq!(g.parent, e.parent);
         assert_eq!(g.var_slot, e.var_slot);
+        assert_eq!(g.var_float, e.var_float);
         assert_eq!(g.caption, e.caption);
         match (&g.kind, &e.kind) {
             (ItemKindView::Submenu, MenuItemKind::Submenu)
@@ -241,12 +245,17 @@ fn corruption_never_panics() {
 
 #[test]
 fn wrong_version() {
-    let mut c = sample();
-    c.version = 3;
-    assert_eq!(
-        ConfigView::parse(&c.encode()).err(),
-        Some(FormatError::BadVersion)
-    );
+    for v in [0, 4, 255] {
+        let mut c = sample();
+        c.version = v;
+        let mut bytes = c.encode();
+        bytes[0] = v;
+        assert_eq!(
+            ConfigView::parse(&bytes).err(),
+            Some(FormatError::BadVersion),
+            "version {v}"
+        );
+    }
 }
 
 #[test]
@@ -275,11 +284,94 @@ fn menu_style_round_trips() {
 }
 
 #[test]
-fn version_one_menu_reads_with_default_style() {
+fn menu_numbers_are_scaled_integers() {
+    let bytes = sample().encode();
+    let m = ConfigView::parse(&bytes).unwrap().menu.unwrap();
+    let it = m.items().nth(2).unwrap();
+    assert!(it.var_float);
+    match it.kind {
+        ItemKindView::Number {
+            min,
+            max,
+            step,
+            decimals,
+            ..
+        } => assert_eq!((min, max, step, decimals), (0, 100, 5, 1)),
+        _ => panic!("not a number"),
+    }
+    // Negative limits survive the round trip.
     let mut c = sample();
-    c.version = 1;
+    if let MenuItemKind::Number { min, .. } = &mut c.menu.as_mut().unwrap().items[2].kind {
+        *min = -2_000_000_000;
+    }
     let bytes = c.encode();
-    let v = ConfigView::parse(&bytes).unwrap().menu.unwrap();
-    assert_eq!((v.timeout_s, v.font, v.hints), (30, 16, true));
-    assert_eq!(v.len(), c.menu.as_ref().unwrap().items.len());
+    let m = ConfigView::parse(&bytes).unwrap().menu.unwrap();
+    match m.items().nth(2).unwrap().kind {
+        ItemKindView::Number { min, .. } => assert_eq!(min, -2_000_000_000),
+        _ => panic!("not a number"),
+    }
+}
+
+#[test]
+fn string_widget_has_a_slot_and_no_payload() {
+    let mut c = Config::new(DisplayKind::Lcd1602);
+    c.screens.push(Screen {
+        widgets: vec![w(WidgetKind::String, 2, 1, Some(3))],
+    });
+    let bytes = c.encode();
+    let v = ConfigView::parse(&bytes).unwrap();
+    let got = v.screens().next().unwrap().widgets().next().unwrap();
+    assert_eq!(got.kind, WidgetKindView::String);
+    assert_eq!((got.x, got.y, got.w, got.input), (2, 1, 40, Some(3)));
+}
+
+/// A hand-made blob of version 1 or 2: one number item (limits as `f32`) and a bool item.
+fn legacy_blob(version: u8) -> Vec<u8> {
+    let mut b = vec![version, 0, 0, 1]; // 128x64 OLED, no screens, menu
+    b.extend_from_slice(&30u16.to_le_bytes());
+    if version >= 2 {
+        b.extend_from_slice(&[8, 0]); // font 8, no hints
+    }
+    b.extend_from_slice(&2u16.to_le_bytes());
+    // Number: parent none, var 0, "P", min 0.5 max 10.25 step 0.25, one decimal... two decimals
+    b.push(1);
+    b.extend_from_slice(&[0xFF, 0xFF, 0, 0]);
+    b.extend_from_slice(&[1, b'P']);
+    for f in [0.5f32, 10.25, 0.25] {
+        b.extend_from_slice(&f.to_le_bytes());
+    }
+    b.push(2);
+    b.push(0); // empty unit
+               // Bool without a variable
+    b.push(2);
+    b.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+    b.extend_from_slice(&[1, b'B']);
+    b
+}
+
+#[test]
+fn old_versions_are_read_with_scaled_limits() {
+    for v in [1u8, 2] {
+        let bytes = legacy_blob(v);
+        let m = ConfigView::parse(&bytes).unwrap().menu.unwrap();
+        if v == 1 {
+            assert_eq!((m.font, m.hints), (16, true));
+        } else {
+            assert_eq!((m.font, m.hints), (8, false));
+        }
+        let items: Vec<_> = m.items().collect();
+        assert_eq!(items.len(), 2);
+        match items[0].kind {
+            ItemKindView::Number {
+                min,
+                max,
+                step,
+                decimals,
+                ..
+            } => assert_eq!((min, max, step, decimals), (50, 1025, 25, 2)),
+            _ => panic!("not a number"),
+        }
+        assert!(items[0].var_float);
+        assert!(!items[1].var_float);
+    }
 }

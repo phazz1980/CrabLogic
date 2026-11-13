@@ -698,7 +698,7 @@ mod tests {
         let def: BlockDef =
             toml::from_str("[block]\ntype = \"mine\"\nname = \"N\"\ngroup = \"Раздел/Папка\"\n")
                 .unwrap();
-        let bdir = save_block(&user.join("Раздел").join("Папка"), &def, "// code", "docs").unwrap();
+        let bdir = save_block(&user.join("Раздел").join("Папка"), &def, "docs").unwrap();
         fs::create_dir_all(bdir.join("lib/Fancy")).unwrap();
         fs::write(bdir.join("lib/Fancy/Fancy.h"), "// lib").unwrap();
         let (lib, _) = Library::load_with_user(&builtin).unwrap();
@@ -736,7 +736,10 @@ fqbn = \"x:y:z\"
 
         let offered = project_blocks(&project.path);
         assert_eq!(offered.len(), 1);
-        assert_eq!(offered[0].libraries(), ["Fancy"]);
+        assert!(offered[0]
+            .files
+            .iter()
+            .any(|(n, _)| n == "lib/Fancy/Fancy.h"));
 
         // Another computer: no user library at all.
         fs::remove_dir_all(&user).unwrap();
@@ -754,7 +757,7 @@ fqbn = \"x:y:z\"
         let mut def = lib.get("mine").unwrap().def.clone();
         def.info.description = "changed".into();
         let dir = lib.get("mine").unwrap().dir.parent().unwrap().to_owned();
-        save_block(&dir, &def, "// code 2", "docs").unwrap();
+        save_block(&dir, &def, "docs").unwrap();
         let (lib, _) = Library::load_with_user(&builtin).unwrap();
         let diffs = version_diffs(&project.path, &lib);
         assert_eq!(diffs.len(), 1);
@@ -860,7 +863,7 @@ fqbn = \"x:y:z\"
             Library::load_with_user(user.parent().unwrap().join("library").as_path()).unwrap();
         let mut def = lib.get("mine").unwrap().def.clone();
         def.info.description = note.into();
-        save_block(&group, &def, note, "docs").unwrap();
+        save_block(&group, &def, "docs").unwrap();
     }
 
     fn project_of(root: &Path, lib: &Library) -> Project {
@@ -908,7 +911,7 @@ group = \"Мои\"
 ",
         )
         .unwrap();
-        save_block(&one_user.join("Мои"), &def, "// a", "docs").unwrap();
+        save_block(&one_user.join("Мои"), &def, "docs").unwrap();
 
         // The second computer starts from the same block.
         let (two_lib, two_user) = computer(&root.join("two"));

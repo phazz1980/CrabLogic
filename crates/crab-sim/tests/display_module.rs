@@ -16,26 +16,29 @@ use crab_sim::mcu::{Manifest, McuModule, Word};
 /// It echoes `in(1) + 1000 * in(7)` to `ok` and `in(2)` to `item`; `up` confirms the variable of
 /// slot 1 with 1, `down` the variable of slot 0 with 42.5.
 const DRIVER: &str = r#"(module
-  (import "crab" "input" (func $in (param i32) (result f64)))
-  (import "crab" "output" (func $out (param i32 f64)))
+  (import "crab" "input_i" (func $ini (param i32) (result i32)))
+  (import "crab" "input_f" (func $inf (param i32) (result f32)))
+  (import "crab" "output_i" (func $outi (param i32 i32)))
+  (import "crab" "output_f" (func $outf (param i32 f32)))
   (memory 1)
   (global $hb i32 (i32.const 256))
   (export "__heap_base" (global $hb))
   (func (export "step") (param i32)
-    (call $out (i32.const 0)
-      (f64.add (call $in (i32.const 1)) (f64.mul (call $in (i32.const 7)) (f64.const 1000))))
-    (call $out (i32.const 1) (f64.const 1))
-    (call $out (i32.const 2) (call $in (i32.const 2)))
-    (call $out (i32.const 3) (f64.const 0))
-    (call $out (i32.const 4) (f64.const -1))
-    (if (f64.gt (call $in (i32.const 3)) (f64.const 0)) (then
-      (call $out (i32.const 3) (f64.const 1))
-      (call $out (i32.const 4) (f64.const 1))
-      (call $out (i32.const 6) (f64.const 1))))
-    (if (f64.gt (call $in (i32.const 4)) (f64.const 0)) (then
-      (call $out (i32.const 3) (f64.const 1))
-      (call $out (i32.const 4) (f64.const 0))
-      (call $out (i32.const 5) (f64.const 42.5))))))"#;
+    (call $outi (i32.const 0)
+      (i32.trunc_sat_f32_s
+        (f32.add (call $inf (i32.const 1)) (f32.mul (call $inf (i32.const 7)) (f32.const 1000)))))
+    (call $outi (i32.const 1) (i32.const 1))
+    (call $outi (i32.const 2) (i32.trunc_sat_f32_s (call $inf (i32.const 2))))
+    (call $outi (i32.const 3) (i32.const 0))
+    (call $outi (i32.const 4) (i32.const -1))
+    (if (i32.gt_s (call $ini (i32.const 3)) (i32.const 0)) (then
+      (call $outi (i32.const 3) (i32.const 1))
+      (call $outi (i32.const 4) (i32.const 1))
+      (call $outi (i32.const 6) (i32.const 1))))
+    (if (i32.gt_s (call $ini (i32.const 4)) (i32.const 0)) (then
+      (call $outi (i32.const 3) (i32.const 1))
+      (call $outi (i32.const 4) (i32.const 0))
+      (call $outf (i32.const 5) (f32.const 42.5))))))"#;
 
 const LOGIC: &str = include_str!("fixtures/display_menu.toml");
 

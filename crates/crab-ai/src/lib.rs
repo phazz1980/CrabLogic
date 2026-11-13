@@ -12,9 +12,9 @@ pub mod provider;
 
 use std::fs;
 
-use crab_codegen::{ArduinoCpp, Backend, Program};
+use crab_codegen::Program;
 use crab_core::expander::taken_pins;
-use crab_core::library::{BLOCK_FILE, DOCS_FILE, ESP32_CPP_TEMPLATE};
+use crab_core::library::{BLOCK_FILE, DOCS_FILE, WASM_FILE};
 use crab_core::pins::{pin_uses, BoardLayout};
 use crab_core::{
     BlockPos, Expander, ExpanderChip, Library, LibraryBlock, LocalValues, ParamValue, PortRef,
@@ -33,8 +33,9 @@ pub trait Context {
         &mut self,
         edit: &mut dyn FnMut(&mut Project) -> Result<(), String>,
     ) -> Result<(), String>;
-    /// Generates, builds and optionally uploads the firmware; returns a short report.
-    fn build(&mut self, upload: bool, port: Option<String>, debug: bool) -> Result<String, String>;
+    /// Builds the WASM modules of the sheets and sends them to the board with the master firmware;
+    /// returns a short report. `debug`: the modules report every block output.
+    fn upload_modules(&mut self, port: Option<String>, debug: bool) -> Result<String, String>;
     /// Latest values from the board: (name, value, forced).
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String>;
     /// Called after a new block type was written to the library.
@@ -162,7 +163,7 @@ pub fn tools() -> Vec<Tool> {
             description: "Создать или изменить переменную (тег). Переменную, которую никто не записывает, можно использовать как уставку.",
             input_schema: json!({"type": "object", "properties": {
                 "name": {"type": "string"},
-                "type": {"type": "string", "description": "тип Arduino: bool, char, byte, short, word, int, unsigned int, long, unsigned long, long long, unsigned long long, int8_t…uint64_t, float, double, String"},
+                "type": {"type": "string", "description": "тип переменной: bool, char, byte, short, word, int, unsigned int, long, unsigned long, long long, unsigned long long, int8_t…uint64_t, float, double, String"},
                 "init": {"description": "начальное значение"},
                 "description": {"type": "string"},
                 "retain": {"type": "boolean", "description": "сохранять во флеш (EEPROM): восстанавливается после перезагрузки"},
@@ -216,23 +217,18 @@ pub fn tools() -> Vec<Tool> {
             input_schema: json!({"type": "object", "properties": {}}),
         },
         Tool {
-            name: "generate",
-            description: "Сгенерировать скетч Arduino C++ и вернуть его текст.",
+            name: "build",
+            description: "Собрать модули WASM всех листов схемы (проверка генератора) и вернуть имя и размер каждого. На плату не заливает.",
             input_schema: json!({"type": "object", "properties": {
-                "debug": {"type": "boolean", "description": "с модулем онлайн-отладки"}
+                "debug": {"type": "boolean", "description": "модули сообщают значения всех выходов (для отладки)"}
             }}),
         },
         Tool {
-            name: "build",
-            description: "Собрать прошивку через arduino-cli. Может занять минуту.",
-            input_schema: json!({"type": "object", "properties": {"debug": {"type": "boolean"}}}),
-        },
-        Tool {
             name: "upload",
-            description: "Собрать и залить прошивку на плату.",
+            description: "Собрать модули листов и залить их на плату, на которой уже стоит мастер-прошивка.",
             input_schema: json!({"type": "object", "properties": {
                 "port": {"type": "string", "description": "например COM3"},
-                "debug": {"type": "boolean", "description": "с модулем онлайн-отладки"}
+                "debug": {"type": "boolean", "description": "модули сообщают значения всех выходов (для отладки)"}
             }}),
         },
         Tool {
@@ -242,14 +238,13 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "create_block_type",
-            description: "Создать новый пользовательский тип блока (папка user_library/): block.toml, шаблон esp32.cpp.tmpl и docs.md. Встроенные блоки менять нельзя. Поле group задаёт раздел и папки библиотеки через «/», например «Насосы/Управление». Формат — как у существующих блоков (см. get_block_type). Блок с датчиком, шиной или библиотекой Arduino описывается нативной частью `native` (файл native.cpp, C++ внутри мастер-прошивки): первая строка `// crab:native libs=\"Библиотека Arduino, Другая\" i2c=0x76`, затем `// crab:sim выход=значение` для симуляции на компьютере, необязательный `struct State {...};`, необязательная `CRAB_INIT(State& s, Params p) {...}` (один раз и при смене параметров) и обязательная `CRAB_STEP(State& s, In in, Out& out) {...}` (каждый цикл: прочитать датчик, записать `out.<выход>`; входы — `in.<вход>`, параметры — `p.<параметр>`). Порты и параметры только bool/int/float (время и пин — int), имена — латиница. Нативная часть только отдаёт данные, логику строят блоки схемы. Нужен template или native (можно оба).",
+            description: "Создать новый пользовательский тип блока (папка user_library/): block.toml, block.wasm и docs.md. Встроенные блоки менять нельзя. Поле group задаёт раздел и папки библиотеки через «/», например «Насосы/Управление». Формат block.toml — как у существующих блоков (см. get_block_type). Логика блока — модуль WASM `block.wasm` (любой язык, интерфейс описан в папке skills рядом с программой), он передаётся в `wasm_base64`; блоки на C++ (шаблон, native.cpp) больше не поддерживаются.",
             input_schema: json!({"type": "object", "properties": {
                 "type": {"type": "string"},
                 "block_toml": {"type": "string"},
-                "template": {"type": "string", "description": "esp32.cpp.tmpl; можно опустить, если задан native"},
-                "native": {"type": "string", "description": "native.cpp: C++ нативной части блока (датчики, шины, библиотеки Arduino)"},
+                "wasm_base64": {"type": "string", "description": "содержимое block.wasm в base64"},
                 "docs": {"type": "string"}
-            }, "required": ["type", "block_toml"]}),
+            }, "required": ["type", "block_toml", "wasm_base64"]}),
         },
     ]
 }
@@ -321,15 +316,8 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
                 .ok_or_else(|| format!("нет типа блока «{kind}»"))?;
             let mut v = block_summary(b);
             let docs = b.docs_path().and_then(|p| fs::read_to_string(p).ok());
-            let template = b
-                .template(ESP32_CPP_TEMPLATE)
-                .and_then(Result::ok)
-                // Built-in blocks without a template are written in Rust.
-                .or_else(|| crab_codegen::builtin_cpp_preview(&b.def));
-            let native = b.native_path().and_then(|p| fs::read_to_string(p).ok());
             v["docs"] = json!(docs);
-            v["template"] = json!(template);
-            v["native"] = json!(native);
+            v["has_wasm"] = json!(b.wasm_path().is_some());
             Ok(v)
         }
         "add_block" => {
@@ -502,7 +490,8 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
             let name = s("name")?;
             let ty: VarType = serde_json::from_value(args.get("type").cloned().unwrap_or_default())
                 .map_err(|_| {
-                    "type: тип Arduino (bool, byte, int, long, float, double, String…)".to_owned()
+                    "type: тип переменной (bool, byte, int, long, float, double, String…)"
+                        .to_owned()
                 })?;
             let init = match args.get("init") {
                 None | Some(Value::Null) => None,
@@ -642,24 +631,29 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
             Ok(json!({"id": new_id, "check": report(ctx.project(), &lib)}))
         }
         "check" => Ok(report(ctx.project(), &lib)),
-        "generate" => {
-            let debug = args.get("debug").and_then(Value::as_bool).unwrap_or(false);
-            let store = LocalValues::open_default().map_err(|e| e.to_string())?;
-            let project = ctx.project().with_local(&lib, &store);
-            let program = Program::build(&project, &lib).map_err(|e| e.to_string())?;
-            let code = ArduinoCpp { debug }
-                .generate(&program)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({"sketch": code}))
-        }
         "build" => {
             let debug = args.get("debug").and_then(Value::as_bool).unwrap_or(false);
-            Ok(json!({"result": ctx.build(false, None, debug)?}))
+            let store = LocalValues::open_default().map_err(|e| e.to_string())?;
+            let project = crab_codegen::prepare(&ctx.project().with_local(&lib, &store), &lib);
+            let program = Program::build(&project, &lib).map_err(|e| e.to_string())?;
+            let mut modules = Vec::new();
+            for sheet in program.sheets() {
+                let module = program
+                    .wasm_module_with(sheet, debug)
+                    .map_err(|e| format!("лист {sheet}: {e}"))?;
+                modules.push(json!({
+                    "sheet": sheet,
+                    "name": module.name,
+                    "wasm_bytes": module.wasm.len(),
+                    "needs": module.needs,
+                }));
+            }
+            Ok(json!({"modules": modules}))
         }
         "upload" => {
             let debug = args.get("debug").and_then(Value::as_bool).unwrap_or(false);
             let port = args.get("port").and_then(Value::as_str).map(str::to_owned);
-            Ok(json!({"result": ctx.build(true, port, debug)?}))
+            Ok(json!({"result": ctx.upload_modules(port, debug)?}))
         }
         "read_live_values" => {
             let values: Vec<Value> = ctx
@@ -677,8 +671,7 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
                 ctx,
                 &kind,
                 &s("block_toml")?,
-                args.get("template").and_then(Value::as_str).unwrap_or(""),
-                args.get("native").and_then(Value::as_str).unwrap_or(""),
+                &s("wasm_base64")?,
                 args.get("docs").and_then(Value::as_str),
             )?;
             Ok(json!({"created": kind}))
@@ -832,8 +825,7 @@ fn create_block_type(
     ctx: &mut dyn Context,
     kind: &str,
     block_toml: &str,
-    template: &str,
-    native: &str,
+    wasm_base64: &str,
     docs: Option<&str>,
 ) -> Result<(), String> {
     let lib_dir = ctx.library_dir();
@@ -848,17 +840,11 @@ fn create_block_type(
     if ctx.library().is_user(kind) {
         return Err(format!("тип «{kind}» уже есть; выберите другое имя"));
     }
-    if template.trim().is_empty() && native.trim().is_empty() {
-        return Err("нужен шаблон кода (template) или нативная часть (native)".to_owned());
-    }
+    let wasm = decode_base64(wasm_base64).ok_or("wasm_base64: это не base64")?;
     // Validate in memory first, so a broken block never lands in the library.
     let def: crab_core::BlockDef =
         toml::from_str(block_toml).map_err(|e| format!("block.toml: {e}"))?;
     def.validate(kind).map_err(|e| format!("block.toml: {e}"))?;
-    if !native.trim().is_empty() {
-        crab_core::native::parse_native(native, &def)
-            .map_err(|e| format!("native.cpp: {}", crab_core::native::join_errors(&e)))?;
-    }
     // The group becomes the section and folders of the user library
     // (`Насосы/Управление`); an unusable group puts the block in the root.
     let parts: Vec<&str> = def.info.group.split('/').map(str::trim).collect();
@@ -875,16 +861,56 @@ fn create_block_type(
         return Err(format!("тип «{kind}» уже есть; выберите другое имя"));
     }
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let write = |file: &str, text: &str| fs::write(dir.join(file), text).map_err(|e| e.to_string());
-    write(BLOCK_FILE, block_toml)?;
-    if !template.trim().is_empty() {
-        write(ESP32_CPP_TEMPLATE, template)?;
-    }
-    if !native.trim().is_empty() {
-        write(crab_core::native::NATIVE_FILE, native)?;
-    }
+    let write =
+        |file: &str, data: &[u8]| fs::write(dir.join(file), data).map_err(|e| e.to_string());
+    write(BLOCK_FILE, block_toml.as_bytes())?;
+    write(WASM_FILE, &wasm)?;
     if let Some(docs) = docs {
-        write(DOCS_FILE, docs)?;
+        write(DOCS_FILE, docs.as_bytes())?;
+    }
+    // The same check as `crablogic block check`: a block that does not pass never stays.
+    let check = crab_codegen::check_block(&dir, ctx.library());
+    if check.has_errors() {
+        let _ = fs::remove_dir_all(&dir);
+        let errors: Vec<String> = check
+            .diags
+            .iter()
+            .filter(|d| d.severity == crab_core::Severity::Error)
+            .map(|d| format!("{}: {} ({})", d.code, d.message, d.hint))
+            .collect();
+        return Err(format!(
+            "block.wasm не прошёл проверку: {}",
+            errors.join("; ")
+        ));
     }
     ctx.reload_library()
+}
+
+/// Standard base64 (`+/`, with or without `=` padding); `None` for anything else. Spaces and line
+/// breaks are skipped.
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in text
+        .bytes()
+        .filter(|c| !c.is_ascii_whitespace() && *c != b'=')
+    {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = acc << 6 | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
 }

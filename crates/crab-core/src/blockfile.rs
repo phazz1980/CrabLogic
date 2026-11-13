@@ -1,5 +1,5 @@
-//! A user block as a set of files: the block folder (`block.toml`, templates, `docs.md`),
-//! the Arduino libraries it uses (`lib/<Name>/…`) and an example project (`example.crab`).
+//! A user block as a set of files: the block folder (`block.toml`, `block.wasm`, `docs.md`),
+//! its pictures and an example project (`example.crab`).
 //! Blocks travel inside a pack (see `pack`) or inside a project (see `packed`).
 
 use std::fs;
@@ -10,8 +10,6 @@ use crate::pack::{self, PackInfo};
 
 /// Example project inside the block folder.
 pub const EXAMPLE_FILE: &str = "example.crab";
-/// Folder with the Arduino libraries of the block; every subfolder is one library.
-pub const LIB_DIR: &str = "lib";
 /// Folder with the pictures of `docs.md`; the docs refer to them as `images/<name>`.
 pub const IMAGES_DIR: &str = "images";
 
@@ -70,22 +68,6 @@ impl Incoming {
         self.def.info.group.trim_matches('/').to_owned()
     }
 
-    /// Names of the attached Arduino libraries.
-    pub fn libraries(&self) -> Vec<String> {
-        let prefix = format!("{LIB_DIR}/");
-        let mut names: Vec<String> = self
-            .files
-            .iter()
-            .filter_map(|(n, _)| {
-                n.strip_prefix(&prefix)?
-                    .split_once('/')
-                    .map(|(lib, _)| lib.to_owned())
-            })
-            .collect();
-        names.dedup();
-        names
-    }
-
     pub fn has_example(&self) -> bool {
         self.files.iter().any(|(n, _)| n == EXAMPLE_FILE)
     }
@@ -129,13 +111,6 @@ impl Incoming {
         write_files(&dir, &self.files)?;
         Ok(dir)
     }
-}
-
-/// Folder with the attached Arduino libraries of the block, to pass to arduino-cli as
-/// `--libraries` (each subfolder is one library); `None` when the block has none.
-pub fn library_dirs(block_dir: &Path) -> Option<PathBuf> {
-    let dir = block_dir.join(LIB_DIR);
-    dir.is_dir().then_some(dir)
 }
 
 /// Every file under `dir` as (relative path with `/`, contents), sorted.
@@ -200,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn install_keeps_library_and_example_and_makes_a_pack() {
+    fn install_keeps_extra_files_and_example_and_makes_a_pack() {
         let (root, builtin) = setup("roundtrip");
         let user = user_library_dir(&builtin);
         let def: BlockDef = toml::from_str(
@@ -211,12 +186,11 @@ group = \"Раздел\"
 ",
         )
         .unwrap();
-        let dir = save_block(&user.join("Раздел"), &def, "// code", "docs").unwrap();
+        let dir = save_block(&user.join("Раздел"), &def, "docs").unwrap();
         fs::create_dir_all(dir.join("lib/Fancy/src")).unwrap();
         fs::write(dir.join("lib/Fancy/src/Fancy.h"), "// lib").unwrap();
         fs::write(dir.join(EXAMPLE_FILE), "zip").unwrap();
         let inc = Incoming::from_files(read_files(&dir).unwrap()).unwrap();
-        assert_eq!(inc.libraries(), ["Fancy"]);
         assert!(inc.has_example());
 
         // A clean library elsewhere.
@@ -232,7 +206,6 @@ group = \"Раздел\"
             fs::read_to_string(dir.join("lib/Fancy/src/Fancy.h")).unwrap(),
             "// lib"
         );
-        assert_eq!(library_dirs(dir), Some(dir.join(LIB_DIR)));
         assert_eq!(inc.conflict(&lib), Conflict::User);
         let _ = fs::remove_dir_all(&root);
     }

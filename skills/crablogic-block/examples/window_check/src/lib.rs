@@ -8,7 +8,7 @@
 #![cfg_attr(not(test), no_std)]
 
 /// (inside, above, below); the edges belong to the window.
-pub fn classify(value: f64, low: f64, high: f64) -> (bool, bool, bool) {
+pub fn classify(value: f32, low: f32, high: f32) -> (bool, bool, bool) {
     let above = value > high;
     let below = value < low;
     (!above && !below, above, below)
@@ -16,12 +16,13 @@ pub fn classify(value: f64, low: f64, high: f64) -> (bool, bool, bool) {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    // Imports of the master: numbers only (bool is 0.0 / 1.0).
+    // Imports of the master, interface v2 (no f64): the suffix follows the port type,
+    // `_f` (f32) for float ports, `_i` (i32) for bool/int ports.
     #[link(wasm_import_module = "crab")]
     extern "C" {
-        fn input(index: i32) -> f64;
-        fn param(index: i32) -> f64;
-        fn output(index: i32, value: f64);
+        fn input_f(index: i32) -> f32;
+        fn param_f(index: i32) -> f32;
+        fn output_i(index: i32, value: i32);
     }
 
     // Input, parameter and output numbers follow the order of block.toml.
@@ -32,23 +33,15 @@ mod wasm {
     const O_ABOVE: i32 = 1;
     const O_BELOW: i32 = 2;
 
-    fn flag(b: bool) -> f64 {
-        if b {
-            1.0
-        } else {
-            0.0
-        }
-    }
-
     /// Called every cycle of the sheet; `dt_ms` is not needed here.
     #[no_mangle]
     pub extern "C" fn step(_dt_ms: i32) {
         unsafe {
             let (inside, above, below) =
-                super::classify(input(I_VALUE), param(P_LOW), param(P_HIGH));
-            output(O_INSIDE, flag(inside));
-            output(O_ABOVE, flag(above));
-            output(O_BELOW, flag(below));
+                super::classify(input_f(I_VALUE), param_f(P_LOW), param_f(P_HIGH));
+            output_i(O_INSIDE, inside as i32);
+            output_i(O_ABOVE, above as i32);
+            output_i(O_BELOW, below as i32);
         }
     }
 

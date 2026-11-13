@@ -8,7 +8,6 @@ description = "Подключение ESP32 к сети Wi-Fi и/или своя
 single = true
 hidden = true
 pullable = true
-includes = ["flprogNetwork.h", "flprogWebServer.h", "service/flprogNetworkOta.h", "Update.h"]
 
 [[input]]
 name = "en"

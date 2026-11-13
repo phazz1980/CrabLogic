@@ -1,7 +1,7 @@
 use super::*;
 
 impl EditorApp {
-    /// Looks for serial ports with arduino-cli on a worker thread.
+    /// Looks for serial ports on a worker thread.
     pub fn scan_ports(&mut self, ctx: &egui::Context) {
         if self.port_scan.is_some() {
             return;
@@ -9,9 +9,7 @@ impl EditorApp {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         thread::spawn(move || {
-            let result = ArduinoCli::locate()
-                .and_then(|cli| cli.serial_ports())
-                .map_err(|e| e.to_string());
+            let result = crab_build::serial_ports().map_err(|e| e.to_string());
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -125,7 +123,7 @@ impl EditorApp {
         );
     }
 
-    pub(super) fn poll_ai(&mut self) {
+    pub(super) fn poll_ai(&mut self, ctx: &egui::Context) {
         for request in self.ai.poll() {
             match request {
                 crate::ai::Request::Apply(logic, layout) => {
@@ -140,13 +138,11 @@ impl EditorApp {
                     // A password set by AI goes to the program, not into the file.
                     self.take_local();
                 }
-                crate::ai::Request::StopDebug => {
-                    // The AI is about to upload: free the port until it finishes.
-                    self.stop_debug();
-                    self.console.release();
-                    self.console.hold = true;
-                }
                 crate::ai::Request::ReloadLibrary => self.reload_library(),
+                crate::ai::Request::UploadModules { port, debug } => {
+                    self.debug_firmware = debug;
+                    self.start_job(JobKind::UploadModules { port }, ctx);
+                }
             }
         }
     }

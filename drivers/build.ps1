@@ -16,10 +16,12 @@ $env:RUSTFLAGS = '-C target-cpu=mvp -C link-arg=-zstack-size=4096 -C link-arg=--
 try {
     foreach ($name in $Names) {
         # (library block, cargo features) pairs of this crate
-        $targets = if ($variants.ContainsKey($name)) {
-            $variants[$name] | ForEach-Object { , @($_, $_) }
+        # (appended one by one: an `if` expression would unroll a single pair into two items)
+        $targets = @()
+        if ($variants.ContainsKey($name)) {
+            foreach ($v in $variants[$name]) { $targets += , @($v, $v) }
         } else {
-            , @($name, '')
+            $targets += , @($name, '')
         }
         foreach ($t in $targets) {
             $block, $features = $t

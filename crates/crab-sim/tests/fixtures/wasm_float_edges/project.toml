@@ -1,0 +1,6 @@
+[project]
+name = "wasm_float_edges"
+description = "Края float: округление до целого (f32) и остаток fmod через crab.math"
+
+[board]
+fqbn = "esp32:esp32:esp32"

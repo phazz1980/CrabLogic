@@ -6,7 +6,6 @@ group = "Сеть"
 shared = "network"
 description = "Ведущее устройство Modbus TCP через Wi-Fi или Ethernet: опрашивает до четырёх ведомых (Unit ID) на одном сервере."
 single = true
-includes = ["flprogModbusTCP.h"]
 
 [[param]]
 name = "net"

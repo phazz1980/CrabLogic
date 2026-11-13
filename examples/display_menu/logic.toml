@@ -180,6 +180,23 @@ h = 8
 text = "нагрев"
 
 [[block]]
+id = "t_txt"
+type = "num_to_text"
+decimals = 1
+prefix = "Т:"
+suffix = " °C"
+
+[[block]]
+id = "t_str"
+type = "disp_string"
+display = "oled"
+screen = 1
+x = 56
+y = 50
+w = 72
+h = 8
+
+[[block]]
 id = "t_ico"
 type = "disp_icon"
 display = "oled"
@@ -188,7 +205,7 @@ x = 104
 y = 0
 w = 16
 h = 16
-icon = "flame"
+icon = "thermometer"
 
 [[block]]
 id = "s_cap"
@@ -422,6 +439,14 @@ to = "t_bar.in"
 [[link]]
 from = "run.out"
 to = "t_led.in"
+
+[[link]]
+from = "temp.out"
+to = "t_txt.in"
+
+[[link]]
+from = "t_txt.out"
+to = "t_str.in"
 
 [[link]]
 from = "sp.out"

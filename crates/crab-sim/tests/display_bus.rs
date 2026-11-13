@@ -12,7 +12,7 @@ const MODULE: &str = r#"(module
   (memory (export "memory") 1)
   (data (i32.const 32) "\00\b0\02\10")
   (data (i32.const 48) "\40\01\80")
-  (func (export "abi_version") (result i32) i32.const 4)
+  (func (export "abi_version") (result i32) i32.const 5)
   (func (export "init")
     (drop (call $bus (i32.const 20) (i32.const 21) (i32.const 22) (i32.const 400000) (i32.const 0))))
   (func (export "step") (param i32)

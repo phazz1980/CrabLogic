@@ -15,7 +15,7 @@
   (import "crab" "yield" (func $yield (result i32)))
   ;; Work counter as in generated modules: one unit per loop pass, `yield` refills it.
   (global $fuel (mut i32) (i32.const 10000))
-  (func (export "abi_version") (result i32) i32.const 4)
+  (func (export "abi_version") (result i32) i32.const 5)
   (func (export "step") (param $dt i32)
     (local $pin i32)
     (local $level i32)

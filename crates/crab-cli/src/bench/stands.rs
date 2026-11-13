@@ -287,7 +287,6 @@ impl Builder {
                 project: ProjectInfo {
                     name: name.to_owned(),
                     description: String::new(),
-                    comment_lang: String::new(),
                     password: String::new(),
                     embed: false,
                 },

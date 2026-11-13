@@ -12,16 +12,16 @@ use library::{find_library, is_block_file};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 /// How often the editor looks for a new release while it stays open.
 const UPDATE_RECHECK: Duration = Duration::from_secs(6 * 3600);
 
-use crab_build::{ArduinoCli, SerialPort};
+use crab_build::SerialPort;
 use crab_core::project::PROJECT_EXT;
 use crab_core::{
     BlockPos, BoardConfig, Fragment, Library, LocalValues, PortRef, Project, ProjectConfig,
@@ -183,8 +183,6 @@ pub struct EditorApp {
     /// Open "Block editor" window.
     pub block_editor: Option<crate::blockedit::BlockEditor>,
     pub board_editor: Option<crate::boardedit::BoardEditor>,
-    /// Open "Project code" window.
-    pub code_view: Option<crate::codeview::CodeView>,
     pub tag_import: Option<crate::tagimport::TagImport>,
     pub help: Option<crate::help::HelpWindow>,
     /// User block waiting for the delete confirmation.
@@ -212,8 +210,6 @@ pub struct EditorApp {
     job: Option<Job>,
     /// The upload of modules waits for this answer; the flag is «do not ask again for these sheets».
     upload_question: Option<(UploadQuestion, bool)>,
-    /// Build requested while precompilation runs; starts right after it.
-    queued: Option<JobKind>,
     /// Warnings about the sheets that would not go accelerated on the remembered board.
     board_check: Option<BoardCheck>,
     /// When the project last changed and when the memo file was last looked at.
@@ -234,11 +230,6 @@ pub struct EditorApp {
     auto_update: bool,
     /// Offer beta versions (GitHub pre-releases) as updates.
     update_beta: bool,
-    template_sim: bool,
-    zig_path: String,
-    zig_status: String,
-    w2c2_path: String,
-    w2c2_status: String,
     wamrc_path: String,
     /// Running release check; the flag tells whether the user asked for it.
     update_rx: Option<Receiver<(bool, Result<Check, String>)>>,
@@ -251,7 +242,6 @@ pub struct EditorApp {
     changes_window: bool,
     pub mcp: crate::mcp_host::McpHost,
     pub ai_conf: crate::aiconf::AiConf,
-    cores_conf: crate::coresconf::CoresConf,
     report: crate::report::Form,
     pub import: crate::blockio::Import,
     pub board_import: crate::boardio::Import,
@@ -261,10 +251,6 @@ pub struct EditorApp {
     block_pick: std::collections::BTreeMap<String, BlockPick>,
     /// Replacing a block also saves the project's copy next to it as `<type>_project`.
     block_keep_copy: bool,
-    /// arduino-cli is missing: the window offers to install it.
-    cli_prompt: CliPrompt,
-    /// Which core packs the startup offer will download (`cores::PACKS` order).
-    cli_choice: Vec<bool>,
     /// Update download in progress, or the error of the last attempt.
     self_update: SelfUpdate,
 }
@@ -280,25 +266,6 @@ enum SelfUpdate {
     },
     /// Downloaded and unpacked, waiting for the user to restart.
     Ready(PathBuf),
-}
-
-/// State of the "arduino-cli not found" offer.
-enum CliPrompt {
-    Hidden,
-    Ask,
-    /// arduino-cli is there, the ESP32 core is not.
-    AskCore,
-    /// The download runs on a worker thread and sends its lines and the final result.
-    Installing(CliInstall),
-}
-
-/// A running arduino-cli / ESP32 core download: progress shared with the worker thread.
-struct CliInstall {
-    rx: Receiver<Result<String, String>>,
-    done: Arc<AtomicU64>,
-    total: Arc<AtomicU64>,
-    cancel: Arc<AtomicBool>,
-    last: Arc<Mutex<String>>,
 }
 
 impl EditorApp {
@@ -333,7 +300,6 @@ impl EditorApp {
             theme_editor: None,
             block_editor: None,
             board_editor: None,
-            code_view: None,
             tag_import: None,
             help: None,
             block_delete: None,
@@ -354,7 +320,6 @@ impl EditorApp {
             allow_close: false,
             autosave_minutes: theme::autosave_minutes(),
             last_autosave: Instant::now(),
-            queued: None,
             board_check: None,
             board_changed: Instant::now(),
             board_seen: None,
@@ -362,11 +327,6 @@ impl EditorApp {
             local: LocalValues::default(),
             update_check: theme::update_check(),
             update_beta: theme::update_beta(),
-            template_sim: theme::template_sim(),
-            zig_path: theme::zig_path(),
-            zig_status: String::new(),
-            w2c2_path: theme::w2c2_path(),
-            w2c2_status: String::new(),
             wamrc_path: theme::wamrc_path(),
             auto_update: theme::auto_update(),
             update_rx: None,
@@ -376,7 +336,6 @@ impl EditorApp {
             changes_window: false,
             mcp: Default::default(),
             ai_conf: Default::default(),
-            cores_conf: Default::default(),
             report: Default::default(),
             import: Default::default(),
             board_import: Default::default(),
@@ -384,16 +343,6 @@ impl EditorApp {
             block_pick: std::collections::BTreeMap::new(),
             block_keep_copy: false,
             self_update: SelfUpdate::Idle(None),
-            cli_choice: (0..crab_build::cores::PACKS.len())
-                .map(|i| i == 0)
-                .collect(),
-            cli_prompt: match ArduinoCli::locate() {
-                Err(_) => CliPrompt::Ask,
-                Ok(_) if crab_build::cores::fqbn_available("esp32:esp32:esp32") => {
-                    CliPrompt::Hidden
-                }
-                Ok(_) => CliPrompt::AskCore,
-            },
         };
         match LocalValues::open_default() {
             Ok(local) => app.local = local,
@@ -516,7 +465,6 @@ impl eframe::App for EditorApp {
         crab_core::local::editor_beat(self.doc.as_ref().map(|d| d.project.path.as_path()));
         ctx.request_repaint_after(crab_core::local::EDITOR_BEAT);
         crate::textmenu::begin(&ctx);
-        self.sync_comment_lang();
         self.poll_job(&ctx);
         self.update_board_check(&ctx);
         self.poll_debug();
@@ -525,7 +473,7 @@ impl eframe::App for EditorApp {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
         self.poll_sim(&ctx);
-        self.poll_ai();
+        self.poll_ai(&ctx);
         self.poll_console(&ctx);
         self.poll_ports();
         self.poll_update();
@@ -535,12 +483,10 @@ impl eframe::App for EditorApp {
         {
             self.start_update_check(&ctx, false);
         }
-        self.cli_window(&ctx);
         self.mcp
             .set_project(self.doc.as_ref().map(|d| d.project.path.as_path()));
         self.mcp.window(&ctx);
         self.ai_conf.window(&ctx);
-        self.cores_conf.window(&ctx);
         self.poll_self_update(&ctx);
         update::changes_window(&ctx, &mut self.changes_window);
         crate::blockio::handle_drops(self, &ctx);
@@ -649,7 +595,6 @@ impl eframe::App for EditorApp {
         crate::themeedit::show(self, &ctx);
         crate::blockedit::show(self, &ctx);
         crate::boardedit::show(self, &ctx);
-        crate::codeview::show(self, &ctx);
         crate::tagimport::show(self, &ctx);
         crate::help::show(self, &ctx);
         crate::blockedit::delete_dialog(self, &ctx);

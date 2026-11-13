@@ -1,8 +1,12 @@
 //! Menu engine: navigation by four edge-triggered keys, nested submenus, number / bool / choice
 //! editing (local until OK), actions, views, idle timeout; and drawing into a character grid.
+//!
+//! Integers only: the value being edited is an `i32` in units of `10^-decimals` of its item, a
+//! variable is a raw 32-bit cell (`f32` bits for a `float` variable, an `i32` otherwise) that the
+//! caller reads through `var(slot, float)`.
 
 use crate::safe::Safe;
-use crate::text::{clamp, round, Grid, Txt};
+use crate::text::{clamp, pow10, scaled_cell, unscaled_bits, whole_cell, Grid, Txt, INVALID};
 use crab_ui_format::{ItemKindView, ItemView, MenuView};
 
 /// Nesting depth limit.
@@ -27,20 +31,23 @@ pub struct MenuOut {
     pub changed: bool,
     /// Variable slot of the confirmed item, -1 when nothing was confirmed or the item has no variable.
     pub slot: i32,
-    /// The new value for `slot`.
-    pub value: f64,
+    /// The new value for `slot`: the bits of the variable cell (`f32` bits when `float`).
+    pub value: u32,
+    /// The variable of `slot` is `float`.
+    pub float: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct Edit {
     pub(crate) item: u16,
-    pub(crate) value: f64,
+    /// Number: units of `10^-decimals` of the item; choice: the variant index.
+    pub(crate) value: i32,
 }
 
 #[derive(Clone, Copy)]
 struct Shadow {
     slot: u16,
-    value: f64,
+    bits: u32,
     ttl: u8,
 }
 
@@ -100,9 +107,44 @@ fn neighbour(m: &MenuView, parent: Option<u16>, cur: u16, forward: bool) -> u16 
     }
 }
 
-/// Rounds away binary noise (0.1 + 0.2) of accumulated steps.
-fn tidy(v: f64) -> f64 {
-    round(v * 1.0e6) / 1.0e6
+/// A cell of an integer variable.
+fn int_bits(v: i32) -> u32 {
+    v as u32
+}
+
+/// The cell of a variable holding the whole number `n` (a choice index, 0/1 of a switch).
+fn whole_bits(n: i32, float: bool) -> u32 {
+    if float {
+        (n as f32).to_bits()
+    } else {
+        int_bits(n)
+    }
+}
+
+/// The cell is "on": `f32` above one half, an integer above zero.
+fn cell_on(bits: u32, float: bool) -> bool {
+    if float {
+        f32::from_bits(bits) > 0.5
+    } else {
+        (bits as i32) > 0
+    }
+}
+
+/// The cell of a variable edited as the scaled number `n` of an item with `decimals`.
+fn number_bits(n: i32, decimals: u8, float: bool) -> u32 {
+    if float {
+        unscaled_bits(n, decimals)
+    } else {
+        // An integer variable has no decimals; with some, the nearest whole number.
+        let scale = pow10(decimals) as i32;
+        let q = n / scale;
+        let r = n % scale;
+        int_bits(if r.abs() * 2 >= scale {
+            q + n.signum()
+        } else {
+            q
+        })
+    }
 }
 
 impl Menu {
@@ -139,10 +181,10 @@ impl Menu {
     }
 
     /// Current value of a variable slot: a just-confirmed value wins over the live one.
-    pub fn value_of(&self, var: &impl Fn(u16) -> f64, slot: u16) -> f64 {
+    pub fn value_of(&self, var: &impl Fn(u16, bool) -> u32, slot: u16, float: bool) -> u32 {
         match self.shadow {
-            Some(s) if s.slot == slot => s.value,
-            _ => var(slot),
+            Some(s) if s.slot == slot => s.bits,
+            _ => var(slot, float),
         }
     }
 
@@ -152,14 +194,15 @@ impl Menu {
         m: &MenuView,
         dt_ms: i32,
         keys: [bool; 4],
-        var: &impl Fn(u16) -> f64,
+        var: &impl Fn(u16, bool) -> u32,
     ) -> MenuOut {
         let mut out = MenuOut {
             open: false,
             item: -1,
             changed: false,
             slot: -1,
-            value: 0.0,
+            value: 0,
+            float: false,
         };
         if let Some(s) = self.shadow.as_mut() {
             s.ttl = s.ttl.saturating_sub(1);
@@ -186,10 +229,10 @@ impl Menu {
             }
         } else {
             if edge.rd(KEY_UP) {
-                self.up_down(m, var, false);
+                self.up_down(m, false);
             }
             if edge.rd(KEY_DOWN) {
-                self.up_down(m, var, true);
+                self.up_down(m, true);
             }
             if edge.rd(KEY_OK) {
                 self.ok(m, var, &mut out);
@@ -205,22 +248,36 @@ impl Menu {
         out
     }
 
-    fn up_down(&mut self, m: &MenuView, _var: &impl Fn(u16) -> f64, down: bool) {
+    fn up_down(&mut self, m: &MenuView, down: bool) {
         if let Some(e) = self.edit.as_mut() {
             let Some(it) = item_at(m, e.item) else { return };
             match it.kind {
-                ItemKindView::Number { min, max, step, .. } => {
-                    let step = if step > 0.0 { step as f64 } else { 1.0 };
-                    let v = if down { e.value - step } else { e.value + step };
-                    e.value = tidy(clamp(v, min as f64, max as f64));
+                ItemKindView::Number {
+                    min,
+                    max,
+                    step,
+                    decimals,
+                    ..
+                } => {
+                    let step = if step > 0 {
+                        step
+                    } else {
+                        pow10(decimals) as i32
+                    };
+                    let v = if down {
+                        e.value.saturating_sub(step)
+                    } else {
+                        e.value.saturating_add(step)
+                    };
+                    e.value = clamp(v, min, max);
                 }
                 ItemKindView::Choice { choices } => {
-                    let n = choices.count().max(1) as f64;
-                    let v = e.value + if down { 1.0 } else { -1.0 };
-                    e.value = if v < 0.0 {
-                        n - 1.0
+                    let n = choices.count().max(1) as i32;
+                    let v = e.value + if down { 1 } else { -1 };
+                    e.value = if v < 0 {
+                        n - 1
                     } else if v >= n {
-                        0.0
+                        0
                     } else {
                         v
                     };
@@ -232,10 +289,17 @@ impl Menu {
         }
     }
 
-    fn ok(&mut self, m: &MenuView, var: &impl Fn(u16) -> f64, out: &mut MenuOut) {
+    fn ok(&mut self, m: &MenuView, var: &impl Fn(u16, bool) -> u32, out: &mut MenuOut) {
         if let Some(e) = self.edit.take() {
-            let slot = item_at(m, e.item).and_then(|it| it.var_slot);
-            self.confirm(slot, e.value, out);
+            if let Some(it) = item_at(m, e.item) {
+                let bits = match it.kind {
+                    ItemKindView::Number { decimals, .. } => {
+                        number_bits(e.value, decimals, it.var_float)
+                    }
+                    _ => whole_bits(e.value, it.var_float),
+                };
+                self.confirm(it.var_slot, bits, it.var_float, out);
+            }
             return;
         }
         let Some(it) = item_at(m, self.cursor) else {
@@ -249,42 +313,57 @@ impl Menu {
                     self.cursor = first_of(m, Some(self.cursor));
                 }
             }
-            ItemKindView::Number { min, max, .. } => {
-                let v = it.var_slot.map_or(min as f64, |s| self.value_of(var, s));
+            ItemKindView::Number {
+                min, max, decimals, ..
+            } => {
+                let v = it.var_slot.map_or(min, |s| {
+                    scaled_cell(self.value_of(var, s, it.var_float), it.var_float, decimals)
+                });
+                // NaN and out-of-range values start from the lower limit.
                 self.edit = Some(Edit {
                     item: self.cursor,
-                    value: clamp(v, min as f64, max as f64),
+                    value: if v == INVALID {
+                        min
+                    } else {
+                        clamp(v, min, max)
+                    },
                 });
             }
             ItemKindView::Choice { choices } => {
-                let n = choices.count().max(1) as f64;
-                let v = it.var_slot.map_or(0.0, |s| self.value_of(var, s));
+                let n = choices.count().max(1) as i32;
+                let v = it.var_slot.map_or(0, |s| {
+                    whole_cell(self.value_of(var, s, it.var_float), it.var_float)
+                });
                 self.edit = Some(Edit {
                     item: self.cursor,
-                    value: clamp(round(v), 0.0, n - 1.0),
+                    value: clamp(v, 0, n - 1),
                 });
             }
             ItemKindView::Bool => {
                 if let Some(s) = it.var_slot {
-                    let now = self.value_of(var, s) > 0.5;
-                    self.confirm(Some(s), if now { 0.0 } else { 1.0 }, out);
+                    let now = cell_on(self.value_of(var, s, it.var_float), it.var_float);
+                    let bits = whole_bits(i32::from(!now), it.var_float);
+                    self.confirm(Some(s), bits, it.var_float, out);
                 } else {
-                    self.confirm(None, 0.0, out);
+                    self.confirm(None, 0, false, out);
                 }
             }
-            ItemKindView::Action => self.confirm(it.var_slot, 1.0, out),
+            ItemKindView::Action => {
+                self.confirm(it.var_slot, whole_bits(1, it.var_float), it.var_float, out)
+            }
             ItemKindView::View => {}
         }
     }
 
-    fn confirm(&mut self, slot: Option<u16>, value: f64, out: &mut MenuOut) {
+    fn confirm(&mut self, slot: Option<u16>, bits: u32, float: bool, out: &mut MenuOut) {
         out.changed = true;
         if let Some(s) = slot {
             out.slot = s as i32;
-            out.value = value;
+            out.value = bits;
+            out.float = float;
             self.shadow = Some(Shadow {
                 slot: s,
-                value,
+                bits,
                 ttl: SHADOW_STEPS,
             });
         }
@@ -307,7 +386,7 @@ impl Menu {
     }
 
     /// Draws the menu into `g` (cleared first).
-    pub fn draw(&self, m: &MenuView, g: &mut Grid, var: &impl Fn(u16) -> f64) {
+    pub fn draw(&self, m: &MenuView, g: &mut Grid, var: &impl Fn(u16, bool) -> u32) {
         let (cols, rows) = (g.cols, g.rows);
         g.reset(cols, rows);
         let parent = self.parent();
@@ -357,7 +436,7 @@ impl Menu {
         it: &ItemView,
         idx: u16,
         editing: bool,
-        var: &impl Fn(u16) -> f64,
+        var: &impl Fn(u16, bool) -> u32,
     ) {
         if editing {
             t.push(b'[' as u16);
@@ -375,40 +454,43 @@ impl Menu {
         it: &ItemView,
         idx: u16,
         editing: bool,
-        var: &impl Fn(u16) -> f64,
+        var: &impl Fn(u16, bool) -> u32,
         mixed: bool,
     ) {
-        let live = |s: Option<u16>| s.map_or(0.0, |s| self.value_of(var, s));
-        let shown = |s: Option<u16>| match self.edit {
-            Some(e) if editing && e.item == idx => e.value,
-            _ => live(s),
+        let float = it.var_float;
+        // The live cell of the variable (an item without a variable shows zero).
+        let live = |s: Option<u16>| s.map_or(0, |s| self.value_of(var, s, float));
+        let edited = match self.edit {
+            Some(e) if editing && e.item == idx => Some(e.value),
+            _ => None,
         };
         match &it.kind {
             ItemKindView::Number { decimals, unit, .. } => {
-                t.push_num(shown(it.var_slot), *decimals);
+                let n = edited.unwrap_or_else(|| scaled_cell(live(it.var_slot), float, *decimals));
+                t.push_scaled(n, *decimals);
                 t.push_str(unit);
             }
-            ItemKindView::Bool => t.push_str(match (shown(it.var_slot) > 0.5, mixed) {
+            ItemKindView::Bool => t.push_str(match (cell_on(live(it.var_slot), float), mixed) {
                 (true, false) => "ВКЛ",
                 (false, false) => "ВЫКЛ",
                 (true, true) => "Вкл",
                 (false, true) => "Выкл",
             }),
             ItemKindView::Choice { choices } => {
-                let n = round(shown(it.var_slot));
-                let n = if n >= 0.0 { n as usize } else { 0 };
+                let n = edited.unwrap_or_else(|| whole_cell(live(it.var_slot), float));
+                let n = if n >= 0 { n as usize } else { 0 };
                 if let Some(s) = choices.clone().nth(n) {
                     t.push_str(s);
                 }
             }
-            ItemKindView::View => t.push_auto(live(it.var_slot)),
+            ItemKindView::View => t.push_auto(live(it.var_slot), float),
             ItemKindView::Submenu | ItemKindView::Action => {}
         }
     }
 
     /// Cheap fingerprint of everything the graphic menu shows: position, edit state and the
     /// values of the current level. Equal fingerprints mean the same picture.
-    pub fn signature(&self, m: &MenuView, var: &impl Fn(u16) -> f64) -> u32 {
+    pub fn signature(&self, m: &MenuView, var: &impl Fn(u16, bool) -> u32) -> u32 {
         let mut h: u32 = 0x811C_9DC5;
         let mut mix = |v: u32| {
             h = (h ^ v).wrapping_mul(0x0100_0193);
@@ -417,11 +499,11 @@ impl Menu {
         mix(self.cursor as u32);
         if let Some(e) = self.edit {
             mix(1 + e.item as u32);
-            mix((e.value as f32).to_bits());
+            mix(e.value as u32);
         }
         for (_, it) in level(m, self.parent()) {
             if let Some(s) = it.var_slot {
-                mix((self.value_of(var, s) as f32).to_bits());
+                mix(self.value_of(var, s, it.var_float));
             }
         }
         h

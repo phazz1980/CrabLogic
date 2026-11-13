@@ -47,6 +47,7 @@ fn display_blocks_are_in_the_library() {
         "disp_bar",
         "disp_led",
         "disp_icon",
+        "disp_string",
     ] {
         assert!(lib.get(kind).is_some(), "{kind}");
     }
@@ -107,6 +108,33 @@ h = 1
     assert!(has(&run(src), DiagKind::DisplayWidget));
     let ok = src.replace("x = 10", "x = 6");
     assert!(!has(&run(&ok), DiagKind::DisplayWidget));
+}
+
+#[test]
+fn string_widget_is_checked_like_the_others() {
+    // A string widget inside the screen is valid, outside it is an error, no display is an error.
+    let ok = format!(
+        "{OLED}
+[[block]]
+id = \"s\"
+type = \"disp_string\"
+display = \"scr\"
+x = 0
+y = 0
+w = 128
+h = 8
+"
+    );
+    // (the unconnected input is reported as for any other widget)
+    assert!(!has(&run(&ok), DiagKind::DisplayWidget));
+    let outside = ok.replace("y = 0", "y = 60");
+    assert!(has(&run(&outside), DiagKind::DisplayWidget));
+    let no_display = "[[block]]
+id = \"s\"
+type = \"disp_string\"
+display = \"nope\"
+";
+    assert!(has(&run(no_display), DiagKind::DisplayWidget));
 }
 
 #[test]

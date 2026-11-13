@@ -1,0 +1,31 @@
+[[block]]
+id = "sensor"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "lp"
+type = "lowpass"
+tau = 500.0
+
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[block]]
+id = "gt"
+type = "greater"
+b = 2000.0
+
+[[link]]
+from = "sensor.out"
+to = "lp.in"
+
+[[link]]
+from = "lp.out"
+to = "gt.a"
+
+[[link]]
+from = "gt.out"
+to = "led.in"

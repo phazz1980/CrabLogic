@@ -25,6 +25,8 @@ pub enum WidgetKind {
     Icon {
         id: u8,
     },
+    /// A string input slot, shown clipped to the widget width.
+    String,
 }
 
 /// One widget of a screen.
@@ -54,10 +56,11 @@ pub struct Screen {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MenuItemKind {
     Submenu,
+    /// `min`, `max`, `step` are in units of `10^-decimals`.
     Number {
-        min: f32,
-        max: f32,
-        step: f32,
+        min: i32,
+        max: i32,
+        step: i32,
         decimals: u8,
         unit: String,
     },
@@ -78,6 +81,9 @@ pub struct MenuItem {
     pub kind: MenuItemKind,
     pub caption: String,
     pub var_slot: Option<u16>,
+    /// The variable is `float` (the driver reads and writes its cell as `f32`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub var_float: bool,
 }
 
 /// Menu: items in table order.
@@ -159,10 +165,8 @@ impl Config {
         if let Some(m) = &self.menu {
             let items = &m.items[..m.items.len().min(NONE_U16 as usize - 1)];
             o.extend_from_slice(&m.timeout_s.to_le_bytes());
-            if self.version >= 2 {
-                o.push(m.font);
-                o.push(u8::from(m.hints));
-            }
+            o.push(m.font);
+            o.push(u8::from(m.hints));
             o.extend_from_slice(&(items.len() as u16).to_le_bytes());
             for i in items {
                 put_item(&mut o, i);
@@ -192,6 +196,7 @@ fn put_widget(o: &mut Vec<u8>, w: &Widget) {
         WidgetKind::Bar { .. } => 2,
         WidgetKind::Led => 3,
         WidgetKind::Icon { .. } => 4,
+        WidgetKind::String => 5,
     };
     o.extend_from_slice(&[k, w.x, w.y, w.w, w.h, w.font]);
     put_opt(o, w.input);
@@ -211,6 +216,7 @@ fn put_widget(o: &mut Vec<u8>, w: &Widget) {
         }
         WidgetKind::Led => {}
         WidgetKind::Icon { id } => o.push(*id),
+        WidgetKind::String => {}
     }
 }
 
@@ -226,6 +232,7 @@ fn put_item(o: &mut Vec<u8>, i: &MenuItem) {
     o.push(k);
     put_opt(o, i.parent);
     put_opt(o, i.var_slot);
+    o.push(u8::from(i.var_float));
     put_str(o, &i.caption);
     match &i.kind {
         MenuItemKind::Number {
@@ -235,8 +242,8 @@ fn put_item(o: &mut Vec<u8>, i: &MenuItem) {
             decimals,
             unit,
         } => {
-            for f in [min, max, step] {
-                o.extend_from_slice(&f.to_le_bytes());
+            for n in [min, max, step] {
+                o.extend_from_slice(&n.to_le_bytes());
             }
             o.push(*decimals);
             put_str(o, unit);

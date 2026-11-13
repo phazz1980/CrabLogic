@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::library::ESP32_CPP_TEMPLATE;
 use crate::library::{BlockDef, BlockInfo, LibraryBlock, ParamDef, ParamKind, PortDef};
 use crate::{Block, Logic, ParamValue, SignalType};
 
@@ -21,7 +20,7 @@ pub const VAR_PARAM: &str = "var";
 /// only while it is true ("разрешение записи"). Set per block, not per variable.
 pub const WRITE_ENABLE: &str = "write_enable";
 
-/// Arduino storage type of a variable. On the sheets it carries the signal of
+/// Storage type of a variable. On the sheets it carries the signal of
 /// [`VarType::signal`]; the sketch stores it in the declared C++ type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VarType {
@@ -67,7 +66,7 @@ pub enum VarType {
     Float,
     #[serde(rename = "double")]
     Double,
-    /// Arduino `String`.
+    /// Text.
     #[serde(rename = "String", alias = "string")]
     String,
 }
@@ -98,7 +97,7 @@ impl VarType {
         VarType::String,
     ];
 
-    /// Name as written in Arduino code and in the project file.
+    /// Name as written in the project file (it also keys the stored value, see `crab_codegen::retain`).
     pub fn name(self) -> &'static str {
         match self {
             VarType::Bool => "bool",
@@ -316,8 +315,6 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                     // Reading takes the value written on this or the previous scan,
                     // so loops through variables are allowed.
                     memory: get,
-                    includes: Vec::new(),
-                    libraries: Vec::new(),
                     single: false,
                     hidden: false,
                     pullable: false,
@@ -388,19 +385,11 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                     params
                 },
             };
-            let template = match (get, en) {
-                (true, _) => "// @loop\n{{ output.out }} = {{ var }};\n",
-                (false, false) => "// @loop\n{{ var }} = {{ input.in }};\n",
-                (false, true) => {
-                    "// @loop\nif ({{ input.en }}) {\n  {{ var }} = {{ input.in }};\n}\n"
-                }
-            };
             blocks.insert(
                 format!("{kind}_{}{}", ty.name(), if en { "_en" } else { "" }),
                 LibraryBlock {
                     def,
                     dir: Default::default(),
-                    inline_templates: [(ESP32_CPP_TEMPLATE, template.to_owned())].into(),
                 },
             );
         }

@@ -67,15 +67,18 @@
 
 ## E. Удаление C++
 
-- [ ] E1 Тест генерации модуля или симуляции есть у каждого блока (до удаления снимков `.ino`).
-- [ ] E2 `crab-codegen`: удалить генератор Arduino и снимки `.ino`; вывод языка — только WASM.
-- [ ] E3 `crab-build`: удалить `master.rs`, `native.rs`, `direct.rs`, `cores.rs`, установку arduino-cli
+Решение пользователя 13.11.2026: удалять сейчас, не дожидаясь проверки B1 и C4 на плате (их проверить после);
+папки `libs/` и `specs/wasm-on-mcu/proto/master/` удалить. Начать после задач 5–6 `specs/no-f64` (общие крейты).
+
+- [x] E1 Тест генерации модуля или симуляции есть у каждого блока (до удаления снимков `.ino`). — Готово: тест `crab-codegen/tests/library_modules.rs`: модуль собирается для каждого блока библиотеки и каждого примера.
+- [x] E2 `crab-codegen`: удалить генератор Arduino и снимки `.ino`; вывод языка — только WASM. — Готово: удалены arduino.rs, tasks/expander/preview/lang, снимки `.ino`; остались `.wat`-снимки листов.
+- [x] E3 `crab-build`: удалить `master.rs`, `native.rs`, `direct.rs`, `cores.rs`, установку arduino-cli — Готово: crab-build сведён к flash/mcu_module/upload_plan/placement/wamrc/aot/board_memo + порты (serialport).
   (и `wasm_c.rs`, если не нужен).
-- [ ] E4 `crab-core` (`native.rs`, `native_wizard.rs`, шаблоны C++ в `library.rs`), `crab-sim` (native-тесты).
-- [ ] E5 `crab-editor`: меню, кнопки, вкладки редактора блока про C++/скетч/arduino-cli; i18n-ключи.
-- [ ] E6 `crab-ai`, `crab-mcp`: команды сборки/заливки → модули/мастер; создание блока без C++.
-- [ ] E7 `crab-cli`: убрать `gen`/`build`/`upload`; удалить `audit-rust`.
-- [ ] E8 Удалить `libs/`, `specs/wasm-on-mcu/proto/master/`. Проверка всего этапа: `cargo fmt`,
+- [x] E4 `crab-core` (`native.rs`, `native_wizard.rs`, шаблоны C++ в `library.rs`), `crab-sim` (native-тесты). — Готово: удалены native.rs, native_wizard.rs, шаблоны C++ и includes/libraries; D2 для блоков с C++ сохранён; тесты native в crab-sim удалены.
+- [x] E5 `crab-editor`: меню, кнопки, вкладки редактора блока про C++/скетч/arduino-cli; i18n-ключи. — Готово: меню/кнопки/вкладки C++ убраны, добавлены «Залить модули» и вкладка «Модуль и пример»; ключи i18n очищены (-99 на язык).
+- [x] E6 `crab-ai`, `crab-mcp`: команды сборки/заливки → модули/мастер; создание блока без C++. — Готово: build/upload/create_block_type работают с модулями WASM; generate убран.
+- [x] E7 `crab-cli`: убрать `gen`/`build`/`upload`; удалить `audit-rust`. — Готово: убраны gen/build/upload/audit-rust.
+- [x] E8 Удалить `libs/`, `specs/wasm-on-mcu/proto/master/`. Проверка всего этапа: `cargo fmt`, — Готово: libs/ и proto/master удалены; help, CLAUDE.md, архитектура обновлены.
   `cargo clippy --all-targets`, `cargo test`; все `examples/` проходят `gen-wasm`; `grep -ri "arduino"`
   по `crates/` и `help/` — только история в `09-news.md`.
 

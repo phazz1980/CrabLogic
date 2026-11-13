@@ -194,7 +194,7 @@ impl Chip {
             .or_else(|| Self::from_fqbn(&board.fqbn))
     }
 
-    /// Chip of an arduino-cli board name; `None` for boards without a pin table.
+    /// Chip of a board id (FQBN); `None` for boards without a pin table.
     pub fn from_fqbn(fqbn: &str) -> Option<Self> {
         let mut parts = fqbn.split(':');
         let (Some(vendor), Some(arch), Some(board)) = (parts.next(), parts.next(), parts.next())
@@ -568,7 +568,7 @@ mod tests {
             Some(Chip::Esp32S3)
         );
         assert_eq!(Chip::from_fqbn("esp32:esp32:esp32c6"), None);
-        assert_eq!(Chip::from_fqbn("arduino:avr:uno"), None);
+        assert_eq!(Chip::from_fqbn("avr:avr:uno"), None);
     }
 
     #[test]

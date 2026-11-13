@@ -76,7 +76,7 @@ mod serial {
                 .map_err(io::Error::other)?;
             // On DevKit boards DTR/RTS drive EN and GPIO0 through the auto-reset
             // circuit; a half-asserted pair holds the chip in reset or the bootloader.
-            // Release both, as the Arduino serial monitor does.
+            // Release both, as a plain serial monitor does.
             p.write_data_terminal_ready(false)
                 .map_err(io::Error::other)?;
             p.write_request_to_send(false).map_err(io::Error::other)?;

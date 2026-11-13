@@ -1,6 +1,6 @@
 //! Core of CrabLogic: project model, TOML loading/saving and the block library.
 //!
-//! The core knows nothing about GUI, AI or arduino-cli.
+//! The core knows nothing about GUI, AI or the board tools.
 
 pub mod blockfile;
 pub mod boardfile;
@@ -17,8 +17,6 @@ pub mod library;
 pub mod local;
 pub mod logic;
 pub mod modbus_tags;
-pub mod native;
-pub mod native_wizard;
 pub mod pack;
 pub mod packed;
 pub mod pins;
@@ -40,8 +38,8 @@ pub use error::{Error, Result};
 pub use expander::{Expander, ExpanderChip};
 pub use layout::{BlockPos, Layout, SheetInfo, WireRoute};
 pub use library::{
-    param_input_type, save_block, save_native, user_library_dir, BlockDef, Choice, Library,
-    LibraryBlock, ParamDef, ParamKind, ParamShow, PinMode, PortDef, SignalType,
+    param_input_type, save_block, user_library_dir, BlockDef, Choice, Library, LibraryBlock,
+    ParamDef, ParamKind, ParamShow, PinMode, PortDef, SignalType,
 };
 pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};

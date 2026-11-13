@@ -7,40 +7,41 @@
 
 #![cfg_attr(not(test), no_std)]
 
-const MS_PER_HOUR: f64 = 3_600_000.0;
+const MS_PER_HOUR: f32 = 3_600_000.0;
 
 /// State of one block instance.
 pub struct Counter {
-    run_ms: f64,     // accumulated running time, ms
-    starts: u32,     // rising edges of `run`
-    prev_run: bool,  // `run` of the previous step, for edge detection
+    run_ms: u64,    // accumulated running time, ms (integer: no rounding drift)
+    starts: u32,    // rising edges of `run`
+    prev_run: bool, // `run` of the previous step, for edge detection
 }
 
 impl Counter {
     pub const fn new() -> Self {
         Self {
-            run_ms: 0.0,
+            run_ms: 0,
             starts: 0,
             prev_run: false,
         }
     }
 
-    /// One cycle; returns (hours, starts).
-    pub fn step(&mut self, run: bool, reset: bool, dt_ms: i32) -> (f64, u32) {
+    /// One cycle; returns (hours, starts). Time is summed in integer ms; the float appears
+    /// only in the result, because the `hours` port is float.
+    pub fn step(&mut self, run: bool, reset: bool, dt_ms: i32) -> (f32, u32) {
         if reset {
             // Reset wins over counting; prev_run = false, so a machine that still runs
             // after the reset is released counts as a new start.
             *self = Self::new();
         } else {
             if run {
-                self.run_ms += f64::from(dt_ms);
+                self.run_ms += dt_ms.max(0) as u64;
                 if !self.prev_run {
                     self.starts += 1;
                 }
             }
             self.prev_run = run;
         }
-        (self.run_ms / MS_PER_HOUR, self.starts)
+        (self.run_ms as f32 / MS_PER_HOUR, self.starts)
     }
 }
 
@@ -50,9 +51,11 @@ mod wasm {
 
     #[link(wasm_import_module = "crab")]
     extern "C" {
-        fn input(index: i32) -> f64;
-        fn param(index: i32) -> f64;
-        fn output(index: i32, value: f64);
+        // Interface v2 (no f64): `_i` for bool/int, `_f` (f32) for float ports.
+        fn input_i(index: i32) -> i32;
+        fn param_f(index: i32) -> f32;
+        fn output_i(index: i32, value: i32);
+        fn output_f(index: i32, value: f32);
     }
 
     // Numbers follow the order of block.toml.
@@ -75,10 +78,10 @@ mod wasm {
     pub extern "C" fn step(dt_ms: i32) {
         unsafe {
             let state = &mut *core::ptr::addr_of_mut!(STATE);
-            let (hours, starts) = state.step(input(I_RUN) != 0.0, input(I_RESET) != 0.0, dt_ms);
-            output(O_HOURS, hours);
-            output(O_STARTS, f64::from(starts));
-            output(O_SERVICE, if hours >= param(P_LIMIT) { 1.0 } else { 0.0 });
+            let (hours, starts) = state.step(input_i(I_RUN) != 0, input_i(I_RESET) != 0, dt_ms);
+            output_f(O_HOURS, hours);
+            output_i(O_STARTS, starts as i32);
+            output_i(O_SERVICE, (hours >= param_f(P_LIMIT)) as i32);
         }
     }
 

@@ -1,14 +1,8 @@
-//! "MCU settings" dialog: board, upload port, hardware UARTs and board menu
-//! options for flashing.
-//!
-//! Menus (CPU frequency, flash size, partitions...) come from
-//! `arduino-cli board details` and are loaded on a worker thread.
+//! "MCU settings" dialog: board, upload port and hardware UARTs.
 
 use std::collections::BTreeMap;
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
 
-use crab_build::{ArduinoCli, BoardMenu, SerialPort};
+use crab_build::SerialPort;
 use crab_core::pins::{BoardLayout, BoardModel, BOARD_MODELS};
 use crab_core::uart::{chip_uarts, UartConfig, USB_SPEED};
 use crab_core::{BoardConfig, Boards};
@@ -48,8 +42,6 @@ pub fn board_name<'a>(board: &'a BoardConfig, boards: &'a Boards) -> &'a str {
         .map_or_else(|| fqbn.rsplit(':').next().unwrap_or(fqbn), |(_, name)| name)
 }
 
-type MenusResult = Result<Vec<BoardMenu>, String>;
-
 pub struct BoardDialog {
     fqbn: String,
     /// Id of the exact board picked from the list (built-in model or user board);
@@ -58,12 +50,6 @@ pub struct BoardDialog {
     /// User boards: their pin tables, FQBNs and presets.
     boards: Boards,
     port: String,
-    options: BTreeMap<String, String>,
-    menus: Vec<BoardMenu>,
-    /// FQBN the menus were loaded for.
-    menus_for: String,
-    loading: Option<Receiver<MenusResult>>,
-    error: Option<String>,
     /// `[[uart]]` of the project, edited here.
     uarts: Vec<UartConfig>,
     /// Blocks on each UART: (number, block id), to show who uses a port.
@@ -88,9 +74,8 @@ impl BoardDialog {
         users: Vec<(u8, String)>,
         from_blocks: Vec<(u8, String)>,
         boards: &Boards,
-        ctx: &egui::Context,
     ) -> Self {
-        let mut d = Self {
+        Self {
             uarts: uarts.to_vec(),
             users,
             from_blocks,
@@ -99,50 +84,10 @@ impl BoardDialog {
             model: board.model.clone(),
             boards: boards.clone(),
             port: board.port.clone().unwrap_or_default(),
-            options: board.options.clone(),
-            menus: Vec::new(),
-            menus_for: String::new(),
-            loading: None,
-            error: None,
-        };
-        d.load_menus(ctx);
-        d
-    }
-
-    fn load_menus(&mut self, ctx: &egui::Context) {
-        let fqbn = self.fqbn.trim().to_owned();
-        if fqbn.is_empty() || fqbn == self.menus_for {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        let ctx = ctx.clone();
-        let job_fqbn = fqbn.clone();
-        thread::spawn(move || {
-            let result = ArduinoCli::locate()
-                .and_then(|cli| cli.board_menus(&job_fqbn))
-                .map_err(|e| e.to_string());
-            let _ = tx.send(result);
-            ctx.request_repaint();
-        });
-        self.menus_for = fqbn;
-        self.loading = Some(rx);
-        self.error = None;
-    }
-
-    fn poll(&mut self) {
-        let Some(rx) = &self.loading else { return };
-        let Ok(result) = rx.try_recv() else { return };
-        self.loading = None;
-        match result {
-            Ok(menus) => self.menus = menus,
-            Err(e) => {
-                self.menus.clear();
-                self.error = Some(e);
-            }
         }
     }
 
-    /// Settings to write to the project file: only options that differ from the board defaults.
+    /// Settings to write to the project file.
     pub fn config(&self) -> Result<BoardConfig, String> {
         let fqbn = self.fqbn.trim();
         if fqbn.split(':').count() < 3 {
@@ -152,19 +97,6 @@ impl BoardDialog {
             ));
         }
         let port = self.port.trim();
-        let options = self
-            .options
-            .iter()
-            .filter(|(k, v)| {
-                // Without loaded menus keep everything as is.
-                self.menus.is_empty()
-                    || self
-                        .menus
-                        .iter()
-                        .any(|m| &m.key == *k && m.default_value() != Some(v.as_str()))
-            })
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
         let model = self
             .model
             .clone()
@@ -173,7 +105,7 @@ impl BoardDialog {
             fqbn: fqbn.to_owned(),
             model,
             port: (!port.is_empty()).then(|| port.to_owned()),
-            options,
+            options: BTreeMap::new(),
         })
     }
 
@@ -271,33 +203,26 @@ impl BoardDialog {
     }
 
     pub fn body(&mut self, ui: &mut Ui, ports: &[SerialPort]) {
-        self.poll();
         egui::Grid::new("board_main")
             .num_columns(2)
             .spacing([10.0, 6.0])
             .show(ui, |ui| {
                 ui.label(crate::i18n::tr("Плата (FQBN)"));
                 ui.horizontal(|ui| {
-                    let edit =
-                        ui.add(egui::TextEdit::singleline(&mut self.fqbn).desired_width(220.0));
-                    if edit.lost_focus() {
-                        self.load_menus(ui.ctx());
-                    }
-                    // (FQBN, board id, presets of a user board)
-                    let mut picked: Option<(String, Option<String>, Option<BTreeMap<_, _>>)> = None;
+                    ui.add(egui::TextEdit::singleline(&mut self.fqbn).desired_width(220.0));
+                    // (FQBN, board id)
+                    let mut picked: Option<(String, Option<String>)> = None;
                     ui.menu_button("▾", |ui| {
                         for (fqbn, name) in BOARDS {
-                            let ready = crab_build::cores::fqbn_available(fqbn);
-                            if board_button(ui, name, fqbn, ready).clicked() {
-                                picked = Some(((*fqbn).to_owned(), None, None));
+                            if board_button(ui, name, fqbn).clicked() {
+                                picked = Some(((*fqbn).to_owned(), None));
                                 ui.close();
                             }
                         }
                         ui.separator();
                         for m in BOARD_MODELS {
-                            let ready = crab_build::cores::fqbn_available(m.fqbn);
-                            if board_button(ui, m.name, m.fqbn, ready).clicked() {
-                                picked = Some((m.fqbn.to_owned(), Some(m.id.to_owned()), None));
+                            if board_button(ui, m.name, m.fqbn).clicked() {
+                                picked = Some((m.fqbn.to_owned(), Some(m.id.to_owned())));
                                 ui.close();
                             }
                         }
@@ -305,39 +230,19 @@ impl BoardDialog {
                             ui.separator();
                             for b in self.boards.iter() {
                                 let info = &b.def.info;
-                                let ready = crab_build::cores::fqbn_available(&info.fqbn);
-                                if board_button(ui, &info.name, &info.fqbn, ready).clicked() {
-                                    picked = Some((
-                                        info.fqbn.clone(),
-                                        Some(info.id.clone()),
-                                        Some(info.options.clone()),
-                                    ));
+                                if board_button(ui, &info.name, &info.fqbn).clicked() {
+                                    picked = Some((info.fqbn.clone(), Some(info.id.clone())));
                                     ui.close();
                                 }
                             }
                         }
                     });
-                    if let Some((fqbn, model, presets)) = picked {
-                        if self.fqbn != fqbn {
-                            self.fqbn = fqbn;
-                            self.options.clear();
-                        }
-                        if let Some(presets) = presets {
-                            self.options = presets;
-                        }
+                    if let Some((fqbn, model)) = picked {
+                        self.fqbn = fqbn;
                         self.model = model;
-                        self.load_menus(ui.ctx());
                     }
                     if let Some(name) = self.model_title() {
                         ui.label(RichText::new(name).weak());
-                    }
-                    if !crab_build::cores::fqbn_available(self.fqbn.trim()) {
-                        ui.label(
-                            RichText::new(crate::i18n::tr(
-                                "⚠ ядро этого чипа не скачано (Файл → Ядра ESP32...)",
-                            ))
-                            .color(ui.visuals().warn_fg_color),
-                        );
                     }
                     let user_board = self
                         .model
@@ -388,103 +293,12 @@ impl BoardDialog {
 
         ui.separator();
         self.uart_section(ui);
-
-        ui.separator();
-        ui.label(RichText::new(crate::i18n::tr("Параметры прошивки")).strong());
-        if self.loading.is_some() {
-            ui.horizontal(|ui| {
-                crate::panels::busy(ui);
-                ui.label(crate::i18n::tr("Читаю параметры платы из arduino-cli..."));
-            });
-            return;
-        }
-        if let Some(e) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, e);
-            if !self.options.is_empty() {
-                ui.label(crate::i18n::tr("Заданные параметры сохранятся как есть:"));
-                for (k, v) in &self.options {
-                    ui.monospace(format!("{k} = {v}"));
-                }
-            }
-            return;
-        }
-        egui::ScrollArea::vertical()
-            .max_height(360.0)
-            .show(ui, |ui| {
-                egui::Grid::new("board_menus")
-                    .num_columns(2)
-                    .spacing([10.0, 6.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for menu in &self.menus {
-                            menu_row(ui, menu, &mut self.options);
-                            ui.end_row();
-                        }
-                    });
-            });
-        if ui
-            .button(crate::i18n::tr("Сбросить по умолчанию"))
-            .clicked()
-        {
-            self.options.clear();
-        }
     }
 }
 
-/// Label and drop-down for one board menu; non-default values are shown in bold.
-/// A board in the picker; greyed out while the core of its chip is not downloaded.
-fn board_button(ui: &mut Ui, name: &str, fqbn: &str, ready: bool) -> egui::Response {
-    let response = ui.add_enabled(ready, egui::Button::new(name));
-    if ready {
-        response.on_hover_text(fqbn)
-    } else {
-        response.on_disabled_hover_text(crate::i18n::tr(
-            "Ядро этого чипа не скачано: Файл → Ядра ESP32...",
-        ))
-    }
-}
-
-fn menu_row(ui: &mut Ui, menu: &BoardMenu, options: &mut BTreeMap<String, String>) {
-    let default = menu.default_value().unwrap_or_default().to_owned();
-    let current = options.get(&menu.key).cloned().unwrap_or(default.clone());
-    let label = if menu.label.is_empty() {
-        &menu.key
-    } else {
-        &menu.label
-    };
-    let text = RichText::new(label);
-    ui.label(if current != default {
-        text.strong()
-    } else {
-        text
-    })
-    .on_hover_text(&menu.key);
-    let shown = menu
-        .values
-        .iter()
-        .find(|v| v.value == current)
-        .map_or(current.clone(), |v| v.label.clone());
-    let mut selected = current.clone();
-    egui::ComboBox::from_id_salt(("board_menu", &menu.key))
-        .selected_text(shown)
-        .width(240.0)
-        .show_ui(ui, |ui| {
-            for v in &menu.values {
-                let text = if v.label.is_empty() {
-                    &v.value
-                } else {
-                    &v.label
-                };
-                ui.selectable_value(&mut selected, v.value.clone(), text);
-            }
-        });
-    if selected != current {
-        if selected == default {
-            options.remove(&menu.key);
-        } else {
-            options.insert(menu.key.clone(), selected);
-        }
-    }
+/// A board in the picker.
+fn board_button(ui: &mut Ui, name: &str, fqbn: &str) -> egui::Response {
+    ui.add(egui::Button::new(name)).on_hover_text(fqbn)
 }
 
 /// Speed, format, pins and buffer of one UART.
@@ -525,12 +339,12 @@ fn uart_grid(ui: &mut Ui, u: &mut UartConfig) {
                 (
                     "RX",
                     &mut u.rx,
-                    crate::i18n::tr("-1 — вывод ядра Arduino по умолчанию"),
+                    crate::i18n::tr("-1 — вывод чипа по умолчанию"),
                 ),
                 (
                     "TX",
                     &mut u.tx,
-                    crate::i18n::tr("-1 — вывод ядра Arduino по умолчанию"),
+                    crate::i18n::tr("-1 — вывод чипа по умолчанию"),
                 ),
                 (
                     "DE/RE (RS-485)",
@@ -600,17 +414,9 @@ mod tests {
             "ESP32 Dev Module"
         );
 
-        // An empty FQBN keeps the dialog from asking arduino-cli for menus.
         let mut empty = project_board(Some("kc868"));
         empty.fqbn.clear();
-        let mut dialog = BoardDialog::new(
-            &empty,
-            &[],
-            Vec::new(),
-            Vec::new(),
-            &boards,
-            &egui::Context::default(),
-        );
+        let mut dialog = BoardDialog::new(&empty, &[], Vec::new(), Vec::new(), &boards);
         dialog.fqbn = "esp32:esp32:esp32".into();
         assert_eq!(dialog.model_title(), Some("KC868"));
         assert_eq!(dialog.config().unwrap().model.as_deref(), Some("kc868"));

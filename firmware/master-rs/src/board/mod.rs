@@ -72,11 +72,11 @@ const JOURNAL: usize = 16;
 /// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
 /// `retain` and `retain_text` keep values in NVS (`retain.rs`); UART blocks: `uart.rs`; PCF8574 expanders: `pcf.rs`.
 #[cfg(target_arch = "riscv32")]
-const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,rv32imc";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,rv32imc";
 /// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
 /// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
 #[cfg(not(target_arch = "riscv32"))]
-const MODCAPS: &str = "flashmod,abi4,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,xtensa-esp32";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 

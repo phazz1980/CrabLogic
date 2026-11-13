@@ -36,7 +36,6 @@ fn library() -> Library {
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
     }
     lib
@@ -179,7 +178,6 @@ fn conditional_library() -> Library {
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
     }
     lib
@@ -232,7 +230,6 @@ fn broken_condition_value_is_reported() {
     lib.insert(LibraryBlock {
         def,
         dir: Default::default(),
-        inline_templates: Default::default(),
     });
     let logic: Logic = toml::from_str("[[block]]\nid = \"o\"\ntype = \"odd\"\n").unwrap();
     let r = check(&logic, &lib, None);
@@ -330,7 +327,6 @@ default = -1
         lib.insert(LibraryBlock {
             def,
             dir: Default::default(),
-            inline_templates: Default::default(),
         });
     }
     lib
@@ -656,7 +652,6 @@ fn retain_fast_report(retain: bool, fast: bool) -> Report {
     lib.insert(LibraryBlock {
         def,
         dir: Default::default(),
-        inline_templates: Default::default(),
     });
     let src = format!(
         "[[var]]\nname = \"v\"\ntype = \"float\"\nretain = {retain}\n\

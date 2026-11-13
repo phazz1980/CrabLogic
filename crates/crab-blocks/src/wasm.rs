@@ -1,5 +1,5 @@
 //! The third face of a block: the WASM instructions it adds to a sheet module (next to
-//! `behavior` for the simulation and `emit_cpp` for the sketch). The module builder in
+//! `behavior` for the simulation). The module builder in
 //! `crab-codegen` implements [`WasmEmit`]; a block only says what to compute.
 //!
 //! Values are 32 bit as in the numeric model: `bool`/`int` are `i32`, `float` is `f32`.
@@ -460,7 +460,7 @@ fn random(e: &mut dyn WasmEmit) -> Result<Option<WTy>, String> {
     Ok(None)
 }
 
-/// Arduino `constrain` of the float in local `x`: no panic when the limits are swapped.
+/// Clamp (`constrain`) of the float in local `x`: no panic when the limits are swapped.
 fn constrain(e: &mut dyn WasmEmit, x: u32, lo: u32, hi: u32) {
     e.op(Instruction::LocalGet(x));
     e.op(Instruction::LocalGet(lo));

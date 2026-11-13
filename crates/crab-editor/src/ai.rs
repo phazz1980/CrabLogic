@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use crab_ai::agent::{run_turn, Event};
 use crab_ai::Context;
@@ -34,8 +33,11 @@ pub enum Entry {
 enum Msg {
     Event(Event),
     Edit(Logic, Layout),
-    StopDebug,
     ReloadLibrary,
+    UploadModules {
+        port: Option<String>,
+        debug: bool,
+    },
     /// Session id of the external client, to continue the conversation.
     Session(String),
     Finished {
@@ -47,8 +49,12 @@ enum Msg {
 /// Requests from the worker that the editor carries out.
 pub enum Request {
     Apply(Box<Logic>, Layout),
-    StopDebug,
     ReloadLibrary,
+    /// Upload the modules of the sheets (an editor job, its progress is in the log).
+    UploadModules {
+        port: Option<String>,
+        debug: bool,
+    },
 }
 
 #[derive(Default)]
@@ -200,8 +206,10 @@ impl AiChat {
                 }
                 Msg::Session(id) => self.session = Some(id),
                 Msg::Edit(logic, layout) => requests.push(Request::Apply(Box::new(logic), layout)),
-                Msg::StopDebug => requests.push(Request::StopDebug),
                 Msg::ReloadLibrary => requests.push(Request::ReloadLibrary),
+                Msg::UploadModules { port, debug } => {
+                    requests.push(Request::UploadModules { port, debug })
+                }
                 Msg::Finished { history, error } => {
                     if !history.is_empty() {
                         self.history = history;
@@ -259,14 +267,14 @@ impl Context for WorkerContext {
         Ok(())
     }
 
-    fn build(&mut self, upload: bool, port: Option<String>, debug: bool) -> Result<String, String> {
-        if upload {
-            // The debug session holds the serial port.
-            let _ = self.tx.send(Msg::StopDebug);
-            self.wake.request_repaint();
-            thread::sleep(Duration::from_millis(800));
-        }
-        crab_ai::folder::build_project(&self.project, &self.lib, upload, port, debug)
+    fn upload_modules(&mut self, port: Option<String>, debug: bool) -> Result<String, String> {
+        // The editor runs the upload as its own job and frees the serial port for it.
+        let _ = self.tx.send(Msg::UploadModules { port, debug });
+        self.wake.request_repaint();
+        Ok(crate::i18n::tr(
+            "Заливка модулей запущена в редакторе: ход и результат — в журнале внизу",
+        )
+        .to_owned())
     }
 
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String> {

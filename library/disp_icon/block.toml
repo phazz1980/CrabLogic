@@ -11,8 +11,55 @@ name = "icon"
 show = "value"
 type = "string"
 label = "Значок"
-default = "drop"
-description = "Имя значка из набора: drop, flame, bell, wifi, check, cross, arrow_up, arrow_down"
+default = "thermometer"
+description = "Значок из встроенного набора"
+
+[[param.choice]]
+value = "thermometer"
+label = "Термометр"
+
+[[param.choice]]
+value = "drop"
+label = "Капля"
+
+[[param.choice]]
+value = "fan"
+label = "Вентилятор"
+
+[[param.choice]]
+value = "lamp"
+label = "Лампа"
+
+[[param.choice]]
+value = "alarm"
+label = "Тревога"
+
+[[param.choice]]
+value = "wifi"
+label = "Wi-Fi"
+
+[[param.choice]]
+value = "check"
+label = "Галочка"
+
+[[param.choice]]
+value = "cross"
+label = "Крестик"
+
+[[param]]
+name = "font"
+type = "int"
+label = "Размер"
+default = 16
+description = "Размер значка в пикселях (только OLED; на LCD значок занимает одно знакоместо)"
+
+[[param.choice]]
+value = 8
+label = "8 пикселей"
+
+[[param.choice]]
+value = 16
+label = "16 пикселей"
 
 [[param]]
 name = "display"

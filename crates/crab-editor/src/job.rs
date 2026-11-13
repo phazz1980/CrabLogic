@@ -1,30 +1,22 @@
-//! Background build and upload, so the editor stays responsive.
+//! Upload of the master firmware and of the sheet modules in the background, so the editor stays
+//! responsive.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crab_build::{
-    ArduinoCli, BuildControl, BuildMode, CliReason, CompileOptions, Compiled, OutputLine,
-};
-use crab_codegen::{ArduinoCpp, Backend, Program};
+use crab_build::BuildControl;
+use crab_codegen::Program;
 use crab_core::{Library, Project};
 
 use crate::app::LogLevel;
 
 pub enum JobKind {
-    Build,
-    /// Build even if the last build is up to date (library or core changed).
-    Rebuild,
-    Upload {
-        port: Option<String>,
-    },
+    /// The prebuilt master firmware of the distribution onto the board.
+    Upload { port: Option<String> },
     /// Sheets as WASM modules into the master firmware already on the board.
-    UploadModules {
-        port: Option<String>,
-    },
+    UploadModules { port: Option<String> },
 }
 
 pub struct Done {
@@ -36,8 +28,6 @@ pub struct Done {
 
 pub enum JobEvent {
     Line(LogLevel, String),
-    /// Shown even for a background job.
-    Note(LogLevel, String),
     Done(Result<Done, String>),
     /// The upload waits for the user: some sheets cannot be accelerated. Answer with
     /// [`Job::answer`].
@@ -61,52 +51,34 @@ pub struct UploadQuestion {
     pub sheets: Vec<u32>,
 }
 
-/// How far a background master build has gone: upload can still join it until it ends.
-#[derive(Default)]
-struct Promotion {
-    /// The user asked for an upload: flash right after the build (the inner port is
-    /// `None` for automatic choice).
-    upload: Option<Option<String>>,
-    finished: bool,
-}
-
 pub struct Job {
     pub title: &'static str,
-    /// Precompilation: no log output, buttons stay enabled.
-    pub background: bool,
     /// Upload: the serial port must stay free.
     pub uses_port: bool,
     control: Arc<BuildControl>,
-    promotion: Arc<Mutex<Promotion>>,
     rx: Receiver<JobEvent>,
     /// Answers to [`JobEvent::Ask`]: `true` uploads anyway.
     answers: Sender<bool>,
 }
 
 impl Job {
-    /// Starts generation + build (+ upload) on a worker thread. `wake` is called after
-    /// every event so the UI can repaint.
+    /// Starts an upload on a worker thread. `wake` is called after every event so the UI can
+    /// repaint.
     /// `debug`: the modules report every block output; after the upload the editor connects.
     pub fn start(
         kind: JobKind,
         debug: bool,
         project: Project,
-        source: Project,
         lib: Library,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         let title = match kind {
-            JobKind::Build => crate::i18n::tr("Сборка"),
-            JobKind::Rebuild => crate::i18n::tr("Пересборка"),
-            JobKind::Upload { .. } => crate::i18n::tr("Заливка"),
+            JobKind::Upload { .. } => crate::i18n::tr("Заливка мастер-прошивки"),
             JobKind::UploadModules { .. } => crate::i18n::tr("Заливка модулей"),
         };
-        let background = false;
-        let uses_port = matches!(kind, JobKind::Upload { .. } | JobKind::UploadModules { .. });
+        let uses_port = true;
         let control = Arc::new(BuildControl::default());
         let worker = control.clone();
-        let promotion = Arc::new(Mutex::new(Promotion::default()));
-        let worker_promotion = promotion.clone();
         let (tx, rx) = mpsc::channel();
         let (answers, answer_rx) = mpsc::channel();
         thread::spawn(move || {
@@ -117,23 +89,18 @@ impl Job {
             let cancel = worker.clone();
             let report = Report {
                 out: &mut |level, line| send(JobEvent::Line(level, line.to_owned())),
-                note: &mut |level, line| send(JobEvent::Note(level, line.to_owned())),
                 ask: &mut |question| {
                     send(JobEvent::Ask(question));
                     wait_answer(&answer_rx, &cancel)
                 },
-                direct: &AtomicBool::new(false),
-                promotion: &worker_promotion,
             };
-            let result = run(kind, debug, &project, &source, &lib, worker, report);
+            let result = run(kind, debug, &project, &lib, worker, report);
             send(JobEvent::Done(result));
         });
         Self {
             title,
-            background,
             uses_port,
             control,
-            promotion,
             rx,
             answers,
         }
@@ -142,27 +109,6 @@ impl Job {
     /// Answers the question of the upload: `true` uploads anyway, `false` stops it.
     pub fn answer(&self, upload: bool) {
         let _ = self.answers.send(upload);
-    }
-
-    /// Turns a running background master build into a normal upload to `port`: the log
-    /// opens, the priority rises, and the firmware is flashed when the build ends.
-    /// `false` if the build is not a background one or has already finished.
-    pub fn promote(&mut self, port: Option<String>) -> bool {
-        if !self.background {
-            return false;
-        }
-        {
-            let mut state = self.promotion.lock().unwrap();
-            if state.finished {
-                return false;
-            }
-            state.upload = Some(port);
-        }
-        self.background = false;
-        self.uses_port = true;
-        self.title = crate::i18n::tr("Заливка мастер-прошивки");
-        self.control.raise_priority();
-        true
     }
 
     /// Stops the job; it ends with an error soon after.
@@ -174,26 +120,17 @@ impl Job {
         self.control.is_cancelled()
     }
 
-    /// Runs a background build at normal priority (the user waits for it now).
-    pub fn raise_priority(&self) {
-        self.control.raise_priority();
-    }
-
     /// Events received since the last call.
     pub fn poll(&self) -> Vec<JobEvent> {
         self.rx.try_iter().collect()
     }
 }
 
-/// Where a job reports: the log (hidden for a background job), lines shown anyway,
-/// and whether the build goes without arduino-cli.
+/// Where a job reports: the log, and the questions to the user.
 struct Report<'a> {
     out: &'a mut dyn FnMut(LogLevel, &str),
-    note: &'a mut dyn FnMut(LogLevel, &str),
     /// Asks the user and waits; `false` when declined or the job is cancelled.
     ask: &'a mut dyn FnMut(UploadQuestion) -> bool,
-    direct: &'a AtomicBool,
-    promotion: &'a Mutex<Promotion>,
 }
 
 /// Waits for the user's answer, giving up when the job is cancelled or the editor is gone.
@@ -214,215 +151,20 @@ fn run(
     kind: JobKind,
     debug: bool,
     project: &Project,
-    source: &Project,
     lib: &Library,
     control: Arc<BuildControl>,
     report: Report,
 ) -> Result<Done, String> {
-    let Report {
-        out,
-        note,
-        ask,
-        direct,
-        promotion,
-    } = report;
-    let _ = promotion;
+    let Report { out, ask } = report;
     if let JobKind::UploadModules { port } = &kind {
         return upload_modules(port.as_deref(), project, lib, debug, &control, out, ask);
     }
     // The upload puts the master on the board, with debugging on or off; the schema follows
     // as modules (debugging is a flag of the module build).
-    if let JobKind::Upload { port } = &kind {
-        return upload_master(port.as_deref(), project, lib, control, out);
+    match &kind {
+        JobKind::Upload { port } => upload_master(port.as_deref(), project, lib, control, out),
+        JobKind::UploadModules { .. } => unreachable!("handled above"),
     }
-    if let Some(w2c2) = crate::theme::w2c2() {
-        for problem in crab_build::wasm_c::translate_library(&w2c2, lib) {
-            out(LogLevel::Warning, &problem);
-        }
-    }
-    let program = Program::build(project, lib).map_err(|e| e.to_string())?;
-    let code = ArduinoCpp { debug: false }
-        .generate(&program)
-        .map_err(|e| e.to_string())?;
-    // The project goes into the firmware as saved, not as prepared for generation.
-    let code = crab_codegen::embed_project(&code, source).map_err(|e| e.to_string())?;
-    let (path, _) =
-        crab_codegen::write_sketch(&project.work_dir(), &code).map_err(|e| e.to_string())?;
-    out(
-        LogLevel::Info,
-        &crate::i18n::fmt("Скетч: {0}", &[&path.display()]),
-    );
-
-    let cli = ArduinoCli::locate()
-        .map_err(|e| e.to_string())?
-        .with_control(control);
-    let board = &project.config.board;
-    let opts = CompileOptions {
-        mode: BuildMode::Release,
-        verbose: true,
-        low_priority: false,
-        force: matches!(kind, JobKind::Rebuild),
-        libraries: program.attached_libraries(),
-        ..Default::default()
-    };
-    match cli.cli_reason(&project.work_dir(), board, &opts) {
-        Some(reason) => note(
-            LogLevel::Info,
-            &crate::i18n::fmt("Сборка через arduino-cli: {0}", &[&reason_text(reason)]),
-        ),
-        None => direct.store(true, Ordering::Relaxed),
-    }
-    let installed = cli
-        .ensure_libraries(&program.libraries(), &mut |l| out(LogLevel::Info, l))
-        .map_err(|e| e.to_string())?;
-    if !installed.is_empty() {
-        out(
-            LogLevel::Info,
-            &crate::i18n::fmt("Установлены библиотеки: {0}", &[&installed.join(", ")]),
-        );
-    }
-    out(
-        LogLevel::Info,
-        &crate::i18n::fmt(
-            "Сборка для {0}...",
-            &[&crate::boardcfg::board_name(board, lib.boards())],
-        ),
-    );
-    // Only build stages and diagnostics; compiler command lines stay hidden.
-    let sketch = std::fs::read_to_string(&path).unwrap_or_default();
-    let blocks: Vec<(String, String)> = project
-        .logic
-        .blocks
-        .iter()
-        .map(|b| (b.id.clone(), b.kind.clone()))
-        .collect();
-    let mut errors = 0;
-    let mut first_error: Option<String> = None;
-    let compiled = cli
-        .compile(
-            &project.work_dir(),
-            board,
-            &opts,
-            &mut |line| match crab_build::classify(line) {
-                OutputLine::Stage(s) | OutputLine::Size(s) | OutputLine::Context(s) => {
-                    out(LogLevel::Info, &s)
-                }
-                OutputLine::Warning(s) => out(LogLevel::Warning, &s),
-                OutputLine::Error(s) => {
-                    out(LogLevel::Error, &s);
-                    errors += 1;
-                    let note = explain_error(&s, &sketch, &blocks);
-                    for n in &note {
-                        out(LogLevel::Error, &format!("    ↳ {n}"));
-                    }
-                    if first_error.is_none() {
-                        first_error = Some(note.join("; "));
-                    }
-                }
-                OutputLine::Detail => {}
-            },
-        )
-        .map_err(|e| match (&e, errors) {
-            (crab_build::BuildError::Failed { .. }, 1..) => {
-                let first = first_error.as_deref().filter(|f| !f.is_empty());
-                crate::i18n::fmt(
-                    "Ошибка компиляции ({0}): подробности в журнале{1}",
-                    &[
-                        &errors,
-                        &first.map(|f| format!(". Первая: {f}")).unwrap_or_default(),
-                    ],
-                )
-            }
-            _ => e.to_string(),
-        })?;
-    match compiled {
-        Compiled::UpToDate => out(
-            LogLevel::Info,
-            crate::i18n::tr("Прошивка уже собрана, схема не менялась"),
-        ),
-        Compiled::Direct => out(
-            LogLevel::Info,
-            crate::i18n::tr("Прямая сборка: изменилась только схема, arduino-cli не запускался"),
-        ),
-        Compiled::Built => {}
-    }
-
-    match kind {
-        JobKind::Build | JobKind::Rebuild => Ok(Done {
-            message: crate::i18n::tr("Сборка готова").into(),
-            port: None,
-            debug: false,
-        }),
-        JobKind::UploadModules { .. } => unreachable!("handled before the sketch is built"),
-        JobKind::Upload { port } => {
-            let port = cli
-                .choose_port(port.as_deref(), board)
-                .map_err(|e| e.to_string())?;
-            warn_if_other_board(&cli, &port, &board.fqbn, out);
-            out(
-                LogLevel::Info,
-                &crate::i18n::fmt("Заливка на {0}...", &[&port]),
-            );
-            let mut explained = None;
-            let result = cli.upload(&project.work_dir(), board, &port, &mut |l| {
-                match crab_build::explain_upload(l, &board.fqbn) {
-                    Some(text) => {
-                        out(LogLevel::Info, l);
-                        out(LogLevel::Error, &text);
-                        explained.get_or_insert(text);
-                    }
-                    None => out(LogLevel::Info, l),
-                }
-            });
-            result.map_err(|e| explained.unwrap_or_else(|| e.to_string()))?;
-            Ok(Done {
-                message: crate::i18n::fmt("Прошивка залита на {0}", &[&port]),
-                port: Some(port),
-                debug: false,
-            })
-        }
-    }
-}
-
-/// The master drivers the project's blocks need.
-pub fn master_features(project: &Project, lib: &Library) -> crab_build::MasterFeatures {
-    // A switched-off web page builds nothing, so it must not pull the web part into the master.
-    let web_off = project.logic.blocks.iter().any(|b| {
-        b.kind == "web_ui"
-            && matches!(
-                b.params.get("enabled"),
-                Some(crab_core::ParamValue::Bool(false))
-            )
-    });
-    let mut features = crab_build::MasterFeatures::of_blocks(
-        project
-            .logic
-            .blocks
-            .iter()
-            .map(|b| b.kind.as_str())
-            .filter(|k| !(web_off && k.starts_with("web_"))),
-    );
-    // Blocks with a native part (`native.cpp`) are built into the master. A broken one is not in
-    // the library, so it is not here either.
-    if let Ok(natives) = crab_build::native::collect_natives(
-        lib,
-        project.logic.blocks.iter().map(|b| b.kind.as_str()),
-    ) {
-        features.natives = natives;
-    }
-    // UART lines and text sending are the default modes of these two blocks.
-    features.text |= project.logic.blocks.iter().any(|b| {
-        let mode = match b.kind.as_str() {
-            "uart_read" => "mode",
-            "uart_send" => "send_as",
-            _ => return false,
-        };
-        matches!(
-            b.params.get(mode),
-            None | Some(crab_core::ParamValue::Int(0))
-        )
-    });
-    features
 }
 
 /// Flashes the prebuilt Rust master (`firmware/<chip>/` of the distribution): the schema itself
@@ -516,10 +258,7 @@ fn upload_modules(
 ) -> Result<Done, String> {
     let (project, modules, numbers) = build_sheets(project, lib, watch)?;
     let project = &project;
-    let cli = ArduinoCli::locate().map_err(|e| e.to_string())?;
-    let port = cli
-        .choose_port(port, &project.config.board)
-        .map_err(|e| e.to_string())?;
+    let port = crab_build::choose_port(port, &project.config.board).map_err(|e| e.to_string())?;
     let mut serial = serialport::new(&port, 115_200)
         .timeout(std::time::Duration::from_millis(200))
         .open()
@@ -570,17 +309,6 @@ fn upload_modules(
     // Safe mode after a boot loop: the stored modules of the board are stopped; the uploaded ones run.
     if info.safe_boots > 0 {
         out(LogLevel::Warning, &safe_mode_message(info.safe_boots));
-    }
-    // A module that calls a native part the master does not have would only fail on the board.
-    match crab_build::master_state(&info, &master_features(project, lib)) {
-        crab_build::MasterState::MissingNative(missing) => {
-            return Err(missing_native_message(&missing));
-        }
-        crab_build::MasterState::Differs => out(
-            LogLevel::Info,
-            crate::i18n::tr("Мастер на плате собран иначе, чем нужно проекту, но нужные нативные части в нём есть"),
-        ),
-        crab_build::MasterState::Current | crab_build::MasterState::Unknown => {}
     }
     // Which sheets go accelerated is decided for the whole upload at once (`specs/wasm-kernel`, 3.8–3.9).
     let space = if info.takes_aot() {
@@ -739,83 +467,6 @@ pub fn nvs_message(n: &crab_debug::protocol::NvsStats) -> (String, bool) {
         text.push_str(&crate::i18n::fmt(", свободно {0} записей", &[&free]));
     }
     (text, false)
-}
-
-/// Why modules cannot go to the board: its master lacks native parts of blocks.
-pub fn missing_native_message(missing: &[(String, u32)]) -> String {
-    let list = missing
-        .iter()
-        .map(|(kind, n)| crate::i18n::fmt("«{0}» (экземпляров: {1})", &[kind, n]))
-        .collect::<Vec<_>>()
-        .join(", ");
-    crate::i18n::fmt(
-        "В мастере на плате нет нативной части блоков: {0}. Нажмите «Залить мастер-прошивку»: мастер соберётся заново вместе с этими блоками.",
-        &[&list],
-    )
-}
-
-fn reason_text(reason: CliReason) -> &'static str {
-    crate::i18n::tr(match reason {
-        CliReason::Forced => "выбрано «Пересобрать полностью»",
-        CliReason::NoFullBuild => "нет прошлой полной сборки",
-        CliReason::SketchFiles => "в папке скетча есть другие файлы",
-        CliReason::Tool => "обновился arduino-cli",
-        CliReason::Board => "изменились плата или её настройки",
-        CliReason::Libraries => "изменился список библиотек",
-        CliReason::Includes => "изменились #include скетча",
-        CliReason::LibraryFiles => "изменились файлы ядра или библиотек",
-    })
-}
-
-/// What a compiler error means and which block's code it is in.
-fn explain_error(line: &str, sketch: &str, blocks: &[(String, String)]) -> Vec<String> {
-    let mut notes = Vec::new();
-    let Some((number, message)) = crab_build::parse_diagnostic(line) else {
-        if let Some(hint) = crab_build::explain_compile(line) {
-            notes.push(format!("Пояснение: {hint}"));
-        }
-        return notes;
-    };
-    if let Some((id, kind)) = crab_build::locate_block(sketch, number, blocks) {
-        notes.push(format!(
-            "Ошибка в коде блока «{id}» ({kind}), строка {number} скетча"
-        ));
-    } else {
-        notes.push(format!("Строка {number} скетча (вне кода блоков)"));
-    }
-    if let Some(hint) = crab_build::explain_compile(&message) {
-        notes.push(format!("Пояснение: {hint}"));
-    }
-    notes
-}
-
-/// Warns before upload when arduino-cli recognized another board on the port.
-fn warn_if_other_board(
-    cli: &ArduinoCli,
-    port: &str,
-    fqbn: &str,
-    out: &mut dyn FnMut(LogLevel, &str),
-) {
-    let short = |f: &str| f.split(':').take(3).collect::<Vec<_>>().join(":");
-    let Ok(ports) = cli.serial_ports() else {
-        return;
-    };
-    let Some(found) = ports.iter().find(|p| p.address == port && p.has_board) else {
-        return;
-    };
-    if !found.fqbns.iter().any(|f| short(f) == short(fqbn)) {
-        out(
-            LogLevel::Warning,
-            &crate::i18n::fmt(
-                "Возможно, выбрана неверная плата: на {0} опознано «{1}», а в проекте — {2}",
-                &[
-                    &port,
-                    &found.description,
-                    &fqbn.rsplit(':').next().unwrap_or(fqbn),
-                ],
-            ),
-        );
-    }
 }
 
 #[cfg(test)]

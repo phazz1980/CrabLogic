@@ -51,11 +51,11 @@ pub struct BoardInfo {
     pub name: String,
     /// Chip family: `esp32`, `esp32c3` or `esp32s3`. Its UART and ADC rules apply.
     pub chip: String,
-    /// Board name for arduino-cli, e.g. `esp32:esp32:esp32`.
+    /// Board id (FQBN), e.g. `esp32:esp32:esp32`.
     pub fqbn: String,
     #[serde(default = "first_version", skip_serializing_if = "is_first_version")]
     pub version: u32,
-    /// Board menu options of arduino-cli used by default.
+    /// Old board menu options (kept only to read old files).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }

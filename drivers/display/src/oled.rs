@@ -3,7 +3,7 @@
 use crate::fb::{Fb, PAGE_BYTES};
 use crate::font::{glyph, ICON_BASE};
 use crate::safe::{copy, Safe};
-use crate::text::{clamp, fmt_value, round, Txt};
+use crate::text::{bar_fill, fmt_value, scaled_f32, Txt};
 use crab_ui_format::{DisplayKind, WidgetKindView, WidgetView};
 
 /// Pages (rows of 8 pixels) of the display.
@@ -24,8 +24,9 @@ pub fn column_offset(kind: DisplayKind) -> u8 {
     }
 }
 
-/// Draws one widget; `v` is its live value (0 when it has no input).
-pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: f64) {
+/// Draws one widget. `v` is the cell of its input (`f32` bits for a value or a bar, an `i32` for
+/// a LED, 0 when it has no input), `s` the text of a string widget.
+pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: u32, s: &str) {
     let (x, y) = (w.x as i32, w.y as i32);
     let scale = if w.font >= 16 { 2 } else { 1 };
     match w.kind {
@@ -38,7 +39,7 @@ pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: f64) {
             unit,
         } => {
             let mut t = Txt::new();
-            fmt_value(&mut t, v, format, decimals, unit);
+            fmt_value(&mut t, scaled_f32(v, decimals), format, decimals, unit);
             fb.chars(x, y, t.chars(), scale);
         }
         WidgetKindView::Bar { min, max } => {
@@ -47,24 +48,13 @@ pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: f64) {
                 return;
             }
             fb.rect(x, y, bw, bh);
-            let span = (max - min) as f64;
-            let frac = if span > 0.0 {
-                (v - min as f64) / span
-            } else {
-                0.0
-            };
-            let frac = if frac.is_nan() {
-                0.0
-            } else {
-                clamp(frac, 0.0, 1.0)
-            };
-            let fill = round(frac * (bw - 2) as f64) as i32;
+            let fill = bar_fill(f32::from_bits(v), min, max, bw - 2);
             fb.fill_rect(x + 1, y + 1, fill, bh - 2, true);
         }
         WidgetKindView::Led => {
             let sw = if w.w > 0 { w.w as i32 } else { 8 };
             let sh = if w.h > 0 { w.h as i32 } else { sw };
-            if v > 0.5 {
+            if (v as i32) > 0 {
                 fb.fill_rect(x, y, sw, sh, true);
             } else {
                 fb.rect(x, y, sw, sh);
@@ -72,6 +62,23 @@ pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: f64) {
         }
         WidgetKindView::Icon { id } => {
             fb.glyph(x, y, &glyph(ICON_BASE + id as u16), scale, true);
+        }
+        WidgetKindView::String => {
+            // As many characters as fit the width (a width of 0 means up to the screen edge).
+            let adv = 6 * scale;
+            let mut t = Txt::new();
+            t.push_str(s);
+            let fit = if w.w == 0 {
+                t.len()
+            } else {
+                ((w.w as i32 + scale) / adv).max(0) as usize
+            };
+            fb.chars(
+                x,
+                y,
+                t.chars().get(..t.len().min(fit)).unwrap_or(&[]),
+                scale,
+            );
         }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "crab-cli"
-description = "Command line of CrabLogic: check / gen / build / upload"
+description = "Command line of CrabLogic: check, module generation and upload, master flashing"
 version.workspace = true
 edition.workspace = true
 

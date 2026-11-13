@@ -5,8 +5,6 @@ symbol = "DHT22"
 group = "Датчики"
 description = "Датчик температуры и влажности DHT22 (AM2302)."
 memory = true
-includes = ["DHT.h"]
-libraries = ["DHT sensor library", "Adafruit Unified Sensor"]
 
 [[output]]
 name = "temp"

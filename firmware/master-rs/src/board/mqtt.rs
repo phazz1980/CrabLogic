@@ -1,5 +1,5 @@
 //! MQTT client of the master (`specs/wasm-kernel/plan.md`, 4.1б). Modules reach it through the `net`
-//! import, ops 9..=16; the ABI is the one of the C++ master (`specs/wasm-on-mcu/proto/master`).
+//! import, ops 9..=16; the ABI is fixed in `crab-kernel` (`abi.rs`).
 //!
 //! The import only writes settings, queues publications, registers filters and reads the last message
 //! of a filter, so a module step never waits for the broker. The thread `crab-mqtt` owns the client:

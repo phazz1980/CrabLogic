@@ -1,1 +1,0 @@
-  RT_HW_Base.uartSetPins(PB11,PB10,3);

@@ -72,8 +72,6 @@ struct Form {
     chip: Chip,
     fqbn: String,
     version: u32,
-    /// Board menu options, one `Key=Value` per line.
-    options: String,
     pins: Vec<PinRow>,
     expander_pins: Vec<ExpanderPinRow>,
     devices: Vec<DeviceDef>,
@@ -118,7 +116,6 @@ impl Form {
             chip,
             fqbn: default_fqbn(chip).to_owned(),
             version: 1,
-            options: String::new(),
             pins: Vec::new(),
             expander_pins: Vec::new(),
             devices: Vec::new(),
@@ -130,19 +127,12 @@ impl Form {
     fn from_board(board: &UserBoard) -> Self {
         let def = &board.def;
         let chip = def.chip().unwrap_or(Chip::Esp32);
-        let options = def
-            .info
-            .options
-            .iter()
-            .map(|(k, v)| format!("{k}={v}\n"))
-            .collect();
         Self {
             id: def.info.id.clone(),
             name: def.info.name.clone(),
             chip,
             fqbn: def.info.fqbn.clone(),
             version: def.info.version,
-            options,
             pins: pin_rows(chip, &def.pins),
             expander_pins: def
                 .expander_pins
@@ -266,18 +256,6 @@ impl Form {
 
     /// `board.toml` made of the form, or what is wrong with it (in Russian).
     fn to_def(&self) -> Result<BoardDef, String> {
-        let mut options = BTreeMap::new();
-        for line in self
-            .options
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-        {
-            let (key, value) = line.split_once('=').ok_or_else(|| {
-                crate::i18n::fmt("настройка «{0}» — нужен вид Ключ=Значение", &[&line])
-            })?;
-            options.insert(key.trim().to_owned(), value.trim().to_owned());
-        }
         if self.pins.is_empty() {
             return Err(
                 crate::i18n::tr("добавьте хотя бы один вывод платы (вкладка «Выводы»)").to_owned(),
@@ -328,7 +306,8 @@ impl Form {
                 chip: self.chip.id().unwrap_or("esp32").to_owned(),
                 fqbn: self.fqbn.trim().to_owned(),
                 version: self.version.max(1),
-                options,
+                // The menus of the old sketch build are not written any more.
+                options: BTreeMap::new(),
             },
             pins,
             expander_pins,
@@ -818,7 +797,7 @@ fn board_tab(ui: &mut Ui, ed: &mut BoardEditor) {
             ui.horizontal(|ui| {
                 ui.add(TextEdit::singleline(&mut f.fqbn).desired_width(260.0))
                     .on_hover_text(crate::i18n::tr(
-                        "Имя платы для arduino-cli, например esp32:esp32:esp32",
+                        "Имя платы (FQBN), например esp32:esp32:esp32",
                     ));
                 let chip = f.chip;
                 ui.menu_button("▾", |ui| {
@@ -842,18 +821,6 @@ fn board_tab(ui: &mut Ui, ed: &mut BoardEditor) {
                 ));
             ui.end_row();
 
-            ui.label(crate::i18n::tr("Настройки меню"));
-            ui.add(
-                TextEdit::multiline(&mut f.options)
-                    .font(egui::TextStyle::Monospace)
-                    .hint_text("PartitionScheme=default\nFlashSize=4M")
-                    .desired_rows(3)
-                    .desired_width(300.0),
-            )
-            .on_hover_text(crate::i18n::tr(
-                "Настройки меню платы для arduino-cli, по строке «Ключ=Значение». \
-                 Подставляются, когда проекту выбирают эту плату",
-            ));
             ui.end_row();
         });
 }
@@ -1499,10 +1466,6 @@ mod tests {
         // No name — no board.
         form.name.clear();
         assert!(form.to_def().is_err());
-        // A bad menu line is explained.
-        form.name = "x".into();
-        form.options = "PartitionScheme".into();
-        assert!(form.to_def().unwrap_err().contains("Ключ=Значение"));
     }
 
     #[test]

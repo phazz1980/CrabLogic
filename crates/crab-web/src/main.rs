@@ -363,6 +363,22 @@ mod designer_tests {
         assert!(!SCREENS.contains("x: ev.clientX, ...wrect"));
     }
 
+    /// The icon names of the preview follow the choices of `disp_icon` (the order of the board
+    /// font, as `ICONS` of the generator).
+    #[test]
+    fn icon_preview_names_follow_the_block_choices() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let toml = std::fs::read_to_string(root.join("library/disp_icon/block.toml")).unwrap();
+        let names: Vec<String> = toml
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("value = \""))
+            .map(|v| format!("\"{}\"", v.trim_end_matches('"')))
+            .collect();
+        assert_eq!(names.len(), 8);
+        let list = format!("const ICON_NAMES = [{}];", names.join(", "));
+        assert!(SCREENS.contains(&list), "{list}");
+    }
+
     #[test]
     fn pages_are_split_and_share_common_files() {
         // the web designer knows nothing about displays; the screens page nothing about web widgets

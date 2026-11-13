@@ -1,0 +1,706 @@
+[[block]]
+id = "c0"
+type = "constant"
+value = 0.5
+
+[[block]]
+id = "r0"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c0.out"
+to = "r0.in"
+
+[[block]]
+id = "c1"
+type = "constant"
+value = -0.5
+
+[[block]]
+id = "r1"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c1.out"
+to = "r1.in"
+
+[[block]]
+id = "c2"
+type = "constant"
+value = 1.5
+
+[[block]]
+id = "r2"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c2.out"
+to = "r2.in"
+
+[[block]]
+id = "c3"
+type = "constant"
+value = -1.5
+
+[[block]]
+id = "r3"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c3.out"
+to = "r3.in"
+
+[[block]]
+id = "c4"
+type = "constant"
+value = 2.5
+
+[[block]]
+id = "r4"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c4.out"
+to = "r4.in"
+
+[[block]]
+id = "c5"
+type = "constant"
+value = -2.5
+
+[[block]]
+id = "r5"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c5.out"
+to = "r5.in"
+
+[[block]]
+id = "c6"
+type = "constant"
+value = 0.49999997
+
+[[block]]
+id = "r6"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c6.out"
+to = "r6.in"
+
+[[block]]
+id = "c7"
+type = "constant"
+value = -0.49999997
+
+[[block]]
+id = "r7"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c7.out"
+to = "r7.in"
+
+[[block]]
+id = "c8"
+type = "constant"
+value = 0.0
+
+[[block]]
+id = "r8"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c8.out"
+to = "r8.in"
+
+[[block]]
+id = "c9"
+type = "constant"
+value = -0.0
+
+[[block]]
+id = "r9"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c9.out"
+to = "r9.in"
+
+[[block]]
+id = "c10"
+type = "constant"
+value = 16777215.0
+
+[[block]]
+id = "r10"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c10.out"
+to = "r10.in"
+
+[[block]]
+id = "c11"
+type = "constant"
+value = 16777216.0
+
+[[block]]
+id = "r11"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c11.out"
+to = "r11.in"
+
+[[block]]
+id = "c12"
+type = "constant"
+value = 16777217.0
+
+[[block]]
+id = "r12"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c12.out"
+to = "r12.in"
+
+[[block]]
+id = "c13"
+type = "constant"
+value = 3000000000.0
+
+[[block]]
+id = "r13"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c13.out"
+to = "r13.in"
+
+[[block]]
+id = "c14"
+type = "constant"
+value = -3000000000.0
+
+[[block]]
+id = "r14"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c14.out"
+to = "r14.in"
+
+[[block]]
+id = "c15"
+type = "constant"
+value = 1e+30
+
+[[block]]
+id = "r15"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c15.out"
+to = "r15.in"
+
+[[block]]
+id = "c16"
+type = "constant"
+value = -1e+30
+
+[[block]]
+id = "r16"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c16.out"
+to = "r16.in"
+
+[[block]]
+id = "c17"
+type = "constant"
+value = nan
+
+[[block]]
+id = "r17"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c17.out"
+to = "r17.in"
+
+[[block]]
+id = "c18"
+type = "constant"
+value = inf
+
+[[block]]
+id = "r18"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c18.out"
+to = "r18.in"
+
+[[block]]
+id = "c19"
+type = "constant"
+value = -inf
+
+[[block]]
+id = "r19"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c19.out"
+to = "r19.in"
+
+[[block]]
+id = "c20"
+type = "constant"
+value = 7.25
+
+[[block]]
+id = "r20"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c20.out"
+to = "r20.in"
+
+[[block]]
+id = "c21"
+type = "constant"
+value = -7.25
+
+[[block]]
+id = "r21"
+type = "float_to_int"
+mode = 0
+
+[[link]]
+from = "c21.out"
+to = "r21.in"
+
+[[block]]
+id = "ma0"
+type = "constant"
+value = 7.25
+
+[[block]]
+id = "mb0"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m0"
+type = "mod"
+
+[[link]]
+from = "ma0.out"
+to = "m0.a"
+[[link]]
+from = "mb0.out"
+to = "m0.b"
+
+[[block]]
+id = "ma1"
+type = "constant"
+value = -7.25
+
+[[block]]
+id = "mb1"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m1"
+type = "mod"
+
+[[link]]
+from = "ma1.out"
+to = "m1.a"
+[[link]]
+from = "mb1.out"
+to = "m1.b"
+
+[[block]]
+id = "ma2"
+type = "constant"
+value = 7.25
+
+[[block]]
+id = "mb2"
+type = "constant"
+value = -3.0
+
+[[block]]
+id = "m2"
+type = "mod"
+
+[[link]]
+from = "ma2.out"
+to = "m2.a"
+[[link]]
+from = "mb2.out"
+to = "m2.b"
+
+[[block]]
+id = "ma3"
+type = "constant"
+value = -7.25
+
+[[block]]
+id = "mb3"
+type = "constant"
+value = -3.0
+
+[[block]]
+id = "m3"
+type = "mod"
+
+[[link]]
+from = "ma3.out"
+to = "m3.a"
+[[link]]
+from = "mb3.out"
+to = "m3.b"
+
+[[block]]
+id = "ma4"
+type = "constant"
+value = 1e+30
+
+[[block]]
+id = "mb4"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m4"
+type = "mod"
+
+[[link]]
+from = "ma4.out"
+to = "m4.a"
+[[link]]
+from = "mb4.out"
+to = "m4.b"
+
+[[block]]
+id = "ma5"
+type = "constant"
+value = 5.5
+
+[[block]]
+id = "mb5"
+type = "constant"
+value = 0.0
+
+[[block]]
+id = "m5"
+type = "mod"
+
+[[link]]
+from = "ma5.out"
+to = "m5.a"
+[[link]]
+from = "mb5.out"
+to = "m5.b"
+
+[[block]]
+id = "ma6"
+type = "constant"
+value = 5.5
+
+[[block]]
+id = "mb6"
+type = "constant"
+value = -0.0
+
+[[block]]
+id = "m6"
+type = "mod"
+
+[[link]]
+from = "ma6.out"
+to = "m6.a"
+[[link]]
+from = "mb6.out"
+to = "m6.b"
+
+[[block]]
+id = "ma7"
+type = "constant"
+value = -0.0
+
+[[block]]
+id = "mb7"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m7"
+type = "mod"
+
+[[link]]
+from = "ma7.out"
+to = "m7.a"
+[[link]]
+from = "mb7.out"
+to = "m7.b"
+
+[[block]]
+id = "ma8"
+type = "constant"
+value = 16777216.0
+
+[[block]]
+id = "mb8"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m8"
+type = "mod"
+
+[[link]]
+from = "ma8.out"
+to = "m8.a"
+[[link]]
+from = "mb8.out"
+to = "m8.b"
+
+[[block]]
+id = "ma9"
+type = "constant"
+value = 0.5
+
+[[block]]
+id = "mb9"
+type = "constant"
+value = 0.25
+
+[[block]]
+id = "m9"
+type = "mod"
+
+[[link]]
+from = "ma9.out"
+to = "m9.a"
+[[link]]
+from = "mb9.out"
+to = "m9.b"
+
+[[block]]
+id = "ma10"
+type = "constant"
+value = nan
+
+[[block]]
+id = "mb10"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m10"
+type = "mod"
+
+[[link]]
+from = "ma10.out"
+to = "m10.a"
+[[link]]
+from = "mb10.out"
+to = "m10.b"
+
+[[block]]
+id = "ma11"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "mb11"
+type = "constant"
+value = nan
+
+[[block]]
+id = "m11"
+type = "mod"
+
+[[link]]
+from = "ma11.out"
+to = "m11.a"
+[[link]]
+from = "mb11.out"
+to = "m11.b"
+
+[[block]]
+id = "ma12"
+type = "constant"
+value = inf
+
+[[block]]
+id = "mb12"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m12"
+type = "mod"
+
+[[link]]
+from = "ma12.out"
+to = "m12.a"
+[[link]]
+from = "mb12.out"
+to = "m12.b"
+
+[[block]]
+id = "ma13"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "mb13"
+type = "constant"
+value = inf
+
+[[block]]
+id = "m13"
+type = "mod"
+
+[[link]]
+from = "ma13.out"
+to = "m13.a"
+[[link]]
+from = "mb13.out"
+to = "m13.b"
+
+[[block]]
+id = "ma14"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "mb14"
+type = "constant"
+value = -inf
+
+[[block]]
+id = "m14"
+type = "mod"
+
+[[link]]
+from = "ma14.out"
+to = "m14.a"
+[[link]]
+from = "mb14.out"
+to = "m14.b"
+
+[[block]]
+id = "ma15"
+type = "constant"
+value = -3.0
+
+[[block]]
+id = "mb15"
+type = "constant"
+value = inf
+
+[[block]]
+id = "m15"
+type = "mod"
+
+[[link]]
+from = "ma15.out"
+to = "m15.a"
+[[link]]
+from = "mb15.out"
+to = "m15.b"
+
+[[block]]
+id = "ma16"
+type = "constant"
+value = 5.0
+
+[[block]]
+id = "mb16"
+type = "constant"
+value = -1.0
+
+[[block]]
+id = "m16"
+type = "mod"
+
+[[link]]
+from = "ma16.out"
+to = "m16.a"
+[[link]]
+from = "mb16.out"
+to = "m16.b"
+
+[[block]]
+id = "ma17"
+type = "constant"
+value = 1e-30
+
+[[block]]
+id = "mb17"
+type = "constant"
+value = 3.0
+
+[[block]]
+id = "m17"
+type = "mod"
+
+[[link]]
+from = "ma17.out"
+to = "m17.a"
+[[link]]
+from = "mb17.out"
+to = "m17.b"
+
+[[block]]
+id = "ma18"
+type = "constant"
+value = 2.5
+
+[[block]]
+id = "mb18"
+type = "constant"
+value = 1e-30
+
+[[block]]
+id = "m18"
+type = "mod"
+
+[[link]]
+from = "ma18.out"
+to = "m18.a"
+[[link]]
+from = "mb18.out"
+to = "m18.b"

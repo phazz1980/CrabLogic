@@ -22,7 +22,6 @@ pub(super) enum ConstVal {
     I32(i32),
     I64(i64),
     F32(u32),
-    F64(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,14 +89,24 @@ pub(super) struct Place {
     pub fuel: Option<(u32, u32)>,
 }
 
+/// Tail of the message about a block with the old `f64` interface; `check_block` turns a
+/// message with it into the code `wasm-f64`.
+pub(crate) const OLD_F64: &str =
+    "старый интерфейс с f64: пересоберите блок по образцу из skills/crablogic-block";
+
+/// The refusal of a block that uses `f64` (a type or an instruction): the board runs no `f64`.
+pub(crate) fn old_f64(what: &str) -> String {
+    format!("block.wasm: {what}: {OLD_F64}")
+}
+
 fn val_type(t: wasmparser::ValType) -> Result<ValType, String> {
     match t {
         wasmparser::ValType::I32 => Ok(ValType::I32),
         wasmparser::ValType::I64 => Ok(ValType::I64),
         wasmparser::ValType::F32 => Ok(ValType::F32),
-        wasmparser::ValType::F64 => Ok(ValType::F64),
+        wasmparser::ValType::F64 => Err(old_f64("тип значения f64")),
         other => Err(format!(
-            "block.wasm: тип значения {other} не поддерживается в драйвере (только i32, i64, f32, f64)"
+            "block.wasm: тип значения {other} не поддерживается в драйвере (только i32, i64, f32)"
         )),
     }
 }
@@ -112,11 +121,11 @@ fn const_expr(expr: &wasmparser::ConstExpr<'_>, what: &str) -> Result<ConstVal, 
         Operator::I32Const { value } => ConstVal::I32(value),
         Operator::I64Const { value } => ConstVal::I64(value),
         Operator::F32Const { value } => ConstVal::F32(value.bits()),
-        Operator::F64Const { value } => ConstVal::F64(value.bits()),
+        Operator::F64Const { .. } => return Err(old_f64(what)),
         other => {
             return Err(format!(
-                "block.wasm: {what}: допустима только константа (i32/i64/f32/f64.const), найдено {other:?}"
-            ))
+            "block.wasm: {what}: допустима только константа (i32/i64/f32.const), найдено {other:?}"
+        ))
         }
     };
     match reader.read() {
@@ -304,6 +313,10 @@ pub(super) fn parse(wasm: &[u8]) -> Result<Driver, String> {
     let (mut copies, mut fills) = (false, false);
     for raw in &raw_bodies {
         let body = FunctionBody::new(wasmparser::BinaryReader::new(raw, 0));
+        for local in body.get_locals_reader().map_err(perr)? {
+            let (_, ty) = local.map_err(perr)?;
+            val_type(ty)?;
+        }
         let mut reader = body.get_operators_reader().map_err(perr)?;
         while !reader.eof() {
             match reader.read().map_err(perr)? {
@@ -418,6 +431,13 @@ fn check_op(op: &Operator<'_>) -> Result<(), String> {
         Ok(())
     };
     match op {
+        F64Load { .. } | F64Store { .. } | F64Const { .. } | F64Eq | F64Ne | F64Lt | F64Gt
+        | F64Le | F64Ge | F64Abs | F64Neg | F64Ceil | F64Floor | F64Trunc | F64Nearest
+        | F64Sqrt | F64Add | F64Sub | F64Mul | F64Div | F64Min | F64Max | F64Copysign
+        | I32TruncF64S | I32TruncF64U | I64TruncF64S | I64TruncF64U | F32DemoteF64
+        | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
+        | I64ReinterpretF64 | F64ReinterpretI64 | I32TruncSatF64S | I32TruncSatF64U
+        | I64TruncSatF64S | I64TruncSatF64U => Err(old_f64("инструкция f64")),
         CallIndirect { .. } | ReturnCallIndirect { .. } => Err(
             "block.wasm: таблицы и косвенные вызовы (call_indirect) не поддерживаются в драйвере"
                 .into(),
@@ -432,7 +452,6 @@ fn check_op(op: &Operator<'_>) -> Result<(), String> {
         I32Load { memarg }
         | I64Load { memarg }
         | F32Load { memarg }
-        | F64Load { memarg }
         | I32Load8S { memarg }
         | I32Load8U { memarg }
         | I32Load16S { memarg }
@@ -446,7 +465,6 @@ fn check_op(op: &Operator<'_>) -> Result<(), String> {
         | I32Store { memarg }
         | I64Store { memarg }
         | F32Store { memarg }
-        | F64Store { memarg }
         | I32Store8 { memarg }
         | I32Store16 { memarg }
         | I64Store8 { memarg }
@@ -456,7 +474,6 @@ fn check_op(op: &Operator<'_>) -> Result<(), String> {
         | BrIf { .. } | BrTable { .. } | Return | Call { .. } | Drop | Select
         | LocalGet { .. } | LocalSet { .. } | LocalTee { .. } | GlobalGet { .. }
         | GlobalSet { .. } | I32Const { .. } | I64Const { .. } | F32Const { .. }
-        | F64Const { .. }
         // i32
         | I32Eqz | I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS
         | I32GeU | I32Clz | I32Ctz | I32Popcnt | I32Add | I32Sub | I32Mul | I32DivS | I32DivU
@@ -471,21 +488,14 @@ fn check_op(op: &Operator<'_>) -> Result<(), String> {
         | F32Eq | F32Ne | F32Lt | F32Gt | F32Le | F32Ge | F32Abs | F32Neg | F32Ceil | F32Floor
         | F32Trunc | F32Nearest | F32Sqrt | F32Add | F32Sub | F32Mul | F32Div | F32Min | F32Max
         | F32Copysign
-        // f64
-        | F64Eq | F64Ne | F64Lt | F64Gt | F64Le | F64Ge | F64Abs | F64Neg | F64Ceil | F64Floor
-        | F64Trunc | F64Nearest | F64Sqrt | F64Add | F64Sub | F64Mul | F64Div | F64Min | F64Max
-        | F64Copysign
         // conversions
-        | I32WrapI64 | I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U
-        | I64ExtendI32S | I64ExtendI32U | I64TruncF32S | I64TruncF32U | I64TruncF64S
-        | I64TruncF64U | F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U
-        | F32DemoteF64 | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U
-        | F64PromoteF32 | I32ReinterpretF32 | I64ReinterpretF64 | F32ReinterpretI32
-        | F64ReinterpretI64
+        | I32WrapI64 | I32TruncF32S | I32TruncF32U
+        | I64ExtendI32S | I64ExtendI32U | I64TruncF32S | I64TruncF32U
+        | F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U
+        | I32ReinterpretF32 | F32ReinterpretI32
         // sign extension and saturating truncation
         | I32Extend8S | I32Extend16S | I64Extend8S | I64Extend16S | I64Extend32S
-        | I32TruncSatF32S | I32TruncSatF32U | I32TruncSatF64S | I32TruncSatF64U
-        | I64TruncSatF32S | I64TruncSatF32U | I64TruncSatF64S | I64TruncSatF64U => Ok(()),
+        | I32TruncSatF32S | I32TruncSatF32U | I64TruncSatF32S | I64TruncSatF32U => Ok(()),
         other => Err(format!(
             "block.wasm: операция {other:?} не поддерживается в драйвере"
         )),
@@ -578,6 +588,54 @@ fn emit_fuel_check(f: &mut Function, global: u32, yield_fn: u32) {
 }
 
 impl Driver {
+    /// Calls of imports whose first argument is a constant: `(import index, constant)`. The
+    /// argument is found only in the plain form `i32.const N` (then single pushes for the other
+    /// arguments, if any) right before the `call`; any other code is skipped.
+    pub(super) fn const_first_args(&self) -> Vec<(usize, i32)> {
+        use Operator::{Call, GlobalGet, I32Const, I64Const, LocalGet};
+        let mut found = Vec::new();
+        for raw in &self.raw_bodies {
+            let body = FunctionBody::new(wasmparser::BinaryReader::new(raw, 0));
+            let Ok(mut reader) = body.get_operators_reader() else {
+                continue;
+            };
+            let mut ops = Vec::new();
+            while !reader.eof() {
+                match reader.read() {
+                    Ok(op) => ops.push(op),
+                    Err(_) => break,
+                }
+            }
+            for (at, op) in ops.iter().enumerate() {
+                let Call { function_index } = op else {
+                    continue;
+                };
+                let Some(imp) = self.imports.get(*function_index as usize) else {
+                    continue;
+                };
+                let n = self.types[imp.ty as usize].0.len();
+                if n == 0 || at < n {
+                    continue;
+                }
+                let args = &ops[at - n..at];
+                let simple = |o: &Operator<'_>| {
+                    matches!(
+                        o,
+                        I32Const { .. }
+                            | I64Const { .. }
+                            | Operator::F32Const { .. }
+                            | LocalGet { .. }
+                            | GlobalGet { .. }
+                    )
+                };
+                if let (I32Const { value }, true) = (&args[0], args[1..].iter().all(simple)) {
+                    found.push((*function_index as usize, *value));
+                }
+            }
+        }
+        found
+    }
+
     /// Re-encoded bodies of the defined functions, in order.
     pub(super) fn bodies(&self, place: &Place) -> Result<Vec<Function>, String> {
         if place.import_map.len() != self.imports.len() {
@@ -664,8 +722,8 @@ mod tests {
 
     const GOOD: &str = r#"
     (module
-      (import "crab" "input" (func $in (param i32) (result f64)))
-      (import "crab" "output" (func $out (param i32 f64)))
+      (import "crab" "input_i" (func $in (param i32) (result i32)))
+      (import "crab" "output_i" (func $out (param i32 i32)))
       (import "bus" "i2c_read" (func $i2c (param i32 i32 i32) (result i32)))
       (memory 1)
       (global $sp (mut i32) (i32.const 1024))
@@ -752,7 +810,7 @@ mod tests {
         assert_eq!(d.globals[0], (ValType::I32, true, ConstVal::I32(1024)));
         assert_eq!(d.globals[1], (ValType::I32, false, ConstVal::I32(2000)));
         let sig = &d.types[d.imports[0].ty as usize];
-        assert_eq!(sig, &(vec![ValType::I32], vec![ValType::F64]));
+        assert_eq!(sig, &(vec![ValType::I32], vec![ValType::I32]));
     }
 
     #[test]

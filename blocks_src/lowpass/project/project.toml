@@ -1,0 +1,6 @@
+[project]
+name = "lowpass"
+description = "Test project for the user block lowpass (block lives in library/lowpass)."
+
+[board]
+fqbn = "esp32:esp32:esp32"

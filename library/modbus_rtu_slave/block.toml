@@ -6,7 +6,6 @@ group = "Сеть"
 shared = "network"
 description = "Ведомое устройство Modbus RTU на UART (RS-485): таблицы регистров для мастера."
 single = true
-includes = ["flprogModbusRTU.h", "flprogUart.h"]
 
 [block.uart]
 param = "uart"

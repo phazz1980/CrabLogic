@@ -17,7 +17,7 @@ use crate::{GenError, Program};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDiag {
     pub severity: Severity,
-    /// Short stable class: `toml`, `def`, `builtin`, `cpp`, `no-wasm`, `wasm`, `string`, `schema`, `gen`,
+    /// Short stable class: `toml`, `def`, `builtin`, `cpp`, `no-wasm`, `wasm`, `wasm-f64`, `string`, `schema`, `gen`,
     /// `docs`, `sim`, `description`.
     pub code: &'static str,
     pub message: String,
@@ -67,7 +67,7 @@ impl BlockCheck {
     }
 }
 
-const CPP_FILES: [&str; 2] = [ESP32_CPP_TEMPLATE, crab_core::native::NATIVE_FILE];
+const CPP_FILES: [&str; 2] = [ESP32_CPP_TEMPLATE, crab_core::library::NATIVE_FILE];
 
 /// Checks the block folder `dir`; `lib` is the library the block would live in.
 pub fn check_block(dir: &Path, lib: &Library) -> BlockCheck {
@@ -130,6 +130,8 @@ pub fn check_block(dir: &Path, lib: &Library) -> BlockCheck {
     report_cpp(&mut out, &cpp);
 
     let bytes = std::fs::read(dir.join(WASM_FILE)).ok();
+    // Interface v2 passes strings through `input_text`/`param_text`/`output_text`.
+    let mut v2 = false;
     match &bytes {
         None => out.error(
             "no-wasm",
@@ -139,11 +141,19 @@ pub fn check_block(dir: &Path, lib: &Library) -> BlockCheck {
         Some(bytes) => {
             out.wasm_bytes = Some(bytes.len());
             match crate::wasm::inspect_block_wasm(bytes) {
-                Ok(info) => out.driver = info.driver,
+                Ok(info) => {
+                    out.driver = info.driver;
+                    v2 = info.v2;
+                }
+                Err(e) if e.contains(crate::wasm::OLD_F64) => out.error(
+                    "wasm-f64",
+                    e,
+                    "Пересоберите блок по образцу из skills/crablogic-block: целые и f32 вместо f64, импорты crab.input_i/input_f/param_i/param_f/output_i/output_f.",
+                ),
                 Err(e) => out.error(
                     "wasm",
                     e,
-                    "Нужен экспорт step(i32) и импорты только crab.input/param/output/log/config и bus.*.",
+                    "Нужен экспорт step(i32) и импорты только crab.input_i/input_f/param_i/param_f/output_i/output_f, *_text, log/config и bus.*; f64 и старые crab.input/param/output не поддерживаются.",
                 ),
             }
         }
@@ -156,7 +166,7 @@ pub fn check_block(dir: &Path, lib: &Library) -> BlockCheck {
     let has_string = def.inputs.iter().any(|p| p.ty == SignalType::String)
         || def.outputs.iter().any(|p| p.ty == SignalType::String)
         || (!text_params_ok && def.params.iter().any(|p| p.kind == ParamKind::Text));
-    if has_string {
+    if has_string && !v2 {
         out.error(
             "string",
             "строковые порты и параметры не передаются в block.wasm: он получает только числа"
@@ -364,10 +374,22 @@ mod tests {
     const HEADER: &str = "[block]\ntype = \"twice\"\nname = \"Twice\"\nsymbol = \"x2\"\ngroup = \"Тест\"\ndescription = \"Удваивает вход.\"\n";
     const PORTS: &str = "\n[[input]]\nname = \"a\"\ntype = \"float\"\n\n[[output]]\nname = \"out\"\ntype = \"float\"\n";
     const TWICE_WAT: &str = r#"(module
+        (import "crab" "input_f" (func $in (param i32) (result f32)))
+        (import "crab" "output_f" (func $out (param i32 f32)))
+        (func (export "step") (param i32)
+          (call $out (i32.const 0) (f32.mul (call $in (i32.const 0)) (f32.const 2)))))"#;
+    /// The old `f64` interface of the same block.
+    const OLD_WAT: &str = r#"(module
         (import "crab" "input" (func $in (param i32) (result f64)))
         (import "crab" "output" (func $out (param i32 f64)))
         (func (export "step") (param i32)
           (call $out (i32.const 0) (f64.mul (call $in (i32.const 0)) (f64.const 2)))))"#;
+    /// `input_i` on a float port.
+    const WRONG_PORT_WAT: &str = r#"(module
+        (import "crab" "input_i" (func $in (param i32) (result i32)))
+        (import "crab" "output_f" (func $out (param i32 f32)))
+        (func (export "step") (param i32)
+          (call $out (i32.const 0) (f32.convert_i32_s (call $in (i32.const 1))))))"#;
 
     fn good_toml() -> String {
         format!("{HEADER}{PORTS}")
@@ -423,6 +445,42 @@ mod tests {
         assert!(!check.has_errors(), "{:?}", check.diags);
         assert!(check.driver);
         assert!(check.module_bytes.is_some());
+    }
+
+    #[test]
+    fn the_old_f64_interface_is_refused() {
+        let (root, dir) = block_dir(&good_toml(), Some(OLD_WAT), true);
+        let check = check_block(&dir, &lib());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(codes(&check), ["wasm-f64"]);
+        assert!(check.diags[0].message.contains("пересоберите блок"));
+    }
+
+    #[test]
+    fn a_constant_port_index_is_checked_against_its_port() {
+        // Port 0 is an int, port 1 a float: `input_i(1)` reads the float cell as an int.
+        let toml = good_toml().replace(
+            "[[input]]
+name = \"a\"",
+            "[[input]]
+name = \"n\"
+type = \"int\"
+
+[[input]]
+name = \"a\"",
+        );
+        let (root, dir) = block_dir(&toml, Some(WRONG_PORT_WAT), true);
+        let check = check_block(&dir, &lib());
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(check.has_errors(), "{:?}", check.diags);
+        assert!(
+            check
+                .diags
+                .iter()
+                .any(|d| d.message.contains("crab.input_i(1")),
+            "{:?}",
+            check.diags
+        );
     }
 
     #[test]
@@ -488,7 +546,9 @@ mod tests {
     #[test]
     fn a_string_port_is_refused() {
         let toml = good_toml().replace("\"float\"\n\n[[output", "\"string\"\n\n[[output");
-        expect_error(&toml, Some(TWICE_WAT), "string");
+        // A module without the value imports cannot read a string.
+        let wat = r#"(module (func (export "step") (param i32)))"#;
+        expect_error(&toml, Some(wat), "string");
     }
 
     /// The reference blocks of the AI instruction (`skills/crablogic-block/examples`) must stay clean.

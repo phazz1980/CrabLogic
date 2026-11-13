@@ -1,29 +1,76 @@
 //! The driver proper: ties the config, the inputs/outputs of the sheet, the menu and the two
 //! display types together. Host-independent: all hardware access goes through [`Io`].
 //!
-//! Inputs (contract in specs/display/plan.md): own ports `0..P`, widget values `P + k`, then
+//! Inputs (contract in specs/display/plan.md, interface v2 of specs/no-f64): own ports `0..P`,
+//! widget slots `P + k` (numeric widgets first, then string widgets, read as text), then
 //! `up/down/ok/back`, then the current values of the menu variables. Outputs: own `ok` first,
 //! then `open`, `item`, `changed`, `changed_slot` and the new value of variable `v` at `Q + 4 + v`.
+//! Cells are `i32` (`bool`, `int`) or `f32` (`float`); the type of a menu variable is in the config
+//! (`var_float`), a value or bar widget always has a `float` input and a LED a `bool` one.
 
 use crate::fb::{Fb, PAGE_BYTES};
 use crate::lcd::{self, Lcd};
 use crate::menu::Menu;
 use crate::oled;
 use crate::safe::{copy, Safe};
-use crate::text::{round, Grid};
-use crab_ui_format::{ConfigView, DisplayKind, ScreenView};
+use crate::text::Grid;
+use crab_ui_format::{ConfigView, DisplayKind, ScreenView, WidgetKindView, WidgetView};
 
 /// Widgets per screen that take part in change detection.
 const MAX_SIG: usize = 64;
 /// After a failed transfer the display is initialised again after this long.
 const RETRY_MS: i32 = 1000;
+/// Longest text of a string widget in bytes (the OLED shows at most 21 characters per row).
+pub const STR_BYTES: usize = 64;
 
 /// Hardware and sheet access.
 pub trait Io {
-    fn input(&self, i: usize) -> f64;
-    fn output(&mut self, i: usize, v: f64);
+    /// Input cell `i` of a `bool` or `int` port.
+    fn input_i(&self, i: usize) -> i32;
+    /// Input cell `i` of a `float` port.
+    fn input_f(&self, i: usize) -> f32;
+    /// Copies the text of string input `i` into `buf`, returns the length (at most `buf.len()`).
+    fn input_text(&self, i: usize, buf: &mut [u8]) -> usize;
+    fn output_i(&mut self, i: usize, v: i32);
+    fn output_f(&mut self, i: usize, v: f32);
     /// I²C write to the display; true when the display accepted all bytes.
     fn write(&mut self, data: &[u8]) -> bool;
+}
+
+/// Raw bits of input cell `i`: `f32` bits when `float`, an `i32` otherwise.
+fn cell(io: &impl Io, i: usize, float: bool) -> u32 {
+    if float {
+        io.input_f(i).to_bits()
+    } else {
+        io.input_i(i) as u32
+    }
+}
+
+/// The text of a string input as `&str` (the longest valid UTF-8 prefix).
+fn text_of<'b>(io: &impl Io, i: usize, buf: &'b mut [u8; STR_BYTES]) -> &'b str {
+    let n = io.input_text(i, buf).min(STR_BYTES);
+    let bytes = buf.get(..n).unwrap_or(&[]);
+    match core::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => core::str::from_utf8(bytes.get(..e.valid_up_to()).unwrap_or(&[])).unwrap_or(""),
+    }
+}
+
+/// A cheap fingerprint of a text (FNV-1a), for change detection.
+fn hash_text(s: &str) -> u32 {
+    let mut h: u32 = 0x811C_9DC5;
+    for &b in s.as_bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+/// Widgets whose input is a `float` cell.
+fn is_float_widget(w: &WidgetView) -> bool {
+    matches!(
+        w.kind,
+        WidgetKindView::Value { .. } | WidgetKindView::Bar { .. }
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -131,41 +178,51 @@ impl<'a> Driver<'a> {
 
     /// Screen shown now (0-based), clamped to the existing ones.
     fn screen_index(&self, io: &impl Io, count: usize) -> usize {
-        let v = round(io.input(0));
-        if v < 1.0 || count == 0 {
+        let v = io.input_i(0);
+        if v < 1 || count == 0 {
             0
         } else {
             ((v as usize) - 1).min(count - 1)
         }
     }
 
-    fn widget_value(own_in: usize, io: &impl Io, input: Option<u16>) -> f64 {
-        input.map_or(0.0, |k| io.input(own_in + k as usize))
+    /// Cell bits of a widget with an input (0 without one); a string widget has no cell.
+    fn widget_cell(own_in: usize, io: &impl Io, w: &WidgetView) -> u32 {
+        match (w.input, &w.kind) {
+            (Some(_), WidgetKindView::String) | (None, _) => 0,
+            (Some(k), _) => cell(io, own_in + k as usize, is_float_widget(w)),
+        }
     }
 
     /// One scheduler step (`dt_ms` since the previous one).
     pub fn step(&mut self, io: &mut impl Io, dt_ms: i32) {
         let Some(cfg) = self.cfg else {
-            io.output(0, 0.0);
+            io.output_i(0, 0);
             return;
         };
         let mut showing_menu = false;
         if let Some(m) = cfg.menu {
-            let key = |k: usize| io.input(self.key_in + k) > 0.5;
+            let key = |k: usize| io.input_i(self.key_in + k) > 0;
             let keys = [key(0), key(1), key(2), key(3)];
             let var_in = self.var_in;
             let out = {
                 let io_ref = &*io;
-                self.menu
-                    .step(&m, dt_ms, keys, &|v| io_ref.input(var_in + v as usize))
+                self.menu.step(&m, dt_ms, keys, &|v, float| {
+                    cell(io_ref, var_in + v as usize, float)
+                })
             };
             let q = self.own_out;
-            io.output(q, f64::from(u8::from(out.open)));
-            io.output(q + 1, f64::from(out.item));
-            io.output(q + 2, f64::from(u8::from(out.changed)));
-            io.output(q + 3, f64::from(out.slot));
+            io.output_i(q, i32::from(out.open));
+            io.output_i(q + 1, out.item);
+            io.output_i(q + 2, i32::from(out.changed));
+            io.output_i(q + 3, out.slot);
             if out.slot >= 0 {
-                io.output(q + 4 + out.slot as usize, out.value);
+                let at = q + 4 + out.slot as usize;
+                if out.float {
+                    io.output_f(at, f32::from_bits(out.value));
+                } else {
+                    io.output_i(at, out.value as i32);
+                }
             }
             showing_menu = out.open;
         }
@@ -174,14 +231,15 @@ impl<'a> Driver<'a> {
         } else {
             self.step_oled(io, &cfg, dt_ms, showing_menu);
         }
-        io.output(0, f64::from(u8::from(self.ok)));
+        io.output_i(0, i32::from(self.ok));
     }
 
     fn menu_grid(&mut self, io: &impl Io, cfg: &ConfigView) {
         if let Some(m) = cfg.menu {
             let var_in = self.var_in;
-            self.menu
-                .draw(&m, &mut self.grid, &|v| io.input(var_in + v as usize));
+            self.menu.draw(&m, &mut self.grid, &|v, float| {
+                cell(io, var_in + v as usize, float)
+            });
         }
     }
 
@@ -206,7 +264,7 @@ impl<'a> Driver<'a> {
         if showing_menu {
             if let Some(m) = cfg.menu {
                 let var_in = self.var_in;
-                let var = |v: u16| io.input(var_in + v as usize);
+                let var = |v: u16, float: bool| cell(io, var_in + v as usize, float);
                 let sig = self.menu.signature(&m, &var);
                 if self.mode != Mode::Menu || sig != self.menu_sig {
                     self.fb.clear();
@@ -234,9 +292,15 @@ impl<'a> Driver<'a> {
         let own_in = self.own_in;
         let mut sig = [0u32; MAX_SIG];
         for (k, w) in screen.widgets().take(MAX_SIG).enumerate() {
+            let mut buf = [0u8; STR_BYTES];
             sig.wr(
                 k,
-                (Self::widget_value(own_in, io, w.input) as f32).to_bits(),
+                match (w.input, &w.kind) {
+                    (Some(i), WidgetKindView::String) => {
+                        hash_text(text_of(io, own_in + i as usize, &mut buf))
+                    }
+                    _ => Self::widget_cell(own_in, io, &w),
+                },
             );
         }
         if self.mode == Mode::Screen && idx == self.sig_screen && sig == self.sig {
@@ -247,7 +311,12 @@ impl<'a> Driver<'a> {
         self.mode = Mode::Screen;
         self.fb.clear();
         for w in screen.widgets() {
-            oled::draw_widget(&mut self.fb, &w, Self::widget_value(own_in, io, w.input));
+            let mut buf = [0u8; STR_BYTES];
+            let text = match (w.input, &w.kind) {
+                (Some(i), WidgetKindView::String) => text_of(io, own_in + i as usize, &mut buf),
+                _ => "",
+            };
+            oled::draw_widget(&mut self.fb, &w, Self::widget_cell(own_in, io, &w), text);
         }
     }
 
@@ -282,7 +351,7 @@ impl<'a> Driver<'a> {
         if !self.link_wait(dt_ms) {
             return;
         }
-        let bl = io.input(1) > 0.5;
+        let bl = io.input_i(1) > 0;
         if !self.ready {
             self.lcd_init(io, bl); // one transfer per step, the frame starts on the next one
             return;
@@ -315,7 +384,12 @@ impl<'a> Driver<'a> {
     fn draw_screen_grid(&mut self, io: &impl Io, screen: &ScreenView) {
         let own_in = self.own_in;
         for w in screen.widgets() {
-            lcd::draw_widget(&mut self.grid, &w, Self::widget_value(own_in, io, w.input));
+            let mut buf = [0u8; STR_BYTES];
+            let text = match (w.input, &w.kind) {
+                (Some(i), WidgetKindView::String) => text_of(io, own_in + i as usize, &mut buf),
+                _ => "",
+            };
+            lcd::draw_widget(&mut self.grid, &w, Self::widget_cell(own_in, io, &w), text);
         }
     }
 

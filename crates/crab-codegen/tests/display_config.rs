@@ -33,6 +33,11 @@ name = "level"
 type = "float"
 init = 3.0
 
+[[var]]
+name = "label"
+type = "string"
+init = "Готов"
+
 [[block]]
 id = "oled"
 type = "oled"
@@ -61,6 +66,18 @@ decimals = 2
 unit = " C"
 [block.const]
 in = 5.0
+
+[[block]]
+id = "status"
+type = "disp_string"
+display = "oled"
+screen = 1
+x = 0
+y = 24
+w = 60
+h = 8
+[block.bind]
+in = "label"
 
 [[block]]
 id = "bar"
@@ -174,6 +191,8 @@ fn config_of_an_oled_with_two_screens_and_a_menu() {
                     48,
                     Some(0),
                 ),
+                // String widgets take their slots after all numeric ones (bar = 1, string = 2).
+                widget(WidgetKind::String, 0, 24, 60, Some(2)),
             ],
         },
         Screen {
@@ -199,24 +218,27 @@ fn config_of_an_oled_with_two_screens_and_a_menu() {
                 kind: MenuItemKind::Submenu,
                 caption: "Настройки".into(),
                 var_slot: None,
+                var_float: false,
             },
             MenuItem {
                 parent: Some(0),
                 kind: MenuItemKind::Number {
-                    min: 0.0,
-                    max: 100.0,
-                    step: 0.5,
+                    min: 0,
+                    max: 1000,
+                    step: 5,
                     decimals: 1,
                     unit: " C".into(),
                 },
                 caption: "Уставка".into(),
                 var_slot: Some(0),
+                var_float: true,
             },
             MenuItem {
                 parent: None,
                 kind: MenuItemKind::Bool,
                 caption: "Работа".into(),
                 var_slot: Some(1),
+                var_float: false,
             },
         ],
     });
@@ -228,6 +250,26 @@ fn config_of_an_oled_with_two_screens_and_a_menu() {
     assert_eq!(bytes["oled"], expected.encode());
     assert!(bytes["oled"].len() < crab_codegen::MAX_BLOCK_CONFIG);
     ConfigView::parse(&bytes["oled"]).unwrap();
+}
+
+/// `disp_icon` of the example: the name picks the glyph in the order of the driver font
+/// (thermometer first) and the size defaults to 16 pixels.
+#[test]
+fn icon_of_the_example_is_a_big_thermometer() {
+    let (lib, errors) = Library::load(repo_path("library")).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let project = Project::load(repo_path("examples/display_menu")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let config = program.display_config("oled").unwrap();
+    let icons: Vec<&Widget> = config
+        .screens
+        .iter()
+        .flat_map(|s| &s.widgets)
+        .filter(|w| matches!(w.kind, WidgetKind::Icon { .. }))
+        .collect();
+    assert_eq!(icons.len(), 1);
+    assert_eq!(icons[0].kind, WidgetKind::Icon { id: 0 });
+    assert_eq!(icons[0].font, 16);
 }
 
 #[test]

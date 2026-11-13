@@ -2,14 +2,17 @@
 //! (`help/12-drivers.md`). Several sensors may share the pin: `index` picks one by the order of the
 //! ROM search. A step never waits: it starts a conversion and reads it 750 ms later.
 //!
+//! Interface v2 (`specs/no-f64`): integers everywhere, `f32` only for the `float` output.
+//!
 //! Build: `drivers\build.ps1 ds18b20`.
 
 #![no_std]
 
 #[link(wasm_import_module = "crab")]
 extern "C" {
-    fn param(index: i32) -> f64;
-    fn output(index: i32, value: f64);
+    fn param_i(index: i32) -> i32;
+    fn output_i(index: i32, value: i32);
+    fn output_f(index: i32, value: f32);
 }
 
 #[link(wasm_import_module = "bus")]
@@ -45,11 +48,11 @@ static mut HAVE_ROM: bool = false;
 static mut BUF: [u8; 9] = [0; 9];
 
 fn pin() -> i32 {
-    unsafe { param(P_PIN) as i32 }
+    unsafe { param_i(P_PIN) }
 }
 
 fn period() -> i32 {
-    unsafe { param(P_PERIOD) as i32 }
+    unsafe { param_i(P_PERIOD) }
 }
 
 fn write(bytes: &[u8]) {
@@ -124,7 +127,7 @@ fn find(index: i32) -> Option<[u8; 8]> {
 }
 
 fn fail() {
-    unsafe { output(O_OK, 0.0) };
+    unsafe { output_i(O_OK, 0) };
 }
 
 #[no_mangle]
@@ -159,7 +162,7 @@ pub extern "C" fn step(dt_ms: i32) {
         CONVERTING = false;
         WAIT_MS = (period() - CONVERT_MS).max(0);
         if !HAVE_ROM {
-            match find(param(P_INDEX) as i32) {
+            match find(param_i(P_INDEX)) {
                 Some(rom) => {
                     ROM = rom;
                     HAVE_ROM = true;
@@ -182,9 +185,10 @@ pub extern "C" fn step(dt_ms: i32) {
             HAVE_ROM = false;
             return fail();
         }
-        let raw = i16::from_le_bytes([buf[0], buf[1]]);
-        output(O_TEMP, f64::from(raw) / 16.0);
-        output(O_OK, 1.0);
+        // Raw value in 1/16 degree C (exact in f32); the only float is the `temp` port.
+        let raw = i16::from_le_bytes([buf[0], buf[1]]) as i32;
+        output_f(O_TEMP, raw as f32 / 16.0);
+        output_i(O_OK, 1);
     }
 }
 

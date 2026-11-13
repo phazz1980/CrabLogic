@@ -19,11 +19,17 @@ pub struct Program<'a> {
     pub uarts: Vec<crab_core::UartConfig>,
 }
 
-impl Program<'_> {
-    /// Language of the comments in the sketch.
-    pub fn lang(&self) -> crate::Lang {
-        crate::Lang::from_code(&self.project.config.project.comment_lang)
-    }
+/// UART of a block with `[block.uart]`, with its settings (checked to exist).
+pub(crate) fn uart_of(
+    program: &Program,
+    inst: &Instance,
+) -> Option<(crab_core::UartConfig, crab_core::uart::UartAccess)> {
+    let uart = inst.lib.def.info.uart.as_ref()?;
+    let Some(ParamValue::Int(n)) = inst.params.get(uart.param.as_str()) else {
+        return None;
+    };
+    let config = crab_core::uart::config_of(&program.uarts, crab_core::uart::port_number(*n))?;
+    Some((config, uart.access))
 }
 
 /// Variable holding the value of one block output between scans.
@@ -50,19 +56,6 @@ pub struct Instance<'a> {
     pub param_vars: BTreeMap<&'a str, &'a str>,
 }
 
-/// Header of the flash storage used by variables with `retain`.
-const RETAIN_HEADER: &str = "Preferences.h";
-
-fn unique<'a>(items: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
-    let mut out: Vec<&str> = Vec::new();
-    for item in items {
-        if !out.contains(&item.as_str()) {
-            out.push(item);
-        }
-    }
-    out
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Input {
     pub source: Source,
@@ -82,33 +75,6 @@ pub enum Source {
 }
 
 impl<'a> Program<'a> {
-    /// Headers needed by the blocks, without duplicates, in order of first use.
-    pub fn includes(&self) -> Vec<&'a str> {
-        let mut out = unique(self.blocks.iter().flat_map(|b| &b.lib.def.info.includes));
-        if self.project.logic.vars.iter().any(|v| v.retain) && !out.contains(&RETAIN_HEADER) {
-            out.push(RETAIN_HEADER);
-        }
-        out
-    }
-
-    /// Arduino libraries needed by the blocks, without duplicates.
-    pub fn libraries(&self) -> Vec<&'a str> {
-        unique(self.blocks.iter().flat_map(|b| &b.lib.def.info.libraries))
-    }
-
-    /// Folders with the Arduino libraries attached to the blocks (`lib/` of a block
-    /// folder), for `--libraries`; they need no installation.
-    pub fn attached_libraries(&self) -> Vec<std::path::PathBuf> {
-        let mut dirs: Vec<_> = self
-            .blocks
-            .iter()
-            .filter_map(|b| crab_core::blockfile::library_dirs(&b.lib.dir))
-            .collect();
-        dirs.sort();
-        dirs.dedup();
-        dirs
-    }
-
     /// Checks the schema and resolves it. Fails with [`GenError::Schema`] on check errors.
     pub fn build(project: &'a Project, lib: &'a Library) -> Result<Self, GenError> {
         let logic = &project.logic;

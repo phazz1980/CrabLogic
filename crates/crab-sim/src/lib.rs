@@ -2,13 +2,18 @@
 //!
 //! The module speaks plain core WASM (no WASI, no language runtime):
 //! - exports `step(dt_ms: i32)`; optional `init()` resets the state;
-//! - imports from module `crab`: `input(i: i32) -> f64`, `param(i: i32) -> f64`,
-//!   `output(i: i32, v: f64)` and `log(ptr: i32, len: i32)` (UTF-8 text in the module memory);
+//! - imports from module `crab`: `input_i(i) -> i32`, `input_f(i) -> f32`, `param_i`, `param_f`
+//!   the same, `output_i(i, v: i32)`, `output_f(i, v: f32)` and `log(ptr: i32, len: i32)` (UTF-8
+//!   text in the module memory); the old `f64` interface (`input/param/output`, module `flp`)
+//!   is not supported: such a block does not link;
 //! - string ports and parameters (the same indexes as the numbers) go through the module
 //!   memory: `input_text(i, ptr, cap) -> len` and `param_text(i, ptr, cap) -> len` copy at
-//!   most `cap` bytes and return the full length; `output_text(i, ptr, len)` sets an output.
+//!   most `cap` bytes and return the number of bytes copied; `output_text(i, ptr, len)` sets an output.
 //!
-//! bool, int and float all travel as `f64`; the module keeps its own state between steps.
+//! The host keeps its values in `f64` cells, which hold every `i32` and `f32` exactly, so the
+//! imports give bit for bit the values the module was fed (`input_i` truncates the cell,
+//! `input_f` rounds it to `f32`: both exact for a value that came from an `i32`/`f32` port).
+//! The module keeps its own state between steps.
 //! Indexes follow the order of ports and parameters in `block.toml`.
 
 pub mod builtin;
@@ -98,29 +103,11 @@ impl SimModule {
 
         let mut linker = <Linker<Host>>::new(&engine);
         let bad = |e: wasmi::errors::LinkerError| format!("ошибка подключения функций: {e}");
-        // Blocks built before the rename import the host functions from module "flp".
-        for module in ["crab", "flp"] {
+        // Text and log imports (module `crab`; the old `f64` interface and module `flp` are gone).
+        {
             linker
-                .func_wrap(module, "input", |c: Caller<'_, Host>, i: i32| -> f64 {
-                    c.data().inputs.get(i as usize).copied().unwrap_or(0.0)
-                })
-                .map_err(bad)?
-                .func_wrap(module, "param", |c: Caller<'_, Host>, i: i32| -> f64 {
-                    c.data().params.get(i as usize).copied().unwrap_or(0.0)
-                })
-                .map_err(bad)?
                 .func_wrap(
-                    module,
-                    "output",
-                    |mut c: Caller<'_, Host>, i: i32, v: f64| {
-                        if let Some(slot) = c.data_mut().outputs.get_mut(i as usize) {
-                            *slot = v;
-                        }
-                    },
-                )
-                .map_err(bad)?
-                .func_wrap(
-                    module,
+                    "crab",
                     "input_text",
                     |mut c: Caller<'_, Host>, i: i32, ptr: i32, cap: i32| -> i32 {
                         let text = c.data().input_texts.get(i as usize).cloned();
@@ -129,7 +116,7 @@ impl SimModule {
                 )
                 .map_err(bad)?
                 .func_wrap(
-                    module,
+                    "crab",
                     "param_text",
                     |mut c: Caller<'_, Host>, i: i32, ptr: i32, cap: i32| -> i32 {
                         let text = c.data().param_texts.get(i as usize).cloned();
@@ -138,7 +125,7 @@ impl SimModule {
                 )
                 .map_err(bad)?
                 .func_wrap(
-                    module,
+                    "crab",
                     "output_text",
                     |mut c: Caller<'_, Host>, i: i32, ptr: i32, len: i32| {
                         let Some(memory) = c.get_export("memory").and_then(|e| e.into_memory())
@@ -155,7 +142,7 @@ impl SimModule {
                 )
                 .map_err(bad)?
                 .func_wrap(
-                    module,
+                    "crab",
                     "log",
                     |mut c: Caller<'_, Host>, ptr: i32, len: i32| {
                         let Some(memory) = c.get_export("memory").and_then(|e| e.into_memory())
@@ -173,6 +160,45 @@ impl SimModule {
                 )
                 .map_err(bad)?;
         }
+
+        // Value imports.
+        linker
+            .func_wrap("crab", "input_i", |c: Caller<'_, Host>, i: i32| -> i32 {
+                to_i32(c.data().inputs.get(i as usize).copied())
+            })
+            .map_err(bad)?
+            .func_wrap("crab", "input_f", |c: Caller<'_, Host>, i: i32| -> f32 {
+                c.data().inputs.get(i as usize).map_or(0.0, |&x| x as f32)
+            })
+            .map_err(bad)?
+            .func_wrap("crab", "param_i", |c: Caller<'_, Host>, i: i32| -> i32 {
+                to_i32(c.data().params.get(i as usize).copied())
+            })
+            .map_err(bad)?
+            .func_wrap("crab", "param_f", |c: Caller<'_, Host>, i: i32| -> f32 {
+                c.data().params.get(i as usize).map_or(0.0, |&x| x as f32)
+            })
+            .map_err(bad)?
+            .func_wrap(
+                "crab",
+                "output_i",
+                |mut c: Caller<'_, Host>, i: i32, v: i32| {
+                    if let Some(slot) = c.data_mut().outputs.get_mut(i as usize) {
+                        *slot = f64::from(v);
+                    }
+                },
+            )
+            .map_err(bad)?
+            .func_wrap(
+                "crab",
+                "output_f",
+                |mut c: Caller<'_, Host>, i: i32, v: f32| {
+                    if let Some(slot) = c.data_mut().outputs.get_mut(i as usize) {
+                        *slot = f64::from(v);
+                    }
+                },
+            )
+            .map_err(bad)?;
 
         let instance: Instance = linker
             .instantiate_and_start(&mut store, &module)
@@ -247,7 +273,12 @@ impl SimModule {
     }
 }
 
-/// Copies `text` into the module memory (at most `cap` bytes); returns its full length.
+/// A host cell as an `i32` (saturating, like `i32.trunc_sat_f64_s`); 0 when there is no cell.
+fn to_i32(x: Option<f64>) -> i32 {
+    x.map_or(0, |x| x as i32)
+}
+
+/// Copies `text` into the module memory (at most `cap` bytes); returns the number of bytes copied.
 fn copy_text(c: &mut Caller<'_, Host>, text: Option<String>, ptr: i32, cap: i32) -> i32 {
     let Some(text) = text else {
         return 0;
@@ -257,8 +288,10 @@ fn copy_text(c: &mut Caller<'_, Host>, text: Option<String>, ptr: i32, cap: i32)
     };
     let bytes = text.as_bytes();
     let n = bytes.len().min(cap.max(0) as usize);
-    let _ = memory.write(&mut *c, ptr as usize, &bytes[..n]);
-    bytes.len() as i32
+    match memory.write(&mut *c, ptr as usize, &bytes[..n]) {
+        Ok(()) => n as i32,
+        Err(_) => 0,
+    }
 }
 
 /// A trap of the module in plain Russian.
@@ -285,33 +318,86 @@ mod tests {
 
     /// out0 = in0 + in1 * param0
     const SUM: &str = r#"(module
-        (import "crab" "input" (func $input (param i32) (result f64)))
-        (import "crab" "param" (func $param (param i32) (result f64)))
-        (import "crab" "output" (func $output (param i32 f64)))
+        (import "crab" "input_i" (func $input (param i32) (result i32)))
+        (import "crab" "param_i" (func $param (param i32) (result i32)))
+        (import "crab" "output_i" (func $output (param i32 i32)))
         (func (export "step") (param i32)
             (call $output (i32.const 0)
-                (f64.add (call $input (i32.const 0))
-                    (f64.mul (call $input (i32.const 1)) (call $param (i32.const 0)))))))"#;
+                (i32.add (call $input (i32.const 0))
+                    (i32.mul (call $input (i32.const 1)) (call $param (i32.const 0)))))))"#;
 
     /// A pulse counter: out0 counts the steps, `init` resets it; the first step also logs "hi".
     const COUNTER: &str = r#"(module
-        (import "crab" "output" (func $output (param i32 f64)))
+        (import "crab" "output_i" (func $output (param i32 i32)))
         (import "crab" "log" (func $log (param i32 i32)))
         (memory (export "memory") 1)
         (data (i32.const 0) "hi")
-        (global $n (mut f64) (f64.const 0))
-        (func (export "init") (global.set $n (f64.const 0)))
+        (global $n (mut i32) (i32.const 0))
+        (func (export "init") (global.set $n (i32.const 0)))
         (func (export "step") (param i32)
-            (global.set $n (f64.add (global.get $n) (f64.const 1)))
-            (if (f64.eq (global.get $n) (f64.const 1))
+            (global.set $n (i32.add (global.get $n) (i32.const 1)))
+            (if (i32.eq (global.get $n) (i32.const 1))
                 (then (call $log (i32.const 0) (i32.const 2))))
             (call $output (i32.const 0) (global.get $n))))"#;
+
+    /// The old `f64` interface does not link any more.
+    #[test]
+    fn the_old_f64_interface_does_not_link() {
+        let old = r#"(module
+            (import "crab" "input" (func (param i32) (result f64)))
+            (func (export "step") (param i32)))"#;
+        assert!(load(old, 1).is_err());
+        let flp = r#"(module
+            (import "flp" "log" (func (param i32 i32)))
+            (func (export "step") (param i32)))"#;
+        assert!(load(flp, 1).is_err());
+    }
+
+    /// v2: out0 (int) = in0 + param0; out1 (float) = in1 * param1; out2 = copied length of text in2.
+    const V2: &str = r#"(module
+        (import "crab" "input_i" (func $ii (param i32) (result i32)))
+        (import "crab" "input_f" (func $if (param i32) (result f32)))
+        (import "crab" "param_i" (func $pi (param i32) (result i32)))
+        (import "crab" "param_f" (func $pf (param i32) (result f32)))
+        (import "crab" "output_i" (func $oi (param i32 i32)))
+        (import "crab" "output_f" (func $of (param i32 f32)))
+        (import "crab" "input_text" (func $it (param i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (func (export "step") (param i32)
+            (call $oi (i32.const 0) (i32.add (call $ii (i32.const 0)) (call $pi (i32.const 0))))
+            (call $of (i32.const 1) (f32.mul (call $if (i32.const 1)) (call $pf (i32.const 1))))
+            (call $oi (i32.const 2) (call $it (i32.const 2) (i32.const 16) (i32.const 3)))
+            (call $oi (i32.const 3) (i32.load8_u (i32.const 16)))))"#;
+
+    #[test]
+    fn v2_imports_are_exact_i32_and_f32() {
+        let mut m = load(V2, 4).unwrap();
+        let (out, _) = m
+            .step_text(
+                10,
+                &[41.0, f64::from(0.1f32), 0.0],
+                &[1.0, 3.0],
+                &["".into(), "".into(), "hello".into()],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out[0], 42.0);
+        // f32 multiplication, not f64: 0.1f32 * 3.0f32.
+        assert_eq!(out[1] as f32, 0.1f32 * 3.0f32);
+        assert_ne!(out[1], f64::from(0.1f32) * 3.0);
+        // The text is cut to the capacity and the copied length comes back.
+        assert_eq!(out[2], 3.0);
+        assert_eq!(out[3], f64::from(b'h'));
+        // Missing cells read 0.
+        let (out, _) = m.step_text(10, &[], &[], &[], &[]).unwrap();
+        assert_eq!(out[..3], [0.0; 3]);
+    }
 
     #[test]
     fn computes_outputs_from_inputs_and_params() {
         let mut m = load(SUM, 1).unwrap();
         assert_eq!(m.step(10, &[1.0, 2.0], &[3.0]).unwrap(), vec![7.0]);
-        assert_eq!(m.step(10, &[0.5, 0.0], &[3.0]).unwrap(), vec![0.5]);
+        assert_eq!(m.step(10, &[5.0, 0.0], &[3.0]).unwrap(), vec![5.0]);
     }
 
     #[test]
@@ -372,13 +458,18 @@ mod tests {
         let Ok(bytes) = std::fs::read(path) else {
             return; // not built on this machine (see examples/wasm_block/build.ps1)
         };
-        let mut m = SimModule::load(&bytes, 1).unwrap();
+        let mut m = match SimModule::load(&bytes, 1) {
+            Ok(m) => m,
+            // Built for the old `f64` interface: needs a rebuild by `skills/crablogic-block`.
+            Err(e) if e.contains("flp") => return,
+            Err(e) => panic!("{e}"),
+        };
         let mut last = 0.0;
         for _ in 0..50 {
             let out = m.step(100, &[10.0], &[1000.0]).unwrap();
             assert!(out[0] >= last && out[0] < 10.0);
             last = out[0];
         }
-        assert!((last - 10.0 * (1.0 - (1000.0f64 / 1100.0).powi(50))).abs() < 1e-9);
+        assert!((last - 10.0 * (1.0 - (1000.0f64 / 1100.0).powi(50))).abs() < 1e-3);
     }
 }

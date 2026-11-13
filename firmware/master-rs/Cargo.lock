@@ -246,7 +246,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "crab-kernel"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "libm",
 ]
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "crab-sparkplug"
-version = "1.5.0"
+version = "1.6.0"
 
 [[package]]
 name = "critical-section"

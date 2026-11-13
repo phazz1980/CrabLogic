@@ -129,7 +129,7 @@ fn on_fault_goes_to_the_master_with_the_pin() {
     // Off by default: the inverted lamp goes high, the others low (no bits, any master runs them).
     let faults = |m: &McuModule| [2, 5, 18].map(|p| m.io().on_fault.get(&p).copied());
     assert_eq!(faults(&module), [Some(1), Some(0), Some(0)]);
-    assert_eq!(built.needs, ["abi4", "on_fault"]);
+    assert_eq!(built.needs, ["abi5", "on_fault"]);
 
     let set = |project: &mut Project, id: &str, v: i64| {
         let block = project
@@ -170,7 +170,7 @@ fn on_fault_goes_to_the_master_with_the_pin() {
         .unwrap()
         .wasm_module(1)
         .unwrap();
-    assert_eq!(built.needs, ["abi4"], "no on_fault");
+    assert_eq!(built.needs, ["abi5"], "no on_fault");
 }
 
 #[test]
@@ -199,6 +199,17 @@ fn blink_example_drives_the_led_like_the_simulation() {
 fn numeric_edges_match_the_simulation() {
     // `n` starts 3 below i32::MAX and wraps; division by zero, remainders and mixed operands.
     compare("crates/crab-sim/tests/fixtures/wasm_edges", 13, 12, 100);
+}
+
+#[test]
+fn float_rounding_and_remainder_edges_match_the_simulation() {
+    // Rounding in `f32` (half away from zero, saturation, NaN) and `fmod` through `crab.math`.
+    compare(
+        "crates/crab-sim/tests/fixtures/wasm_float_edges",
+        101,
+        2,
+        100,
+    );
 }
 
 /// Levels of a DHT22 answer the master measures (`pulse_read`): released line, 80 µs low and high,
@@ -1082,8 +1093,8 @@ fn modules_list_what_they_need_from_the_master() {
         let project = Project::load(repo_path(dir)).unwrap();
         let program = Program::build(&project, &lib).unwrap();
         let mut needs = program.wasm_module(1).unwrap().needs;
-        // Every module needs a master of ABI 4.
-        let abi = needs.iter().position(|n| n == "abi4").expect("abi4");
+        // Every module needs a master of ABI 5.
+        let abi = needs.iter().position(|n| n == "abi5").expect("abi5");
         needs.remove(abi);
         needs
     };
@@ -1094,10 +1105,8 @@ fn modules_list_what_they_need_from_the_master() {
         needs(&format!("{fixtures}/wasm_expander")),
         ["pcf_expander"]
     );
-    assert_eq!(
-        needs(&format!("{fixtures}/wasm_logic")),
-        Vec::<String>::new()
-    );
+    // The float remainder (`mod`) is `fmodf` of the master (`crab.math`, op 4).
+    assert_eq!(needs(&format!("{fixtures}/wasm_logic")), ["math"]);
     // Text to USB goes to the console of the master.
     assert!(needs("examples/selftest_logic3").contains(&"uart_console".to_owned()));
 }

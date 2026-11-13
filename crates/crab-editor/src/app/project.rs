@@ -80,7 +80,7 @@ impl EditorApp {
                     self.info(
                         LogLevel::Warning,
                         crate::i18n::fmt(
-                            "Проект собирался скетчем Arduino: настройки сборки ({0}) мастеру на Rust не нужны и будут удалены при сохранении. Схема заливается модулями (📦) на мастер-прошивку (⬆)",
+                            "Проект собирался как скетч (этого способа больше нет): настройки сборки ({0}) мастеру на Rust не нужны и будут удалены при сохранении. Схема заливается модулями (📦) на мастер-прошивку (⬆)",
                             &[&dropped.join(", ")],
                         ),
                     );
@@ -235,7 +235,6 @@ impl EditorApp {
                 project: ProjectInfo {
                     name,
                     description: String::new(),
-                    comment_lang: String::new(),
                     password: String::new(),
                     embed: true,
                 },
