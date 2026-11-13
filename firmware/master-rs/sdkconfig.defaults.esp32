@@ -3,8 +3,9 @@
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-# Most DevKits wire the flash for DIO; QIO is not safe to assume.
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# QIO: code and AOT modules are read from flash through the cache over 4 lines instead of 2.
+# WROOM-32/WROVER modules wire WP/HD (GPIO 9/10) to the flash inside the module.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 # 80 MHz flash (default 40): code and AOT modules run from flash through the cache, at 40 MHz the
 # ESP32 stepped 2–3× slower than the C3 (bench of 12.11.2026). WROOM-32 modules take 80 MHz.
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y

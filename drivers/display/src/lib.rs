@@ -11,6 +11,7 @@ pub mod fb;
 pub mod font;
 pub mod lcd;
 pub mod menu;
+pub mod menugfx;
 pub mod oled;
 pub mod safe;
 pub mod text;

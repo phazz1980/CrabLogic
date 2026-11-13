@@ -65,6 +65,8 @@ fn sample() -> Config {
     });
     c.menu = Some(Menu {
         timeout_s: 30,
+        font: 8,
+        hints: false,
         items: vec![
             item(None, MenuItemKind::Submenu, "Настройки", None),
             item(Some(0), MenuItemKind::Submenu, "Насос", None),
@@ -240,7 +242,7 @@ fn corruption_never_panics() {
 #[test]
 fn wrong_version() {
     let mut c = sample();
-    c.version = 2;
+    c.version = 3;
     assert_eq!(
         ConfigView::parse(&c.encode()).err(),
         Some(FormatError::BadVersion)
@@ -262,4 +264,22 @@ fn typical_size() {
     let n = sample().encode().len();
     std::println!("encoded size of the sample config: {n} bytes");
     assert!(n < 2048);
+}
+
+#[test]
+fn menu_style_round_trips() {
+    let c = sample();
+    let bytes = c.encode();
+    let v = ConfigView::parse(&bytes).unwrap().menu.unwrap();
+    assert_eq!((v.font, v.hints), (8, false));
+}
+
+#[test]
+fn version_one_menu_reads_with_default_style() {
+    let mut c = sample();
+    c.version = 1;
+    let bytes = c.encode();
+    let v = ConfigView::parse(&bytes).unwrap().menu.unwrap();
+    assert_eq!((v.timeout_s, v.font, v.hints), (30, 16, true));
+    assert_eq!(v.len(), c.menu.as_ref().unwrap().items.len());
 }

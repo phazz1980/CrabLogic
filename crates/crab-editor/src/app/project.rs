@@ -258,9 +258,10 @@ impl EditorApp {
         self.open(path);
     }
 
-    /// Starts the web interface constructor (`crablogic-web`) for the open project and shows it
-    /// in the browser. The project is saved first: the constructor edits the file itself.
-    pub fn open_web_designer(&mut self) {
+    /// Starts the web interface constructor (`crablogic-web`) for the open project and shows
+    /// `page` of it in the browser (`/designer`, or `/screens?display=<id>`). The project is
+    /// saved first: the constructor edits the file itself.
+    pub fn open_web_designer(&mut self, page: &str) {
         let Some(doc) = &self.doc else { return };
         let path = doc.project.path.clone();
         if doc.dirty {
@@ -299,12 +300,16 @@ impl EditorApp {
         // The server needs a moment to start listening; the browser retries on its own.
         std::thread::sleep(Duration::from_millis(500));
         let mut open = std::process::Command::new("cmd");
-        open.args(["/C", "start", "", "http://127.0.0.1:8080/designer"]);
+        open.args(["/C", "start", "", &format!("http://127.0.0.1:8080{page}")]);
         hide_console(&mut open);
         match open.spawn() {
             Ok(_) => self.info(
                 LogLevel::Info,
-                crate::i18n::tr("Конструктор веб-интерфейса открыт в браузере."),
+                crate::i18n::tr(if page.starts_with("/screens") {
+                    "Конструктор экранов открыт в браузере."
+                } else {
+                    "Конструктор веб-интерфейса открыт в браузере."
+                }),
             ),
             Err(e) => self.info(
                 LogLevel::Error,

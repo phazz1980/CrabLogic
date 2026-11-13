@@ -203,6 +203,12 @@ impl Program<'_> {
                 config.menu = Some(Menu {
                     timeout_s: num(by_id[block.as_str()], "timeout", 30.0).clamp(0.0, 65535.0)
                         as u16,
+                    font: if num(by_id[block.as_str()], "font", 16.0) < 12.0 {
+                        8
+                    } else {
+                        16
+                    },
+                    hints: num(by_id[block.as_str()], "hints", 1.0) > 0.5,
                     items,
                 });
                 Some(MenuPlan { block, vars })

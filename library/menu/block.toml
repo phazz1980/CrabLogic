@@ -59,3 +59,25 @@ label = "Тайм-аут, с"
 default = 30
 min = 0
 description = "Через сколько секунд без нажатий меню закрывается; 0 — не закрывать"
+
+[[param]]
+name = "font"
+type = "int"
+label = "Шрифт пунктов"
+default = 16
+description = "Высота шрифта пунктов на OLED: 16 — три пункта на экране, 8 — больше пунктов. На OLED 128×32 всегда 8. На LCD не используется"
+
+[[param.choice]]
+value = 8
+label = "8 пикселей"
+
+[[param.choice]]
+value = 16
+label = "16 пикселей"
+
+[[param]]
+name = "hints"
+type = "bool"
+label = "Подсказка кнопок внизу"
+default = true
+description = "Нижняя полоса из четырёх подсказок кнопок («‹ ▲ ▼ ›», при правке «✕ + − ✓»). Только OLED 128×64; на LCD и 128×32 не показывается"

@@ -53,7 +53,8 @@ pub struct Driver<'a> {
     sig: [u32; MAX_SIG],
     sig_screen: usize,
     mode: Mode,
-    last_grid: Grid,
+    /// Fingerprint of the menu picture in the framebuffer.
+    menu_sig: u32,
     /// Link state: initialised, waiting, LCD init phase.
     ready: bool,
     wait_ms: i32,
@@ -81,7 +82,7 @@ impl<'a> Driver<'a> {
             sig: [0; MAX_SIG],
             sig_screen: 0,
             mode: Mode::None,
-            last_grid: Grid::new(),
+            menu_sig: 0,
             ready: false,
             wait_ms: 0,
             phase: 0,
@@ -113,7 +114,6 @@ impl<'a> Driver<'a> {
             self.fb.pages = oled::pages(cfg.display);
             self.grid.reset(21, self.fb.pages);
         }
-        self.last_grid.reset(self.grid.cols, self.grid.rows);
         true
     }
 
@@ -204,12 +204,16 @@ impl<'a> Driver<'a> {
             return; // the first frame goes out on the next step
         }
         if showing_menu {
-            self.menu_grid(io, cfg);
-            if self.mode != Mode::Menu || self.grid != self.last_grid {
-                self.fb.clear();
-                oled::draw_grid(&mut self.fb, &self.grid);
-                self.last_grid = self.grid;
-                self.mode = Mode::Menu;
+            if let Some(m) = cfg.menu {
+                let var_in = self.var_in;
+                let var = |v: u16| io.input(var_in + v as usize);
+                let sig = self.menu.signature(&m, &var);
+                if self.mode != Mode::Menu || sig != self.menu_sig {
+                    self.fb.clear();
+                    self.menu.draw_fb(&m, &mut self.fb, &var);
+                    self.menu_sig = sig;
+                    self.mode = Mode::Menu;
+                }
             }
         } else {
             self.render_screen(io, cfg);

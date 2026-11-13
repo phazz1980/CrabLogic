@@ -29,8 +29,201 @@ static ADC: Mutex<Adc> = Mutex::new(Adc {
     channels: [0, 0],
 });
 
+/// Continuous (DMA) reader of ADC1. A oneshot read costs ~39 us on the C3 and blocks the sheet;
+/// the continuous driver samples in the background and a read only drains a buffer.
+///
+/// On the classic ESP32 the continuous driver runs on I2S0 internally; nothing else in the
+/// master uses I2S (checked by grep), so there is no conflict.
+mod cont {
+    use super::sys;
+    use crab_master_rs::adc_acc::AdcAccum;
+
+    /// Total sample rate over all channels (allowed: 20 kHz..2 MHz on the ESP32, 611 Hz..83 kHz on
+    /// the C3).
+    const SAMPLE_HZ: u32 = 20_000;
+    /// One DMA frame, in bytes (a multiple of the 4-byte conversion unit of both chips).
+    const FRAME_BYTES: u32 = 256;
+    /// Driver pool, in bytes: ~25 ms of samples on the C3 (4 bytes each), ~50 ms on the ESP32.
+    const POOL_BYTES: u32 = 2048;
+    /// Drain buffer size, a multiple of `RESULT_BYTES`.
+    const DRAIN_BYTES: usize = 512;
+    /// Channels of one pattern (ADC1 has at most 8).
+    const MAX_PATTERN: usize = 8;
+    /// Bytes of one result: TYPE2 on the C3, TYPE1 on the ESP32.
+    #[cfg(target_arch = "riscv32")]
+    const RESULT_BYTES: usize = 4;
+    #[cfg(not(target_arch = "riscv32"))]
+    const RESULT_BYTES: usize = 2;
+    #[cfg(target_arch = "riscv32")]
+    const FORMAT: sys::adc_digi_output_format_t =
+        sys::adc_digi_output_format_t_ADC_DIGI_OUTPUT_FORMAT_TYPE2;
+    #[cfg(not(target_arch = "riscv32"))]
+    const FORMAT: sys::adc_digi_output_format_t =
+        sys::adc_digi_output_format_t_ADC_DIGI_OUTPUT_FORMAT_TYPE1;
+    /// Longest wait for the first sample of a new channel: 100 x 100 us, more than one frame
+    /// (6.4 ms on the ESP32, 3.2 ms on the C3), since the driver hands over whole frames.
+    const FIRST_SAMPLE_TRIES: u32 = 100;
+
+    pub struct Cont {
+        handle: sys::adc_continuous_handle_t,
+        acc: AdcAccum,
+        running: bool,
+        /// Continuous mode is given up for good; ADC1 goes through oneshot.
+        failed: bool,
+        /// Drain buffer: static, no allocation per read.
+        buf: [u8; DRAIN_BYTES],
+    }
+
+    // SAFETY: the handle is a pointer to a driver object; every use is under the `CONT` mutex.
+    unsafe impl Send for Cont {}
+
+    impl Cont {
+        pub const fn new() -> Self {
+            Self {
+                handle: core::ptr::null_mut(),
+                acc: AdcAccum::new(),
+                running: false,
+                failed: false,
+                buf: [0; DRAIN_BYTES],
+            }
+        }
+
+        /// Reads whatever the driver has, without waiting, into the accumulators.
+        fn drain(&mut self) {
+            if !self.running {
+                return;
+            }
+            // Bounded: more than the whole pool cannot be queued.
+            for _ in 0..(POOL_BYTES as usize / DRAIN_BYTES + 2) {
+                let mut got: u32 = 0;
+                // SAFETY: a started handle; the buffer outlives the call and its length is passed.
+                let err = unsafe {
+                    sys::adc_continuous_read(
+                        self.handle,
+                        self.buf.as_mut_ptr(),
+                        DRAIN_BYTES as u32,
+                        &mut got,
+                        0,
+                    )
+                };
+                // Overflow (ESP_ERR_INVALID_STATE) may still return the data that was kept.
+                if got > 0 {
+                    self.acc.feed(&self.buf[..got as usize], RESULT_BYTES);
+                }
+                if got == 0 || (err != 0 && err != sys::ESP_ERR_INVALID_STATE as i32) {
+                    break; // timeout: the buffer is empty
+                }
+            }
+        }
+
+        /// Stops and frees the driver and gives ADC1 back to oneshot for good.
+        fn give_up(&mut self, why: &str) {
+            println!("adc: continuous mode off ({why}); ADC1 uses oneshot reads");
+            if !self.handle.is_null() {
+                // SAFETY: a handle made by `adc_continuous_new_handle`; freed once and nulled.
+                unsafe {
+                    if self.running {
+                        sys::adc_continuous_stop(self.handle);
+                    }
+                    sys::adc_continuous_deinit(self.handle);
+                }
+                self.handle = core::ptr::null_mut();
+            }
+            self.running = false;
+            self.failed = true;
+        }
+
+        /// (Re)starts the driver with every known channel.
+        fn configure(&mut self) -> Result<(), &'static str> {
+            if self.handle.is_null() {
+                let mut cfg = sys::adc_continuous_handle_cfg_t {
+                    max_store_buf_size: POOL_BYTES,
+                    conv_frame_size: FRAME_BYTES,
+                    ..Default::default()
+                };
+                // A full pool is emptied instead of dropping new frames: after a long pause
+                // between reads (a slow sheet) the mean is of fresh samples, not of old ones.
+                cfg.flags.set_flush_pool(1);
+                let mut handle: sys::adc_continuous_handle_t = core::ptr::null_mut();
+                // SAFETY: the config lives through the call; the handle is kept in `self`.
+                if unsafe { sys::adc_continuous_new_handle(&cfg, &mut handle) } != 0 {
+                    return Err("new_handle");
+                }
+                self.handle = handle;
+            } else if self.running {
+                // SAFETY: a started handle.
+                unsafe { sys::adc_continuous_stop(self.handle) };
+                self.running = false;
+            }
+            let mut pattern = [sys::adc_digi_pattern_config_t::default(); MAX_PATTERN];
+            let mut n = 0;
+            for ch in self.acc.channels().take(MAX_PATTERN) {
+                pattern[n] = sys::adc_digi_pattern_config_t {
+                    atten: sys::adc_atten_t_ADC_ATTEN_DB_12 as u8,
+                    channel: ch,
+                    unit: sys::adc_unit_t_ADC_UNIT_1 as u8,
+                    bit_width: sys::adc_bitwidth_t_ADC_BITWIDTH_12 as u8,
+                };
+                n += 1;
+            }
+            let cfg = sys::adc_continuous_config_t {
+                pattern_num: n as u32,
+                adc_pattern: pattern.as_mut_ptr(),
+                sample_freq_hz: SAMPLE_HZ,
+                conv_mode: sys::adc_digi_convert_mode_t_ADC_CONV_SINGLE_UNIT_1,
+                format: FORMAT,
+            };
+            // SAFETY: a stopped handle; the pattern array outlives the call (the driver copies it).
+            if unsafe { sys::adc_continuous_config(self.handle, &cfg) } != 0 {
+                return Err("config");
+            }
+            // SAFETY: a configured handle.
+            if unsafe { sys::adc_continuous_start(self.handle) } != 0 {
+                return Err("start");
+            }
+            self.running = true;
+            Ok(())
+        }
+
+        /// Mean of the samples of ADC1 `channel` since the previous read, or `None` when
+        /// continuous mode is unavailable and the caller must use oneshot.
+        pub fn read(&mut self, channel: u8) -> Option<i32> {
+            if self.failed {
+                return None;
+            }
+            if self.acc.is_known(channel) {
+                self.drain();
+            } else {
+                if self.acc.channels().count() >= MAX_PATTERN {
+                    self.give_up("too many channels");
+                    return None;
+                }
+                self.drain(); // keep what the old pattern collected
+                self.acc.add_channel(channel);
+                if let Err(why) = self.configure() {
+                    self.give_up(why);
+                    return None;
+                }
+                for _ in 0..FIRST_SAMPLE_TRIES {
+                    self.drain();
+                    if self.acc.has_sample(channel) {
+                        break;
+                    }
+                    // SAFETY: a busy-wait ROM routine, no preconditions.
+                    unsafe { sys::esp_rom_delay_us(100) };
+                }
+            }
+            Some(self.acc.take(channel))
+        }
+    }
+}
+
+static CONT: Mutex<cont::Cont> = Mutex::new(cont::Cont::new());
+
 /// Raw 12-bit reading of `pin`, 0 for a pin without ADC or a failed reading (ADC2 while Wi-Fi
-/// runs on the ESP32), as `analogRead` answers.
+/// runs on the ESP32), as `analogRead` answers. ADC1 pins are read through the continuous (DMA)
+/// driver: the mean of the samples since the previous read; ADC2 pins (and ADC1 if the
+/// continuous driver cannot start) through oneshot reads.
 pub fn adc_read(pin: u8) -> i32 {
     let mut unit: sys::adc_unit_t = 0;
     let mut channel: sys::adc_channel_t = 0;
@@ -42,6 +235,17 @@ pub fn adc_read(pin: u8) -> i32 {
     if index > 1 {
         return 0;
     }
+    if index == 0 {
+        let mut cont = CONT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(value) = cont.read(channel as u8) {
+            return value;
+        }
+        // Continuous mode is off for good (its driver is already freed): use oneshot.
+    }
+    oneshot_read(index, unit, channel)
+}
+
+fn oneshot_read(index: usize, unit: sys::adc_unit_t, channel: sys::adc_channel_t) -> i32 {
     let mut adc = ADC.lock().unwrap_or_else(|e| e.into_inner());
     if adc.units[index].is_none() {
         let cfg = sys::adc_oneshot_unit_init_cfg_t {

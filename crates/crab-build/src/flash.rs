@@ -298,11 +298,14 @@ pub fn flash_master(
         .xtal_frequency(flasher.connection())
         .map_err(flash_err)?;
     let size = flasher.flash_detect().ok().flatten();
-    // The classic ESP32 master is built for 80 MHz flash (`sdkconfig.defaults.esp32`); the
-    // image header must say so, or the bootloader keeps the slow default of 40 MHz.
-    let freq = (chip == Chip::Esp32).then_some(FlashFrequency::_80Mhz);
+    // Both masters are built for 80 MHz flash; the image header must say so, or the bootloader
+    // keeps the slow default of 40 MHz (the C3 then stepped ~1.5x slower, bench of 13.11.2026).
+    let freq = Some(FlashFrequency::_80Mhz);
+    // QIO, as both masters are built (`sdkconfig.defaults*`): code and AOT modules are read
+    // through the cache over 4 lines; on the ESP32 bench of 13.11.2026 that made steps 30–60 %
+    // shorter than DIO.
     let flash_data = FlashData::new(
-        FlashSettings::new(Some(FlashMode::Dio), size, freq),
+        FlashSettings::new(Some(FlashMode::Qio), size, freq),
         0,
         None,
         chip,

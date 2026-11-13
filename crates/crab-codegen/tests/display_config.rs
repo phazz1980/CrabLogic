@@ -81,6 +81,8 @@ id = "m"
 type = "menu"
 display = "oled"
 timeout = 20
+font = 8
+hints = false
 
 [[block]]
 id = "en"
@@ -189,6 +191,8 @@ fn config_of_an_oled_with_two_screens_and_a_menu() {
     ];
     expected.menu = Some(Menu {
         timeout_s: 20,
+        font: 8,
+        hints: false,
         items: vec![
             MenuItem {
                 parent: None,

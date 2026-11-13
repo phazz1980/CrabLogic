@@ -656,6 +656,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut place_block: Option<String> = None;
     let mut remove_tag: Option<String> = None;
     let mut net_actions = Vec::new();
+    let mut display_actions = Vec::new();
 
     // Tags: blocks with a pin, split by direction.
     let mut inputs = Vec::new();
@@ -888,6 +889,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                     }
                 });
             });
+            display_actions = crate::displaypanel::show(app, ui);
             net_actions = crate::netpanel::show(app, ui);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
@@ -971,6 +973,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
         }
     }
     crate::netpanel::apply(app, net_actions);
+    crate::displaypanel::apply(app, display_actions);
     if new_var {
         app.dialog = Dialog::for_var(app, None);
     }
@@ -1135,6 +1138,8 @@ pub fn right(app: &mut EditorApp, ui: &mut Ui) {
 const IO_GROUP: &str = "Входы и выходы";
 /// Web widgets are added from the web interface section of the project tree.
 const WEB_GROUP: &str = "Веб-интерфейс";
+/// Displays are added from the «Дисплеи» section of the left panel (with their menu).
+const DISPLAY_GROUP: &str = "Дисплеи";
 
 fn library(app: &mut EditorApp, ui: &mut Ui) {
     let filter_id = Id::unique("library_filter");
@@ -1171,6 +1176,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
         if app.lib.is_user(&info.kind)
             || info.group == IO_GROUP
             || info.group == WEB_GROUP
+            || info.group == DISPLAY_GROUP
             || crab_core::project::is_screen_kind(&info.kind)
             || info.hidden
             || !info.fits_board(model)

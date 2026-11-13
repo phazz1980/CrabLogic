@@ -730,7 +730,7 @@ pub fn apply(app: &mut EditorApp, actions: Vec<NetAction>) {
                     s.set_broker_down(on);
                 }
             }
-            NetAction::Designer => app.open_web_designer(),
+            NetAction::Designer => app.open_web_designer("/designer"),
             NetAction::Settings(id) => app.dialog = Dialog::for_block(app, &id),
             NetAction::Toggle { kind, on } => {
                 let Some(doc) = &mut app.doc else { return };

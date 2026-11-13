@@ -167,8 +167,11 @@ impl Oled {
             inverted: false,
             all_on: false,
             contrast: 0x7F,
-            seg_remap: false,
-            com_reverse: false,
+            // Common modules are upright with segment remap + COM reverse (A1/C8, what Adafruit and
+            // u8g2 send); A0/C0 turns the picture by 180 degrees. Raw writes before any init are
+            // shown upright, so the model starts in the upright state.
+            seg_remap: true,
+            com_reverse: true,
             mode: Addressing::Page,
             col: 0,
             page: 0,
@@ -301,9 +304,9 @@ impl Oled {
         let offset = if self.sh1106 { SH1106_OFFSET } else { 0 };
         let mut pixels = vec![false; w * h];
         for y in 0..h {
-            let src_y = if self.com_reverse { h - 1 - y } else { y };
+            let src_y = if self.com_reverse { y } else { h - 1 - y };
             for x in 0..w {
-                let src_x = if self.seg_remap { w - 1 - x } else { x };
+                let src_x = if self.seg_remap { x } else { w - 1 - x };
                 let byte = self.ram[src_y / 8][src_x + offset];
                 let lit = byte >> (src_y % 8) & 1 != 0;
                 pixels[y * w + x] = self.all_on || lit != self.inverted;
@@ -544,9 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn ssd1306_remap_flips_the_picture() {
+    fn ssd1306_default_remap_commands_leave_the_picture_upright() {
         let mut d = DisplayDevice::ssd1306("o", 0x3C, 64);
         d.write(&[0x00, 0xA1, 0xC8]);
+        d.write(&[0x40, 0x01]);
+        let v = d.view();
+        assert!(lit(&v, 0, 0));
+        assert_eq!(v.pixels.iter().filter(|p| **p).count(), 1);
+    }
+
+    #[test]
+    fn ssd1306_without_remap_the_picture_is_turned_around() {
+        let mut d = DisplayDevice::ssd1306("o", 0x3C, 64);
+        d.write(&[0x00, 0xA0, 0xC0]);
         d.write(&[0x40, 0x01]); // page 0, column 0, bit 0
         let v = d.view();
         assert!(lit(&v, 127, 63));

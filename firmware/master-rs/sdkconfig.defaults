@@ -14,3 +14,7 @@ CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
 # Ethernet over SPI with a W5500 module (driver in polling mode, no INT wire).
 CONFIG_ETH_USE_SPI_ETHERNET=y
 CONFIG_ETH_SPI_ETHERNET_W5500=y
+
+# The continuous ADC (analog inputs) keeps sampling while a module is written to flash: its ISR must
+# live in IRAM, or an interrupt with the flash cache off crashes the board.
+CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y

@@ -5,13 +5,14 @@
 //! "none" for optional `u16` fields is `0xFFFF`.
 //!
 //! ```text
-//! Config   := version:u8(=1) display:u8 n_screens:u8 flags:u8(bit0 = menu) Screen* Menu?
+//! Config   := version:u8(=2; 1 is still read) display:u8 n_screens:u8 flags:u8(bit0 = menu) Screen* Menu?
 //! Screen   := body_len:u16 n_widgets:u8 Widget*          (body_len counts n_widgets + widgets)
 //! Widget   := kind:u8 x:u8 y:u8 w:u8 h:u8 font:u8 input:u16 payload
 //!   kind 0 Text : str                      kind 3 Led : -
 //!   kind 1 Value: format:u8 decimals:u8 unit:str
 //!   kind 2 Bar  : min:f32 max:f32          kind 4 Icon: id:u8
-//! Menu     := timeout_s:u16 n_items:u16 Item*
+//! Menu     := timeout_s:u16 [font:u8 hints:u8   (version 2 only)] n_items:u16 Item*
+//!   font: 8 or 16 (item font on the OLED); hints: 0/1 (soft-key bar). Version 1 reads as font 16, hints on.
 //! Item     := kind:u8 parent:u16 var_slot:u16 caption:str payload
 //!   kind 0 Submenu: -        kind 3 Choice: n:u8 str*n
 //!   kind 1 Number : min:f32 max:f32 step:f32 decimals:u8 unit:str
@@ -38,8 +39,10 @@ mod model;
 #[cfg(feature = "alloc")]
 pub use model::*;
 
-/// Current format version (first byte of the blob).
-pub const VERSION: u8 = 1;
+/// Current format version (first byte of the blob). Version 1 (no menu `font`/`hints`) is still read.
+pub const VERSION: u8 = 2;
+/// Oldest readable version.
+pub const MIN_VERSION: u8 = 1;
 /// Marker for an absent optional `u16`.
 pub const NONE_U16: u16 = 0xFFFF;
 

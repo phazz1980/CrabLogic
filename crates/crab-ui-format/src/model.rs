@@ -81,11 +81,38 @@ pub struct MenuItem {
 }
 
 /// Menu: items in table order.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Menu {
     pub timeout_s: u16,
+    /// Item font on the OLED: 8 or 16 (16 is the default).
+    #[cfg_attr(feature = "serde", serde(default = "default_font"))]
+    pub font: u8,
+    /// Soft-key hint bar at the bottom of the OLED.
+    #[cfg_attr(feature = "serde", serde(default = "default_hints"))]
+    pub hints: bool,
     pub items: Vec<MenuItem>,
+}
+
+#[cfg(feature = "serde")]
+fn default_font() -> u8 {
+    16
+}
+
+#[cfg(feature = "serde")]
+fn default_hints() -> bool {
+    true
+}
+
+impl Default for Menu {
+    fn default() -> Self {
+        Menu {
+            timeout_s: 30,
+            font: 16,
+            hints: true,
+            items: Vec::new(),
+        }
+    }
 }
 
 /// Whole description of one display.
@@ -132,6 +159,10 @@ impl Config {
         if let Some(m) = &self.menu {
             let items = &m.items[..m.items.len().min(NONE_U16 as usize - 1)];
             o.extend_from_slice(&m.timeout_s.to_le_bytes());
+            if self.version >= 2 {
+                o.push(m.font);
+                o.push(u8::from(m.hints));
+            }
             o.extend_from_slice(&(items.len() as u16).to_le_bytes());
             for i in items {
                 put_item(&mut o, i);

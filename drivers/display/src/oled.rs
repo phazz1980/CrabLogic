@@ -1,9 +1,9 @@
-//! OLED side: widget drawing, menu grid drawing and the SSD1306 / SH1106 wire protocol.
+//! OLED side: widget drawing and the SSD1306 / SH1106 wire protocol.
 
 use crate::fb::{Fb, PAGE_BYTES};
 use crate::font::{glyph, ICON_BASE};
 use crate::safe::{copy, Safe};
-use crate::text::{clamp, fmt_value, round, Grid, Txt};
+use crate::text::{clamp, fmt_value, round, Txt};
 use crab_ui_format::{DisplayKind, WidgetKindView, WidgetView};
 
 /// Pages (rows of 8 pixels) of the display.
@@ -72,23 +72,6 @@ pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: f64) {
         }
         WidgetKindView::Icon { id } => {
             fb.glyph(x, y, &glyph(ICON_BASE + id as u16), scale, true);
-        }
-    }
-}
-
-/// Draws a character grid (the menu) in the 6x8 font; inverted rows are white bars.
-pub fn draw_grid(fb: &mut Fb, g: &Grid) {
-    for r in 0..g.rows.min(fb.pages) {
-        let inv = g.inv & (1 << r) != 0;
-        let y = r as i32 * 8;
-        if inv {
-            fb.fill_rect(0, y, 128, 8, true);
-        }
-        for c in 0..g.cols {
-            let ch = g.at(r, c);
-            if ch != 0 && ch != 0x20 {
-                fb.glyph(c as i32 * 6 + 1, y, &glyph(ch), 1, !inv);
-            }
         }
     }
 }

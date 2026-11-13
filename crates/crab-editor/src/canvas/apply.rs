@@ -110,12 +110,14 @@ pub(super) fn apply_edits(
                     let tag = p.logic.tag_of(&id).to_owned();
                     let is_tag = p.is_widget(&tag)
                         || p.logic.block(&tag).is_some_and(|b| {
-                            lib.resolve(&p.logic, b).is_some_and(|l| {
-                                l.def
-                                    .params
-                                    .iter()
-                                    .any(|d| d.kind == crab_core::ParamKind::Pin)
-                            })
+                            // A display has pins but is not a tag: it has no copies.
+                            !crate::displaypanel::is_display(&b.kind)
+                                && lib.resolve(&p.logic, b).is_some_and(|l| {
+                                    l.def
+                                        .params
+                                        .iter()
+                                        .any(|d| d.kind == crab_core::ParamKind::Pin)
+                                })
                         });
                     let placed = std::iter::once(tag.as_str())
                         .chain(p.logic.tag_copies(&tag))

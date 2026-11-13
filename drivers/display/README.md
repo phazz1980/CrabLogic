@@ -9,7 +9,7 @@ One crate, two blocks: `library/oled/block.wasm` (`--features oled`) and `librar
 The font is original work drawn for this project (`src/font.rs`, glyphs written as ASCII art and
 parsed at compile time). It is dedicated to the public domain together with the project code, so
 no third-party licence applies. Glyphs: 5x7 in a 5x8 cell (row 7 for descenders): ASCII 0x20-0x7E,
-Cyrillic А-я, Ёё, the degree sign and 8 icons (thermometer, drop, fan, lamp, alarm, wifi, check,
+Cyrillic А-я, Ёё, the degree sign, ‹ › ▲ ▼ (menu) and 8 icons (thermometer, drop, fan, lamp, alarm, wifi, check,
 cross; codes `0xE000 + id`). The 8-pixel font advances 6 px (21 characters on 128 px); the 16-pixel
 font draws the same glyphs doubled (12 px advance). The 8-row glyph is also the HD44780 CGRAM
 format, so the LCD reuses it for custom characters.
@@ -27,3 +27,11 @@ format, so the LCD reuses it for custom characters.
 - Menu: OK opens it; up/down move (wrapping); OK on a submenu enters, on a number/choice starts a
   local edit (up/down change, OK confirms, Back cancels), on a bool toggles at once, on an action
   fires. `item` output: table index of the highlighted item, -1 when closed.
+- OLED menu is drawn into the pixel framebuffer (`src/menugfx.rs`), the LCD menu into the
+  character grid. 128x64: title (8 px) with a line at y = 8, items from y = 10 in the 16 px font
+  (3 items, pitch 15, the last one ends at y = 55 with its descender row) or the 8 px font (pitch 10, 4 items
+  with the hint bar, 5 without), a 4x4 / 5x5 marker for the selected item, values right-aligned,
+  `›` for submenus, a scrollbar when the items do not fit, a 1 px frame around the value being
+  edited, and (menu param `hints`) four inverted cells at y = 56..63: back/up/down/enter, while
+  editing cancel/+/-/apply. 128x32: always 8 px items, two on the screen, no hint bar. The picture
+  is redrawn only when `Menu::signature` changes.

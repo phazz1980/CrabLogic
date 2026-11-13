@@ -315,6 +315,10 @@ fn item(parent: Option<u16>, kind: MenuItemKind, caption: &str, var: Option<u16>
 }
 
 fn demo_menu(timeout_s: u16) -> Vec<u8> {
+    demo_menu_styled(timeout_s, 16, true, DisplayKind::Ssd1306_128x64)
+}
+
+fn demo_menu_styled(timeout_s: u16, font: u8, hints: bool, kind: DisplayKind) -> Vec<u8> {
     let number = MenuItemKind::Number {
         min: 0.0,
         max: 30.0,
@@ -327,6 +331,8 @@ fn demo_menu(timeout_s: u16) -> Vec<u8> {
     };
     let menu = MenuCfg {
         timeout_s,
+        font,
+        hints,
         items: vec![
             item(None, MenuItemKind::Submenu, "Уставки", None),
             item(Some(0), number, "Темп", Some(0)),
@@ -336,7 +342,7 @@ fn demo_menu(timeout_s: u16) -> Vec<u8> {
             item(None, MenuItemKind::View, "Т воды", Some(4)),
         ],
     };
-    cfg(DisplayKind::Ssd1306_128x64, vec![], Some(menu))
+    cfg(kind, vec![], Some(menu))
 }
 
 struct Rig {
@@ -498,6 +504,323 @@ fn menu_drawn_over_screen_with_contract_outputs() {
     assert_eq!((o[3], o[4], o[5]), (1.0, 0.0, 20.5)); // changed, slot 0, new value at Q + 4
                                                       // The next step the pulse is gone and the slot is -1.
     assert_eq!((io.outputs[3], io.outputs[4]), (0.0, -1.0));
-    // The title bar (inverted row) is lit across the top page.
-    assert!(d.fb.page(0)[1..120].iter().all(|&b| b != 0));
+    // The line under the title (y = 8) is lit across the whole width.
+    assert!(d.fb.page(1).iter().all(|&b| b & 1 != 0));
+}
+
+// ------------------------------------------------------------------ graphic menu
+
+/// Draws the menu after the key presses (`keys`) with the variables `vars`.
+fn gfx(blob: &[u8], pages: usize, keys: &[usize], vars: [f64; 8]) -> Fb {
+    let mut r = Rig::new();
+    r.vars = vars;
+    for &k in keys {
+        r.press(blob, k);
+    }
+    let view = ConfigView::parse(blob).unwrap().menu.unwrap();
+    let mut fb = Fb::new();
+    fb.pages = pages;
+    r.menu.draw_fb(&view, &mut fb, &|v| vars[v as usize]);
+    fb
+}
+
+fn lit(fb: &Fb, x: usize, y: usize, w: usize, h: usize) -> bool {
+    fb.ascii(x, y, w, h).iter().all(|r| !r.contains('.'))
+}
+
+fn dark(fb: &Fb, x: usize, y: usize, w: usize, h: usize) -> bool {
+    fb.ascii(x, y, w, h).iter().all(|r| !r.contains('#'))
+}
+
+#[test]
+fn menu_layout_16px_with_hints() {
+    let l = crate::menugfx::layout(8, 16, true);
+    assert_eq!((l.font, l.visible, l.first_y, l.pitch), (16, 3, 10, 15));
+    let blob = demo_menu_styled(30, 16, true, DisplayKind::Ssd1306_128x64);
+    let fb = gfx(&blob, 8, &[OK], [0.0; 8]);
+    // Title line under the 8 px title, nothing between the title and the line.
+    assert!(lit(&fb, 0, 8, 128, 1));
+    assert!(dark(&fb, 0, 9, 128, 1));
+    // The first item is selected: 5x5 marker at the left, caption (12 px per letter) from x = 8,
+    // the submenu mark at the right edge.
+    assert!(lit(&fb, 0, 14, 5, 5));
+    assert!(dark(&fb, 0, 10, 5, 4));
+    assert!(!dark(&fb, 8, 10, 12, 14));
+    assert!(!dark(&fb, 118, 10, 10, 14));
+    // Other items have no marker and sit 15 px apart.
+    assert!(dark(&fb, 0, 25, 5, 14));
+    assert!(!dark(&fb, 8, 25, 12, 14));
+    assert!(!dark(&fb, 8, 40, 12, 14));
+    // Four items on the level, three visible: scrollbar line at the right edge.
+    assert!(lit(&fb, 127, 10, 1, 45));
+    // Hint bar: four white cells 31 wide at x = 1, 33, 65, 97, one pixel apart, rows 56..63.
+    for i in 0..4 {
+        let x = 1 + i * 32;
+        assert!(!dark(&fb, x, 56, 31, 8));
+        assert!(lit(&fb, x, 56, 3, 8), "cell {i}");
+    }
+    for gap in [0, 32, 64, 96] {
+        assert!(dark(&fb, gap, 56, 1, 8), "gap {gap}");
+    }
+}
+
+/// The 5x8 cell at (x, y) shows `rows` dark on white.
+fn assert_dark_glyph(fb: &Fb, x: usize, y: usize, rows: [u8; 8]) {
+    for (r, row) in fb.ascii(x, y, 5, 8).iter().enumerate() {
+        for (c, ch) in row.chars().enumerate() {
+            assert_eq!(ch == '.', rows[r] & (0x10 >> c) != 0, "row {r} col {c}");
+        }
+    }
+}
+
+#[test]
+fn menu_hint_glyphs_are_dark_on_white() {
+    use crate::font::{CH_CROSS, CH_DOWN, CH_UP};
+    use crate::menugfx::hint_labels;
+    let blob = demo_menu_styled(30, 16, true, DisplayKind::Ssd1306_128x64);
+    // Browsing: «‹ ▲ ▼ ›».
+    let fb = gfx(&blob, 8, &[OK], [0.0; 8]);
+    assert_dark_glyph(&fb, 33 + 13, 56, glyph(CH_UP));
+    assert_dark_glyph(&fb, 65 + 13, 56, glyph(CH_DOWN));
+    // Editing: cross, +, -, check.
+    let labels = hint_labels(true);
+    assert_eq!(labels[0], CH_CROSS);
+    assert_eq!((labels[1], labels[2]), (b'+' as u16, b'-' as u16));
+    assert_ne!(labels, hint_labels(false));
+    let fb = gfx(&blob, 8, &[OK, OK, OK], [20.0; 8]);
+    assert_dark_glyph(&fb, 1 + 13, 56, glyph(CH_CROSS));
+    assert_dark_glyph(&fb, 33 + 13, 56, glyph(b'+' as u16));
+    assert_dark_glyph(&fb, 65 + 13, 56, glyph(b'-' as u16));
+}
+
+#[test]
+fn menu_layout_8px_fits_more_items() {
+    assert_eq!(crate::menugfx::layout(8, 8, true).visible, 4);
+    assert_eq!(crate::menugfx::layout(8, 8, false).visible, 5);
+    let blob = demo_menu_styled(30, 8, true, DisplayKind::Ssd1306_128x64);
+    let fb = gfx(&blob, 8, &[OK], [0.0; 8]);
+    // Four root items fit with the hint bar, so there is no scrollbar and the items sit 10 px apart.
+    assert!(!lit(&fb, 127, 11, 1, 43));
+    assert!(lit(&fb, 0, 12, 4, 4)); // 4x4 marker of the first item
+    assert!(dark(&fb, 0, 21, 4, 8));
+    for k in 0..4 {
+        assert!(!dark(&fb, 8, 11 + k * 10, 6, 7), "item {k}");
+    }
+    assert!(dark(&fb, 8, 51, 60, 3));
+    // Without hints the bottom rows are free.
+    let blob = demo_menu_styled(30, 8, false, DisplayKind::Ssd1306_128x64);
+    let fb = gfx(&blob, 8, &[OK], [0.0; 8]);
+    assert!(dark(&fb, 0, 61, 128, 3));
+}
+
+fn long_menu(font: u8, hints: bool) -> Vec<u8> {
+    let items = (0..10)
+        .map(|i| item(None, MenuItemKind::Action, &format!("Пункт {i}"), Some(i)))
+        .collect();
+    let menu = MenuCfg {
+        timeout_s: 30,
+        font,
+        hints,
+        items,
+    };
+    cfg(DisplayKind::Ssd1306_128x64, vec![], Some(menu))
+}
+
+#[test]
+fn menu_scrolling_keeps_cursor_visible() {
+    use crate::menugfx::{layout, top_for};
+    assert_eq!(top_for(0, 3), 0);
+    assert_eq!(top_for(2, 3), 0);
+    assert_eq!(top_for(3, 3), 1);
+    assert_eq!(top_for(9, 3), 7);
+    for (font, hints) in [(16, true), (16, false), (8, true), (8, false)] {
+        let blob = long_menu(font, hints);
+        let lay = layout(8, font, hints);
+        let side = if font == 16 { 5 } else { 4 };
+        let mut keys = vec![OK];
+        for step in 0..10usize {
+            let fb = gfx(&blob, 8, &keys, [0.0; 8]);
+            let top = top_for(step, lay.visible);
+            let y = lay.first_y as usize + (step - top) * lay.pitch as usize;
+            let my = y + (7 * (font as usize / 8) - side) / 2;
+            assert!(lit(&fb, 0, my, side, side), "font {font} step {step}");
+            // Exactly one marker column pixel block: the rows around it are dark at x = 0.
+            let marked = fb
+                .ascii(0, 11, 1, 53)
+                .iter()
+                .filter(|r| r.contains('#'))
+                .count();
+            assert_eq!(marked, side, "font {font} step {step}");
+            keys.push(DOWN);
+        }
+        // Wrapping up from the first item lands on the last one, still visible.
+        let fb = gfx(&blob, 8, &[OK, UP], [0.0; 8]);
+        let top = top_for(9, lay.visible);
+        let y = lay.first_y as usize + (9 - top) * lay.pitch as usize;
+        assert!(!dark(&fb, 0, y, side, side));
+    }
+    // The thumb is at the top for the first item and at the bottom for the last.
+    let blob = long_menu(16, true);
+    let first = gfx(&blob, 8, &[OK], [0.0; 8]);
+    assert!(lit(&first, 126, 10, 2, 4));
+    assert!(dark(&first, 126, 40, 1, 12));
+    let mut keys = vec![OK];
+    keys.extend([DOWN; 9]);
+    let last = gfx(&blob, 8, &keys, [0.0; 8]);
+    assert!(lit(&last, 126, 49, 1, 3));
+    assert!(dark(&last, 126, 12, 1, 20));
+}
+
+#[test]
+fn menu_editing_draws_a_frame_around_the_value() {
+    let blob = demo_menu_styled(30, 16, true, DisplayKind::Ssd1306_128x64);
+    // Open, enter «Уставки», highlighted «Темп» (a number, 20.0°C).
+    let browse = gfx(&blob, 8, &[OK, OK], [20.0; 8]);
+    assert!(dark(&browse, 0, 9, 128, 1));
+    let edit = gfx(&blob, 8, &[OK, OK, OK], [20.0; 8]);
+    // "20.0°C": 6 letters, 70 px wide, ending 2 px before the edge; frame 74 px with padding.
+    assert!(lit(&edit, 54, 9, 74, 1));
+    assert!(lit(&edit, 54, 24, 74, 1));
+    assert!(lit(&edit, 54, 9, 1, 16));
+    assert!(dark(&edit, 0, 9, 54, 1));
+    // The title is the caption of the submenu, not «Меню».
+    let root = gfx(&blob, 8, &[OK], [0.0; 8]);
+    assert_ne!(browse.ascii(0, 0, 40, 8), root.ascii(0, 0, 40, 8));
+}
+
+#[test]
+fn menu_128x32_has_no_hints_and_small_font() {
+    let l = crate::menugfx::layout(4, 16, true);
+    assert_eq!((l.font, l.hints, l.visible), (8, false, 2));
+    let blob = demo_menu_styled(30, 16, true, DisplayKind::Ssd1306_128x32);
+    let fb = gfx(&blob, 4, &[OK], [0.0; 8]);
+    assert!(lit(&fb, 0, 8, 128, 1));
+    assert!(lit(&fb, 0, 12, 4, 4)); // 4x4 marker of the 8 px item
+    assert!(!dark(&fb, 8, 21, 6, 7)); // second item at y = 21
+    assert!(dark(&fb, 1, 29, 31, 3)); // no hint cells
+                                      // Four items, two visible: scrollbar.
+    assert!(lit(&fb, 127, 11, 1, 20));
+}
+
+#[test]
+fn menu_signature_follows_what_is_shown() {
+    let blob = demo_menu(30);
+    let view = ConfigView::parse(&blob).unwrap().menu.unwrap();
+    let mut menu = Menu::new();
+    let vars = std::cell::Cell::new(1.0);
+    let var = |_: u16| vars.get();
+    menu.step(&view, 10, [false, false, true, false], &var);
+    let a = menu.signature(&view, &var);
+    assert_eq!(a, menu.signature(&view, &var));
+    vars.set(2.0);
+    assert_ne!(a, menu.signature(&view, &var));
+    vars.set(1.0);
+    menu.step(&view, 10, [false; 4], &var);
+    menu.step(&view, 10, [false, true, false, false], &var);
+    assert_ne!(a, menu.signature(&view, &var));
+}
+
+#[test]
+fn menu_values_are_right_aligned_and_captions_cut() {
+    let items = vec![
+        item(
+            None,
+            MenuItemKind::Bool,
+            "Очень длинное название пункта",
+            Some(0),
+        ),
+        item(None, MenuItemKind::Bool, "Свет", Some(1)),
+    ];
+    let menu = MenuCfg {
+        timeout_s: 30,
+        font: 16,
+        hints: true,
+        items,
+    };
+    let blob = cfg(DisplayKind::Ssd1306_128x64, vec![], Some(menu));
+    let fb = gfx(&blob, 8, &[OK], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    // «Вкл» (3 x 12 - 2 = 34 px) ends at the right edge: x 94..127; the caption stays left of it.
+    assert!(!dark(&fb, 94, 10, 34, 14));
+    assert!(dark(&fb, 90, 10, 4, 14));
+    // «Выкл» of the second item (46 px): x 82..127.
+    assert!(!dark(&fb, 82, 25, 46, 14));
+}
+
+// ------------------------------------------------------------------ font for the designer
+
+const FONT_JS_BODY: &str = r#"
+  const ROWS = 8, COLS = 5;
+  const glyph = (code) => G[code] || G[63];
+  // Draws `text` at logical pixel x, y with ctx.fillStyle; `height` 16 doubles the 8 px font
+  // (advance 12), anything else is 8 px (advance 6). Returns the x after the text.
+  function draw(ctx, text, x, y, height) {
+    const k = height >= 16 ? 2 : 1;
+    for (const ch of String(text)) {
+      const g = glyph(ch.codePointAt(0));
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (g[r] & (0x10 >> c)) ctx.fillRect(x + c * k, y + r * k, k, k);
+        }
+      }
+      x += 6 * k;
+    }
+    return x;
+  }
+  const width = (text, height) => [...String(text)].length * 6 * (height >= 16 ? 2 : 1);
+  return { glyph, draw, width };
+})();
+"#;
+
+/// `crates/crab-web/src/dispfont.js`: the glyphs of this driver for the screens designer, so the
+/// preview draws with the very font of the board. Regenerate: `CRAB_WRITE_FONT=1 cargo test font_js`.
+fn font_js() -> String {
+    use crate::font::{glyph, ICONS, ICON_BASE};
+    let mut codes: Vec<u16> = (0x20..=0x7Eu16).collect();
+    codes.extend([0xB0, 0x401, 0x451]);
+    codes.extend(0x410..=0x44Fu16);
+    codes.extend([0x2039, 0x203A, 0x25B2, 0x25BC]);
+    codes.extend(ICON_BASE..ICON_BASE + ICONS as u16);
+    let mut s = String::from(
+        "// Generated from drivers/display/src/font.rs (test `font_js_is_current`); do not edit.\n\
+         window.crabFont = (() => {\n  const G = {\n",
+    );
+    for c in codes {
+        let rows: Vec<String> = glyph(c).iter().map(|r| r.to_string()).collect();
+        s.push_str(&format!("    {}: [{}],\n", c, rows.join(",")));
+    }
+    s.push_str("  };");
+    s.push_str(FONT_JS_BODY);
+    s
+}
+
+#[test]
+fn font_js_is_current() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/crab-web/src/dispfont.js"
+    );
+    let want = font_js();
+    if std::env::var("CRAB_WRITE_FONT").is_ok() {
+        std::fs::write(path, &want).unwrap();
+    }
+    let have = std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n");
+    assert!(
+        have == want,
+        "dispfont.js is stale: CRAB_WRITE_FONT=1 cargo test font_js"
+    );
+}
+
+#[test]
+fn menu_16px_items_end_above_the_hint_bar() {
+    // Third item: y 40..55 including the descender row, the hint cells start at y = 56.
+    let blob = demo_menu_styled(30, 16, true, DisplayKind::Ssd1306_128x64);
+    let fb = gfx(&blob, 8, &[OK], [0.0; 8]);
+    for gap in [0, 32, 64, 96] {
+        assert!(dark(&fb, gap, 56, 1, 8), "gap {gap}");
+    }
+    let l = crate::menugfx::layout(8, 16, true);
+    assert!(l.first_y + 2 * l.pitch + 16 <= 56);
+    assert!(l.first_y >= 8 + 2); // a free row between the title line and the first item
 }

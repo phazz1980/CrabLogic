@@ -32,9 +32,9 @@ pub struct MenuOut {
 }
 
 #[derive(Clone, Copy)]
-struct Edit {
-    item: u16,
-    value: f64,
+pub(crate) struct Edit {
+    pub(crate) item: u16,
+    pub(crate) value: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -46,23 +46,23 @@ struct Shadow {
 
 pub struct Menu {
     open: bool,
-    depth: usize,
+    pub(crate) depth: usize,
     /// Table indices of the opened submenus, outermost first.
     path: [u16; MAX_DEPTH],
     /// Highlighted item (table index), `NONE` for an empty level.
-    cursor: u16,
-    edit: Option<Edit>,
+    pub(crate) cursor: u16,
+    pub(crate) edit: Option<Edit>,
     idle_ms: u32,
     prev: [bool; 4],
     shadow: Option<Shadow>,
 }
 
-fn item_at<'a>(m: &MenuView<'a>, i: u16) -> Option<ItemView<'a>> {
+pub(crate) fn item_at<'a>(m: &MenuView<'a>, i: u16) -> Option<ItemView<'a>> {
     m.items().nth(i as usize)
 }
 
 /// Items of the level `parent` (table order).
-fn level<'a, 'b>(
+pub(crate) fn level<'a, 'b>(
     m: &'b MenuView<'a>,
     parent: Option<u16>,
 ) -> impl Iterator<Item = (u16, ItemView<'a>)> + 'b {
@@ -123,7 +123,7 @@ impl Menu {
         self.open
     }
 
-    fn parent(&self) -> Option<u16> {
+    pub(crate) fn parent(&self) -> Option<u16> {
         if self.depth == 0 {
             None
         } else {
@@ -359,23 +359,40 @@ impl Menu {
         editing: bool,
         var: &impl Fn(u16) -> f64,
     ) {
+        if editing {
+            t.push(b'[' as u16);
+        }
+        self.value_core(t, it, idx, editing, var, false);
+        if editing {
+            t.push(b']' as u16);
+        }
+    }
+
+    /// The shown value of an item without edit brackets. `mixed`: «Вкл/Выкл» instead of «ВКЛ/ВЫКЛ».
+    pub(crate) fn value_core(
+        &self,
+        t: &mut Txt,
+        it: &ItemView,
+        idx: u16,
+        editing: bool,
+        var: &impl Fn(u16) -> f64,
+        mixed: bool,
+    ) {
         let live = |s: Option<u16>| s.map_or(0.0, |s| self.value_of(var, s));
         let shown = |s: Option<u16>| match self.edit {
             Some(e) if editing && e.item == idx => e.value,
             _ => live(s),
         };
-        if editing {
-            t.push(b'[' as u16);
-        }
         match &it.kind {
             ItemKindView::Number { decimals, unit, .. } => {
                 t.push_num(shown(it.var_slot), *decimals);
                 t.push_str(unit);
             }
-            ItemKindView::Bool => t.push_str(if shown(it.var_slot) > 0.5 {
-                "ВКЛ"
-            } else {
-                "ВЫКЛ"
+            ItemKindView::Bool => t.push_str(match (shown(it.var_slot) > 0.5, mixed) {
+                (true, false) => "ВКЛ",
+                (false, false) => "ВЫКЛ",
+                (true, true) => "Вкл",
+                (false, true) => "Выкл",
             }),
             ItemKindView::Choice { choices } => {
                 let n = round(shown(it.var_slot));
@@ -387,9 +404,27 @@ impl Menu {
             ItemKindView::View => t.push_auto(live(it.var_slot)),
             ItemKindView::Submenu | ItemKindView::Action => {}
         }
-        if editing {
-            t.push(b']' as u16);
+    }
+
+    /// Cheap fingerprint of everything the graphic menu shows: position, edit state and the
+    /// values of the current level. Equal fingerprints mean the same picture.
+    pub fn signature(&self, m: &MenuView, var: &impl Fn(u16) -> f64) -> u32 {
+        let mut h: u32 = 0x811C_9DC5;
+        let mut mix = |v: u32| {
+            h = (h ^ v).wrapping_mul(0x0100_0193);
+        };
+        mix(self.depth as u32);
+        mix(self.cursor as u32);
+        if let Some(e) = self.edit {
+            mix(1 + e.item as u32);
+            mix((e.value as f32).to_bits());
         }
+        for (_, it) in level(m, self.parent()) {
+            if let Some(s) = it.var_slot {
+                mix((self.value_of(var, s) as f32).to_bits());
+            }
+        }
+        h
     }
 }
 

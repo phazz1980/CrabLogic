@@ -628,7 +628,7 @@ impl EditorApp {
                 ))
                 .clicked()
             {
-                self.open_web_designer();
+                self.open_web_designer("/designer");
             }
             ui.add_enabled_ui(has_doc, |ui| self.board_copy_menu(ui));
             ui.add_enabled_ui(has_doc, |ui| self.retain_menu(ui));

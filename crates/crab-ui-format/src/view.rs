@@ -1,6 +1,6 @@
 //! Zero-copy reader (driver side). No allocation, no panics.
 
-use crate::{DisplayKind, FormatError, NONE_U16, VERSION};
+use crate::{DisplayKind, FormatError, MIN_VERSION, NONE_U16, VERSION};
 
 type Res<T> = Result<T, FormatError>;
 
@@ -349,6 +349,10 @@ impl<'a> Iterator for ItemIter<'a> {
 pub struct MenuView<'a> {
     /// Auto-exit timeout in seconds, 0 = never.
     pub timeout_s: u16,
+    /// Item font on the OLED (8 or 16).
+    pub font: u8,
+    /// Soft-key hint bar on the OLED.
+    pub hints: bool,
     n_items: u16,
     items: &'a [u8],
 }
@@ -385,7 +389,8 @@ impl<'a> ConfigView<'a> {
     /// Validate `data` completely and return a view. Never panics.
     pub fn parse(data: &'a [u8]) -> Result<ConfigView<'a>, FormatError> {
         let mut r = Rd::new(data);
-        if r.u8()? != VERSION {
+        let version = r.u8()?;
+        if !(MIN_VERSION..=VERSION).contains(&version) {
             return Err(FormatError::BadVersion);
         }
         let display = DisplayKind::from_u8(r.u8()?).ok_or(FormatError::BadKind)?;
@@ -401,6 +406,11 @@ impl<'a> ConfigView<'a> {
         let screens = data.get(start..r.p).ok_or(FormatError::Truncated)?;
         let menu = if flags & 1 != 0 {
             let timeout_s = r.u16()?;
+            let (font, hints) = if version >= 2 {
+                (r.u8()?, r.u8()? != 0)
+            } else {
+                (16, true)
+            };
             let n_items = r.u16()?;
             let istart = r.p;
             for i in 0..n_items {
@@ -409,6 +419,8 @@ impl<'a> ConfigView<'a> {
             let items = data.get(istart..r.p).ok_or(FormatError::Truncated)?;
             Some(MenuView {
                 timeout_s,
+                font,
+                hints,
                 n_items,
                 items,
             })

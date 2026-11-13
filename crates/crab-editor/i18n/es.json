@@ -1338,5 +1338,11 @@
  "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Escritura frecuente en flash: {0} en la última hora: la flash se desgasta. Revise las variables con guardado.",
  "Дисплей": "Pantalla",
  "Показывать дисплеи": "Mostrar pantallas",
- "выключен": "apagada"
+ "выключен": "apagada",
+ "Дисплеи": "Pantallas",
+ "Вид дисплея": "Tipo de pantalla",
+ "Найти на плате": "Buscar en la hoja",
+ "Экраны и меню...": "Pantallas y menú...",
+ "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется": "Bloque de menú en la misma hoja que la pantalla; al desactivarlo se elimina el bloque de menú",
+ "Конструктор экранов открыт в браузере.": "El diseñador de pantallas está abierto en el navegador."
 }

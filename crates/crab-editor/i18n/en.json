@@ -1338,5 +1338,11 @@
  "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Frequent flash writes: {0} in the last hour — the flash is wearing out. Check the retained variables.",
  "Дисплей": "Display",
  "Показывать дисплеи": "Show displays",
- "выключен": "off"
+ "выключен": "off",
+ "Дисплеи": "Displays",
+ "Вид дисплея": "Display type",
+ "Найти на плате": "Find on the sheet",
+ "Экраны и меню...": "Screens and menu...",
+ "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется": "Menu block on the same sheet as the display; turning it off removes the menu block",
+ "Конструктор экранов открыт в браузере.": "Screen designer is open in the browser."
 }

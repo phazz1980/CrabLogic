@@ -23,6 +23,7 @@ mod coresconf;
 mod cpphl;
 mod debugview;
 mod dialogs;
+mod displaypanel;
 mod doc;
 mod help;
 mod i18n;

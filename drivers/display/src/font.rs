@@ -1,7 +1,7 @@
 //! The font: 5x7 glyphs in a 5x8 cell (row 7 is for descenders), drawn here from scratch
 //! (see README.md). One glyph = 8 rows, bit 4 is the left pixel; this is also exactly the
 //! HD44780 CGRAM layout. The 8-pixel font advances 6 pixels, the 16-pixel font draws the same
-//! glyphs doubled (advance 12). Covers ASCII, Cyrillic А-я, Ёё, the degree sign and 8 icons.
+//! glyphs doubled (advance 12). Covers ASCII, Cyrillic А-я, Ёё, the degree sign, 8 icons and a few menu glyphs (‹ › ▲ ▼).
 
 /// Glyph rows parsed from art at compile time: `#` is a set pixel, `.` a clear one, 40 cells.
 const fn g(art: &str) -> [u8; 8] {
@@ -219,6 +219,20 @@ const ICON_ART: [[u8; 8]; ICONS] = [
     g("..... #...# .#.#. ..#.. .#.#. #...# ..... ....."), // cross
 ];
 
+/// Menu glyphs: single angle quotes (back / submenu mark) and up / down triangles (soft keys).
+pub const CH_LEFT: u16 = 0x2039;
+pub const CH_RIGHT: u16 = 0x203A;
+pub const CH_UP: u16 = 0x25B2;
+pub const CH_DOWN: u16 = 0x25BC;
+/// Cross and check mark are icons 7 and 6 of the icon set.
+pub const CH_CROSS: u16 = ICON_BASE + 7;
+pub const CH_CHECK: u16 = ICON_BASE + 6;
+
+const ANGLE_LEFT: [u8; 8] = g("..... ...#. ..#.. .#... ..#.. ...#. ..... .....");
+const ANGLE_RIGHT: [u8; 8] = g("..... .#... ..#.. ...#. ..#.. .#... ..... .....");
+const TRI_UP: [u8; 8] = g("..... ..#.. ..#.. .###. .###. ##### ##### .....");
+const TRI_DOWN: [u8; 8] = g("..... ##### ##### .###. .###. ..#.. ..#.. .....");
+
 /// The Latin character that an HD44780 ROM shows in place of a look-alike Cyrillic letter.
 pub fn latin_twin(c: u16) -> Option<u8> {
     Some(match c {
@@ -246,8 +260,10 @@ pub fn latin_twin(c: u16) -> Option<u8> {
 
 /// True when the font has a glyph for `c` (otherwise [`glyph`] gives `?`).
 pub fn known(c: u16) -> bool {
-    matches!(c, 0x20..=0x7E | 0xB0 | 0x401 | 0x451 | 0x410..=0x44F)
-        || (ICON_BASE..ICON_BASE + ICONS as u16).contains(&c)
+    matches!(
+        c,
+        0x20..=0x7E | 0xB0 | 0x401 | 0x451 | 0x410..=0x44F | CH_LEFT | CH_RIGHT | CH_UP | CH_DOWN
+    ) || (ICON_BASE..ICON_BASE + ICONS as u16).contains(&c)
 }
 
 /// Glyph rows of `c` (codes below 0x20 are blanks, unknown characters are `?`).
@@ -258,6 +274,10 @@ pub fn glyph(c: u16) -> [u8; 8] {
         0xB0 => DEGREE,
         0x401 => YO_UP,
         0x451 => YO_LOW,
+        CH_LEFT => ANGLE_LEFT,
+        CH_RIGHT => ANGLE_RIGHT,
+        CH_UP => TRI_UP,
+        CH_DOWN => TRI_DOWN,
         0x410..=0x42F => CYR_UP.rd((c - 0x410) as usize),
         0x430..=0x44F => CYR_LOW.rd((c - 0x430) as usize),
         _ if (ICON_BASE..ICON_BASE + ICONS as u16).contains(&c) => {

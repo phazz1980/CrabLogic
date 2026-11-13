@@ -4,39 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CrabLogic — веб-интерфейс</title>
+<link rel="stylesheet" href="/common.css">
 <style>
-:root {
-  --bg: #f4f5f7; --panel: #ffffff; --line: #d5d9e0; --text: #1d2330; --muted: #667085;
-  --accent: #2563eb; --cell: #e9edf3; --card: #dbe6fb; --err: #dc2626;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #14171d; --panel: #1c2028; --line: #323846; --text: #e6e9f0; --muted: #98a1b3;
-    --accent: #6b9bff; --cell: #242a35; --card: #2c3a58; --err: #f87171;
-  }
-}
-* { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
-body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, "Segoe UI", sans-serif;
-  display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr) 300px; }
-header { grid-column: 1 / 3; display: flex; gap: 8px; align-items: center; padding: 8px 12px;
-  background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-header h1 { font-size: 15px; margin: 0 12px 0 0; }
-a { color: var(--accent); }
-button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
-  border-radius: 6px; padding: 5px 10px; cursor: pointer; }
-button:hover { border-color: var(--accent); }
-input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-  border-radius: 5px; padding: 3px 6px; width: 100%; }
-input[type=checkbox] { width: auto; }
-aside { background: var(--panel); overflow: auto; padding: 10px; }
-#side { border-left: 1px solid var(--line); }
 #unpl .un { display: block; width: 100%; text-align: left; margin: 0 0 4px; cursor: grab; }
 #unpl .un span { color: var(--muted); font-size: 11px; }
-#grid.drop { border-color: var(--accent); }
-aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 0 6px; }
-aside h2:first-child { margin-top: 0; }
-main { overflow: auto; padding: 12px; min-width: 0; max-width: 100vw; }
 #grid { position: relative; margin-bottom: 14px; border-radius: 8px; border: 1px dashed var(--line); }
 .item { position: absolute; background: var(--card); border: 1.5px solid var(--line); border-radius: 7px;
   padding: 3px 8px; overflow: hidden; cursor: grab; user-select: none; touch-action: none; font-size: 12px; }
@@ -46,55 +17,18 @@ main { overflow: auto; padding: 12px; min-width: 0; max-width: 100vw; }
 .item .rs { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;
   background: linear-gradient(135deg, transparent 50%, var(--accent) 50%); }
 #preview { width: 100%; height: calc(100vh - 150px); min-height: 360px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
-label.f { display: block; margin: 8px 0 2px; font-size: 12px; color: var(--muted); }
-.row { display: flex; gap: 6px; align-items: center; }
-#status { grid-column: 1 / 3; padding: 6px 80px 6px 12px; border-top: 1px solid var(--line); background: var(--panel); min-height: 30px; }
-#status .err { color: var(--err); }
-#version { position: fixed; right: 12px; bottom: 6px; color: var(--muted); font-size: 12px; pointer-events: none; }
-#tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
-.mode.on, #tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.hint { color: var(--muted); font-size: 12px; margin: 6px 0; }
-.sep { color: var(--muted); align-self: center; margin: 0 4px 0 10px; font-size: 12px; }
-.scr { position: relative; margin: 8px 0 10px; border: 2px solid var(--line); border-radius: 4px; overflow: visible; user-select: none; }
-.scr.oled { background-color: #000; --fg: #7fd4ff; --fgd: rgba(127,212,255,.45); }
-.scr.lcd { background-color: #2f6b3a; --fg: #d8f5c8; --fgd: rgba(216,245,200,.45); }
-.dw { position: absolute; color: var(--fg); border: 1px dashed var(--fgd); overflow: hidden; cursor: grab; touch-action: none; }
-.dw.sel { border: 1px solid #fff; box-shadow: 0 0 0 1px var(--accent); }
-.dw.out { border: 2px solid var(--err); background: rgba(220,38,38,.35); }
-.dw .rs { position: absolute; right: 0; bottom: 0; width: 10px; height: 10px; cursor: nwse-resize; background: var(--accent); }
-.dw .tx { font-family: ui-monospace, Consolas, monospace; white-space: pre; overflow: hidden; pointer-events: none; }
-.dw canvas { image-rendering: pixelated; pointer-events: none; display: block; }
-.dw .bar { position: absolute; inset: 0; border: 2px solid var(--fg); pointer-events: none; }
-.dw .bar i { display: block; height: 100%; width: 60%; background: var(--fg); }
-.dw .led { position: absolute; inset: 0; background: var(--fg); border-radius: 50%; pointer-events: none; }
-.dw .ico { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; border: 1px solid var(--fg); pointer-events: none; }
-.mtree, .mtree ul { list-style: none; margin: 0; padding-left: 22px; }
-.mtree { padding-left: 0; }
-.mrow { display: flex; gap: 4px; align-items: center; padding: 3px 6px; margin: 2px 0; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--panel); cursor: grab; }
-.mrow.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
-.mrow.bad .cap { color: var(--err); }
-.mrow.dropb { border-top: 3px solid var(--accent); }
-.mrow.dropa { border-bottom: 3px solid var(--accent); }
-.mrow.dropi { background: var(--card); }
-.mrow .cap { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mrow .kd { color: var(--muted); font-size: 11px; }
-.mrow button { padding: 1px 6px; }
-@media (max-width: 900px) {
-  body { grid-template-columns: 1fr; grid-template-rows: auto auto auto auto; height: auto; }
-  header, #status { grid-column: 1; }
-  #side { border: 0; border-bottom: 1px solid var(--line); }
-}
+#grid.drop { border-color: var(--accent); }
 </style>
 </head>
 <body>
 <header>
   <h1>Веб-интерфейс ESP32</h1>
   <button id="addHost" hidden>Добавить блок «Веб-интерфейс»</button>
-  <select id="addWidget" title="Добавить виджет на текущую страницу"></select>
-  <select id="addDisp" title="Добавить виджет на экран дисплея" hidden></select>
   <span class="hint" id="hostHint"></span>
+  <a class="navlink" href="/screens">Экраны дисплеев →</a>
 </header>
+
+<aside id="palette" hidden></aside>
 
 <main>
   <div class="row" id="modeRow" style="margin-bottom:10px">
@@ -102,13 +36,6 @@ label.f { display: block; margin: 8px 0 2px; font-size: 12px; color: var(--muted
     <button id="modeView" class="mode" title="Та же страница, что в прошивке">Предпросмотр</button>
   </div>
   <div id="tabs"></div>
-  <div id="dsub" class="row" style="margin-bottom:10px" hidden></div>
-  <div id="screenWrap" hidden>
-    <div id="screens" class="row"></div>
-    <div id="screen" class="scr"></div>
-    <p class="hint" id="screenHint"></p>
-  </div>
-  <div id="menuView" hidden></div>
   <div id="grid"></div>
   <iframe id="preview" title="Предпросмотр" hidden></iframe>
 </main>
@@ -117,46 +44,14 @@ label.f { display: block; margin: 8px 0 2px; font-size: 12px; color: var(--muted
 <div id="status"></div>
 <div id="version">v{{VERSION}}</div>
 
+<script src="/common.js"></script>
 <script>
-"use strict";
 const GROUP = "Веб-интерфейс";
-const COLOR_PARAMS = ["color", "back", "bg"];
 const COLS = 24, CW = 30, CH = 22, GAP = 4;
-const $ = (id) => document.getElementById(id);
-let types = {}, schema = null, selected = null, pageHtml = "", curPage = 1;
-let dragging = false;   // a pointer drag is in progress: the background refresh must not redraw
-let curDisp = null, curScreen = 1, dview = "screen", curMenu = null, previewMode = false;
-const extraScreens = {};   // display id -> highest screen number added in the editor but still empty
-
-async function api(name, args = {}) {
-  const r = await fetch("/api/" + name, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
-  });
-  const j = await r.json();
-  if (!j.ok) throw new Error(j.error);
-  return j.result;
-}
-function say(text, err) {
-  const s = $("status");
-  s.textContent = "";
-  const span = document.createElement("span");
-  if (err) span.className = "err";
-  span.textContent = text;
-  s.appendChild(span);
-}
-async function act(fn) {
-  try { await fn(); } catch (e) { say(e.message, true); }
-  await reload();
-}
+let pageHtml = "", curPage = 1, previewMode = false;
 
 const isWidget = (b) => b.type.startsWith("web_") && b.type !== "web_ui" && !b.tag;
-const val = (b, p) => (b[p.name] !== undefined && b[p.name] !== null ? b[p.name] : p.default);
-const num = (v, d) => (typeof v === "number" ? v : d);
-
-function widgetParam(b, name, d) {
-  const p = (types[b.type]?.params || []).find((x) => x.name === name);
-  return p ? val(b, p) : d;
-}
+const widgetParam = bp;
 const placed = (b) => num(widgetParam(b, "row", 0), 0) >= 1;
 const pageOf = (b) => Math.max(1, num(widgetParam(b, "page", 1), 1));
 function pageNames(host) {
@@ -170,28 +65,9 @@ function rect(b) {
   };
 }
 
-let epoch = 0, lastSchema = "", pointerDown = false;
-document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
-document.addEventListener("pointerup", () => { pointerDown = false; }, true);
-document.addEventListener("pointercancel", () => { pointerDown = false; }, true);
-async function reload() {
-  epoch++;
-  schema = await api("get_schema");
-  lastSchema = JSON.stringify(schema);
-  render();
-}
-// the schema as the server has it now (ids and orders are chosen from it, not from a stale copy)
-async function freshSchema() {
-  epoch++;
-  schema = await api("get_schema");
-  lastSchema = JSON.stringify(schema);
-}
-
 function render() {
-  if (curDisp && !displays().some((d) => d.id === curDisp)) curDisp = null;
   applyVisibility();
-  if (curDisp) return renderDisplayMode();
-  const all = (schema.logic.block || []).filter(isWidget);
+  const all = blocksOf().filter(isWidget);
   const host = (schema.logic.block || []).find((b) => b.type === "web_ui");
   const names = pageNames(host);
   if (curPage > names.length) curPage = names.length;
@@ -214,6 +90,7 @@ function render() {
 
   renderTabs(names, host);
   renderUnplaced(all);
+  renderWidgetPalette();
   renderProps();
   renderPreview(all, host);
 }
@@ -251,19 +128,19 @@ function renderUnplaced(all) {
     sub.textContent = ` ${types[b.type] ? types[b.type].name : b.type} · ${b.id}`;
     btn.append(cap, sub);
     btn.onclick = () => putWidget(b, 1, bottomRow() + 1);
-    btn.ondragstart = (ev) => ev.dataTransfer.setData("text/plain", b.id);
+    btn.ondragstart = (ev) => { ev.dataTransfer.setData("text/plain", b.id); dragging = true; };
+    btn.ondragend = () => { dragging = false; };
     el.appendChild(btn);
   }
 }
-$("grid").addEventListener("dragover", (ev) => { ev.preventDefault(); $("grid").classList.add("drop"); });
-$("grid").addEventListener("dragleave", () => $("grid").classList.remove("drop"));
-$("grid").addEventListener("drop", (ev) => {
-  ev.preventDefault();
-  $("grid").classList.remove("drop");
-  const b = (schema.logic.block || []).find((x) => x.id === ev.dataTransfer.getData("text/plain") && isWidget(x));
-  if (!b) return;
+// a drop on the grid: a palette widget type is added at the drop cell, an unplaced widget is moved there
+const dropCell = (ev) => {
   const box = $("grid").getBoundingClientRect();
-  putWidget(b, Math.floor((ev.clientX - box.left) / (CW + GAP)) + 1, Math.floor((ev.clientY - box.top) / (CH + GAP)) + 1);
+  return [Math.floor((ev.clientX - box.left) / (CW + GAP)) + 1, Math.floor((ev.clientY - box.top) / (CH + GAP)) + 1];
+};
+acceptDrops($("grid"), (type, ev) => addWidget(type, ...dropCell(ev)), (ev) => {
+  const b = blocksOf().find((x) => x.id === ev.dataTransfer.getData("text/plain") && isWidget(x));
+  if (b) putWidget(b, ...dropCell(ev));
 });
 
 function renderTabs(names, host) {
@@ -272,8 +149,8 @@ function renderTabs(names, host) {
   names.forEach((n, i) => {
     const btn = document.createElement("button");
     btn.textContent = n || `Страница ${i + 1}`;
-    btn.className = !curDisp && i + 1 === curPage ? "on" : "";
-    btn.onclick = () => { curDisp = null; curPage = i + 1; selected = null; render(); };
+    btn.className = i + 1 === curPage ? "on" : "";
+    btn.onclick = () => { curPage = i + 1; selected = null; render(); };
     t.appendChild(btn);
   });
   const add = document.createElement("button");
@@ -301,7 +178,6 @@ function renderTabs(names, host) {
     });
     t.appendChild(del);
   }
-  addDisplayTabs(t);
 }
 
 function itemEl(b) {
@@ -359,17 +235,6 @@ function drag(el, handle, b) {
   });
 }
 
-function sources(inputType) {
-  // all block outputs of a compatible type (the schema view lists the active ports)
-  const out = [];
-  for (const [id, v] of Object.entries(schema.view || {})) {
-    for (const o of v.outputs || []) {
-      if (o.type === inputType || o.type === "any" || inputType === "any") out.push(`${id}.${o.name}`);
-    }
-  }
-  return out;
-}
-
 function renderProps() {
   const el = $("props");
   el.textContent = "";
@@ -382,7 +247,7 @@ function renderProps() {
     if (host) for (const hp of types.web_ui.params) el.appendChild(paramField(host, hp));
     const p = document.createElement("p");
     p.className = "hint";
-    p.textContent = "Добавьте виджет списком «＋ Добавить виджет» вверху и перетащите его в сетку. Выделите виджет, чтобы настроить подпись, единицы и привязку к схеме.";
+    p.textContent = "Выберите виджет в палитре слева (щелчок или перетаскивание в сетку). Выделите виджет, чтобы настроить подпись, единицы и привязку к схеме.";
     el.appendChild(p);
     return;
   }
@@ -395,95 +260,6 @@ function renderProps() {
   del.style.marginTop = "14px";
   del.onclick = () => act(async () => { await api("remove_block", { id: b.id }); selected = null; });
   el.appendChild(del);
-}
-
-function bindingsSection(el, b) {
-  // bindings: inputs take a source from the schema, outputs show where they go
-  const view = (schema.view || {})[b.id] || { inputs: [], outputs: [] };
-  if (view.inputs.length) {
-    const h2 = document.createElement("h2");
-    h2.textContent = "Источник сигнала";
-    el.appendChild(h2);
-    for (const inp of view.inputs) {
-      const cur = ((schema.logic.link || []).find((l) => l.to === `${b.id}.${inp.name}`) || {}).from || "";
-      const sel = document.createElement("select");
-      const none = new Option("— не подключено —", "");
-      sel.appendChild(none);
-      for (const s of sources(inp.type)) sel.appendChild(new Option(s, s));
-      if (cur && ![...sel.options].some((o) => o.value === cur)) sel.appendChild(new Option(cur, cur));
-      sel.value = cur;
-      sel.onchange = () => act(async () => {
-        if (!sel.value) await api("disconnect", { to: `${b.id}.${inp.name}` });
-        else await api("connect", { from: sel.value, to: `${b.id}.${inp.name}` });
-      });
-      const lab = document.createElement("label");
-      lab.className = "f";
-      lab.textContent = `Вход «${inp.label || inp.name}» (${inp.type})`;
-      el.append(lab, sel);
-    }
-  }
-  if (view.outputs.length) {
-    const h2 = document.createElement("h2");
-    h2.textContent = "Куда идёт сигнал";
-    el.appendChild(h2);
-    for (const o of view.outputs) {
-      const to = (schema.logic.link || []).filter((l) => l.from === `${b.id}.${o.name}`).map((l) => l.to);
-      const p = document.createElement("div");
-      p.className = "hint";
-      p.textContent = `${b.id}.${o.name} → ${to.length ? to.join(", ") : "никуда (соедините в схеме)"}`;
-      el.appendChild(p);
-    }
-  }
-}
-
-function paramField(b, p) {
-  const wrap = document.createElement("div");
-  const lab = document.createElement("label");
-  lab.className = "f";
-  lab.textContent = p.label || p.name;
-  lab.title = p.description || "";
-  const v = val(b, p);
-  let inp;
-  if (p.kind === "bool") {
-    inp = document.createElement("input");
-    inp.type = "checkbox";
-    inp.checked = !!v;
-    inp.onchange = () => set(b, p.name, inp.checked);
-  } else if (p.choices && p.choices.length) {
-    inp = document.createElement("select");
-    for (const c of p.choices) inp.appendChild(new Option(c.label, c.value));
-    inp.value = v;
-    const numeric = typeof p.choices[0].value === "number";
-    inp.onchange = () => set(b, p.name, numeric ? Number(inp.value) : inp.value);
-  } else if (COLOR_PARAMS.includes(p.name)) {
-    // a colour is a CSS string; empty means "default", the picker is a shortcut
-    inp = document.createElement("div");
-    inp.className = "row";
-    const txt = document.createElement("input");
-    const pick = document.createElement("input");
-    pick.type = "color";
-    pick.style.width = "44px";
-    txt.value = v || "";
-    if (/^#[0-9a-f]{6}$/i.test(txt.value)) pick.value = txt.value;
-    txt.onchange = () => set(b, p.name, txt.value.trim());
-    pick.onchange = () => set(b, p.name, pick.value);
-    inp.append(txt, pick);
-  } else {
-    inp = document.createElement("input");
-    inp.type = p.kind === "string" ? "text" : "number";
-    if (p.kind === "float") inp.step = "any";
-    inp.value = v === null || v === undefined ? "" : v;
-    inp.onchange = () => {
-      if (p.kind === "string") return set(b, p.name, inp.value);
-      const n = Number(inp.value);
-      set(b, p.name, p.kind === "int" ? Math.round(n) : n);
-    };
-  }
-  wrap.append(lab, inp);
-  return wrap;
-}
-function set(b, name, value) {
-  return act(async () => { await api("set_params", { id: b.id, params: { [name]: value } }); });
 }
 
 // ---- preview: the device page with its three requests answered locally ----
@@ -534,6 +310,7 @@ window.fetch=function(u){u=String(u);
   $("preview").srcdoc = pageHtml.replace("</head>", shim + "</head>");
 }
 
+
 function setMode(preview) {
   previewMode = preview;
   applyVisibility();
@@ -541,625 +318,35 @@ function setMode(preview) {
   $("modeView").classList.toggle("on", preview);
 }
 function applyVisibility() {
-  const web = !curDisp;
-  $("grid").hidden = !web || previewMode;
-  $("preview").hidden = !web || !previewMode;
-  $("modeRow").hidden = !web;
-  $("addWidget").hidden = !web;
-  $("addDisp").hidden = web;
-  if (!web) $("addHost").hidden = true;
-  $("dsub").hidden = web;
-  $("screenWrap").hidden = web || dview !== "screen";
-  $("menuView").hidden = web || dview !== "menu";
+  $("grid").hidden = previewMode;
+  $("preview").hidden = !previewMode;
 }
 $("modeEdit").onclick = () => setMode(false);
 $("modeView").onclick = () => setMode(true);
 
 $("addHost").onclick = () => act(async () => { await api("add_block", { type: "web_ui", id: "ui" }); });
 
-function fillPalette() {
-  const sel = $("addWidget");
-  sel.textContent = "";
-  sel.appendChild(new Option("＋ Добавить виджет…", ""));
-  for (const t of Object.values(types).filter((x) => x.type.startsWith("web_") && x.type !== "web_ui").sort((a, b) => a.name.localeCompare(b.name, "ru"))) {
-    sel.appendChild(new Option(t.name, t.type));
-  }
+function renderWidgetPalette() {
+  const items = Object.values(types).filter((x) => x.type.startsWith("web_") && x.type !== "web_ui")
+    .sort((a, b) => a.name.localeCompare(b.name, "ru")).map((t) => ({ key: t.type, name: t.name }));
+  buildPalette(items, (type) => addWidget(type), "Виджеты");
 }
-$("addWidget").onchange = (ev) => {
-  const type = ev.target.value;
-  ev.target.value = "";
-  if (!type) return;
+// Adds a widget of `type` to the current page: at cell (col, row) when given (palette drop), else at the end.
+function addWidget(type, col, row) {
   act(async () => {
     await freshSchema();
-    const used = new Set((schema.logic.block || []).map((b) => b.id));
-    const base = type.slice(4);
-    let n = 1, id = base;
-    while (used.has(id)) id = base + ++n;
+    const id = uniqueId(type.slice(4));
     await api("add_block", { type, id });
-    await api("set_params", { id, params: { page: curPage, col: 1, row: bottomRow() + 1 } });
+    const w = rect({ type });
+    const c = col === undefined ? 1 : Math.max(1, Math.min(COLS - w.w + 1, col));
+    await api("set_params", { id, params: { page: curPage, col: c, row: row === undefined ? bottomRow() + 1 : Math.max(1, row) } });
     selected = id;
   });
-};
-
-// =====================================================================================
-// Displays: screens of `oled` / `lcd` blocks, screen widgets `disp_*`, menu of `menu_item`.
-// Everything is stored as blocks (web.toml) through the same commands as the web widgets.
-// =====================================================================================
-const DISP_KINDS = ["disp_text", "disp_value", "disp_bar", "disp_led", "disp_icon"];
-const blocksOf = () => schema.logic.block || [];
-const displays = () => blocksOf().filter((b) => b.type === "oled" || b.type === "lcd");
-// Param of a block; a param left at its default is absent from the block, so the type's default is used.
-function bp(b, name, d) {
-  if (b[name] !== undefined && b[name] !== null) return b[name];
-  const p = (types[b.type]?.params || []).find((x) => x.name === name);
-  return p && p.default !== undefined && p.default !== null ? p.default : d;
-}
-
-// Same sizes as crab_core::check::screen_size. cw/ch: editor pixels of one unit
-// (OLED: one pixel x4; LCD: one character cell). lw/lh: logical font pixels of one unit.
-function geom(d) {
-  if (d.type === "lcd") {
-    const big = bp(d, "model", "1602") === "2004";
-    return { lcd: true, W: big ? 20 : 16, H: big ? 4 : 2, cw: 24, ch: 36, lw: 6, lh: 8 };
-  }
-  const low = bp(d, "model", "ssd1306_128x64") === "ssd1306_128x32";
-  return { lcd: false, W: 128, H: low ? 32 : 64, cw: 4, ch: 4, lw: 1, lh: 1 };
-}
-const dispWidgets = (d) => blocksOf().filter((b) => DISP_KINDS.includes(b.type) && bp(b, "display", "") === d.id);
-const wrect = (b) => ({
-  x: num(bp(b, "x", 0), 0), y: num(bp(b, "y", 0), 0), w: num(bp(b, "w", 1), 1), h: num(bp(b, "h", 1), 1),
-});
-// the rule of the `display-widget` check
-const outside = (r, g) => r.x < 0 || r.y < 0 || r.x + r.w > g.W || r.y + r.h > g.H;
-function screensOf(d) {
-  const used = dispWidgets(d).map((b) => Math.max(1, num(bp(b, "screen", 1), 1)));
-  const top = Math.max(1, extraScreens[d.id] || 1, ...used);
-  return Array.from({ length: top }, (_, i) => i + 1);
-}
-
-function addDisplayTabs(t) {
-  const ds = displays();
-  if (!ds.length) return;
-  const sep = document.createElement("span");
-  sep.className = "sep";
-  sep.textContent = "Дисплеи:";
-  t.appendChild(sep);
-  for (const d of ds) {
-    const btn = document.createElement("button");
-    btn.textContent = `${d.type === "lcd" ? "LCD" : "OLED"} ${d.id}`;
-    btn.className = curDisp === d.id ? "on" : "";
-    btn.onclick = () => { curDisp = d.id; curScreen = 1; selected = null; render(); };
-    t.appendChild(btn);
-  }
-}
-
-function renderDisplayMode() {
-  const d = displays().find((x) => x.id === curDisp);
-  const host = blocksOf().find((b) => b.type === "web_ui");
-  renderTabs(pageNames(host), host);
-  $("unpl").textContent = "";
-  const sub = $("dsub");
-  sub.textContent = "";
-  for (const [v, label] of [["screen", "Экраны"], ["menu", "Меню"]]) {
-    const btn = document.createElement("button");
-    btn.textContent = label;
-    btn.className = dview === v ? "on" : "";
-    btn.onclick = () => { dview = v; selected = null; render(); };
-    sub.appendChild(btn);
-  }
-  $("hostHint").textContent = "";
-  fillDispPalette();
-  if (dview === "screen") renderScreen(d);
-  else renderMenu(d);
-  renderDispProps(d);
-}
-
-function fillDispPalette() {
-  const sel = $("addDisp");
-  sel.textContent = "";
-  sel.appendChild(new Option(dview === "menu" ? "＋ Добавить пункт меню…" : "＋ Добавить виджет экрана…", ""));
-  if (dview === "menu") {
-    sel.appendChild(new Option("Пункт", "item"));
-    sel.appendChild(new Option("Подменю", "submenu"));
-  } else {
-    for (const k of DISP_KINDS) if (types[k]) sel.appendChild(new Option(types[k].name, k));
-  }
-}
-$("addDisp").onchange = (ev) => {
-  const v = ev.target.value;
-  ev.target.value = "";
-  const d = displays().find((x) => x.id === curDisp);
-  if (!v || !d) return;
-  if (dview === "menu") addMenuItem(d, v === "submenu" ? "submenu" : "number");
-  else addScreenWidget(d, v);
-};
-
-function uniqueId(base) {
-  const used = new Set(blocksOf().map((b) => b.id));
-  let n = 1, id = base;
-  while (used.has(id)) id = base + ++n;
-  return id;
-}
-
-// ---- screen ----
-function defaultSize(kind, g) {
-  const t = { disp_text: [8, 1, 48, 8], disp_value: [6, 1, 48, 8], disp_bar: [8, 1, 64, 8], disp_led: [1, 1, 8, 8], disp_icon: [1, 1, 16, 16] }[kind];
-  return g.lcd ? { w: Math.min(t[0], g.W), h: 1 } : { w: t[2], h: t[3] };
-}
-function addScreenWidget(d, kind) {
-  act(async () => {
-    await freshSchema();
-    d = displays().find((x) => x.id === d.id) || d;
-    const g = geom(d);
-    const size = defaultSize(kind, g);
-    const mine = dispWidgets(d).filter((b) => num(bp(b, "screen", 1), 1) === curScreen).map(wrect);
-    const bottom = Math.max(0, ...mine.map((r) => r.y + r.h));
-    const y = bottom + size.h <= g.H ? bottom : 0;
-    const id = uniqueId(kind.slice(5));
-    const params = { display: d.id, screen: curScreen, x: 0, y, ...size };
-    await api("add_block", { type: kind, id, params });
-    selected = id;
-  });
-}
-
-function renderScreen(d) {
-  const g = geom(d);
-  const scr = $("screen");
-  scr.textContent = "";
-  scr.className = "scr " + (g.lcd ? "lcd" : "oled");
-  scr.style.width = g.W * g.cw + "px";
-  scr.style.height = g.H * g.ch + "px";
-  scr.style.backgroundImage = g.lcd
-    ? "linear-gradient(rgba(0,0,0,.25) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,.25) 1px, transparent 1px)"
-    : "linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px)";
-  scr.style.backgroundSize = g.lcd ? `${g.cw}px ${g.ch}px` : `${g.cw * 8}px ${g.ch * 8}px`;
-  for (const b of dispWidgets(d).filter((x) => num(bp(x, "screen", 1), 1) === curScreen)) scr.appendChild(widgetEl(b, g));
-
-  const bar = $("screens");
-  bar.textContent = "";
-  for (const n of screensOf(d)) {
-    const btn = document.createElement("button");
-    btn.textContent = `Экран ${n}`;
-    btn.className = n === curScreen ? "on" : "";
-    btn.onclick = () => { curScreen = n; selected = null; render(); };
-    bar.appendChild(btn);
-  }
-  const add = document.createElement("button");
-  add.textContent = "＋ экран";
-  add.title = "Новый пустой экран; он сохранится вместе с первым виджетом на нём";
-  add.onclick = () => {
-    const n = Math.max(...screensOf(d)) + 1;
-    extraScreens[d.id] = n;
-    curScreen = n;
-    selected = null;
-    render();
-  };
-  bar.appendChild(add);
-  $("screenHint").textContent = g.lcd
-    ? `Экран ${g.W}×${g.H} знакомест. Виджет за краем экрана подсвечен красным.`
-    : `Экран ${g.W}×${g.H} пикселей, показан ×4. Виджет за краем экрана подсвечен красным.`;
-}
-
-function placeWidget(el, r, g) {
-  el.style.left = r.x * g.cw + "px";
-  el.style.top = r.y * g.ch + "px";
-  el.style.width = r.w * g.cw + "px";
-  el.style.height = r.h * g.ch + "px";
-  el.classList.toggle("out", outside(r, g));
-}
-
-function widgetEl(b, g) {
-  const r = wrect(b);
-  const el = document.createElement("div");
-  el.className = "dw" + (b.id === selected ? " sel" : "");
-  placeWidget(el, r, g);
-  el.title = `${types[b.type]?.name || b.type} · ${b.id}`;
-  el.appendChild(widgetPreview(b, g, r));
-  const rs = document.createElement("div");
-  rs.className = "rs";
-  el.appendChild(rs);
-  dragScreenWidget(el, rs, b, g);
-  return el;
-}
-
-// Preview text. Hook for the real board font: set `window.crabFont = { draw(ctx, text, x, y, height) }`
-// (draws `text` at logical pixel x, y with a font `height` pixels tall using ctx.fillStyle).
-// Without it a monospace approximation (6x8 / 8x16 cells) is used.
-function textPreview(text, fontH, g, r) {
-  const lh = g.lcd ? 8 : fontH;
-  const adv = g.lcd ? 6 : (fontH === 16 ? 8 : 6);
-  const sx = g.cw / g.lw, sy = g.ch / g.lh;
-  if (window.crabFont && typeof window.crabFont.draw === "function") {
-    const cv = document.createElement("canvas");
-    cv.width = r.w * g.lw;
-    cv.height = r.h * g.lh;
-    cv.style.width = r.w * g.cw + "px";
-    cv.style.height = r.h * g.ch + "px";
-    const ctx = cv.getContext("2d");
-    ctx.fillStyle = getComputedStyle($("screen")).getPropertyValue("--fg") || "#fff";
-    window.crabFont.draw(ctx, text, 0, 0, lh);
-    return cv;
-  }
-  const t = document.createElement("div");
-  t.className = "tx";
-  t.textContent = text;
-  t.style.fontSize = (adv * sx) / 0.6 + "px";
-  t.style.lineHeight = lh * sy + "px";
-  t.style.height = r.h * g.ch + "px";
-  return t;
-}
-
-function widgetPreview(b, g, r) {
-  const font = num(bp(b, "font", 8), 8);
-  if (b.type === "disp_text") return textPreview(String(bp(b, "text", "")), font, g, r);
-  if (b.type === "disp_value") {
-    const shown = (12.3456).toFixed(Math.max(0, num(bp(b, "decimals", 1), 1)));
-    const fmt = String(bp(b, "format", ""));
-    const body = fmt ? fmt.replace("%v", shown) : shown;
-    return textPreview(body + String(bp(b, "unit", "")), font, g, r);
-  }
-  const d = document.createElement("div");
-  if (b.type === "disp_bar") { d.className = "bar"; d.appendChild(document.createElement("i")); }
-  else if (b.type === "disp_led") d.className = "led";
-  else { d.className = "ico"; d.textContent = String(bp(b, "icon", "")); }
-  return d;
-}
-
-function dragScreenWidget(el, handle, b, g) {
-  el.addEventListener("pointerdown", (ev) => {
-    const resize = ev.target === handle;
-    const start = { x: ev.clientX, y: ev.clientY, ...wrect(b) };
-    let cur = { ...start }, moved = false;
-    el.setPointerCapture(ev.pointerId);
-    dragging = true;
-    if (selected !== b.id) {
-      selected = b.id;
-      document.querySelectorAll(".dw").forEach((e) => e.classList.remove("sel"));
-      el.classList.add("sel");
-      renderDispProps(displays().find((x) => x.id === curDisp));
-    }
-    const move = (e) => {
-      // snap to whole pixels (OLED) or character cells (LCD)
-      const dx = Math.round((e.clientX - start.x) / g.cw);
-      const dy = Math.round((e.clientY - start.y) / g.ch);
-      if (dx || dy) moved = true;
-      cur = resize
-        ? { ...start, w: Math.max(1, start.w + dx), h: Math.max(1, start.h + dy) }
-        : { ...start, x: Math.max(0, start.x + dx), y: Math.max(0, start.y + dy) };
-      placeWidget(el, cur, g);
-    };
-    const up = async () => {
-      dragging = false;
-      el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", up);
-      if (!moved) return;
-      await act(async () => { await api("set_params", { id: b.id, params: { x: cur.x, y: cur.y, w: cur.w, h: cur.h } }); });
-    };
-    el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
-  });
-}
-
-// ---- properties panel (screen widget or menu item) ----
-function renderDispProps(d) {
-  const el = $("props");
-  el.textContent = "";
-  const b = blocksOf().find((x) => x.id === selected);
-  const h = document.createElement("h2");
-  el.appendChild(h);
-  if (dview === "menu") return renderItemProps(el, h, d, b && b.type === "menu_item" ? b : null);
-  const w = b && DISP_KINDS.includes(b.type) && bp(b, "display", "") === d.id ? b : null;
-  if (!w) {
-    h.textContent = `Дисплей ${d.id}`;
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = "Добавьте виджет списком «＋ Добавить виджет экрана» вверху, перетащите и растяните его на экране. Параметры самого дисплея (модель, адрес, шина) — в схеме.";
-    el.appendChild(p);
-    return;
-  }
-  h.textContent = `${types[w.type]?.name || w.type} · ${w.id}`;
-  const g = geom(d);
-  const unit = g.lcd ? "знакоместа" : "пиксели";
-  for (const p of types[w.type].params) {
-    if (p.name === "display" || (p.name === "font" && g.lcd)) continue;
-    const f = paramField(w, p);
-    if (["x", "y", "w", "h"].includes(p.name)) f.firstChild.textContent = `${p.label || p.name} (${unit})`;
-    el.appendChild(f);
-  }
-  if (outside(wrect(w), g)) {
-    const bad = document.createElement("p");
-    bad.className = "hint";
-    bad.style.color = "var(--err)";
-    bad.textContent = `Виджет выходит за экран ${g.W}×${g.H}: сборка прошивки откажется.`;
-    el.appendChild(bad);
-  }
-  bindingsSection(el, w);
-  const del = document.createElement("button");
-  del.textContent = "Удалить виджет";
-  del.style.marginTop = "14px";
-  del.onclick = () => act(async () => { await api("remove_block", { id: w.id }); selected = null; });
-  el.appendChild(del);
-}
-
-// ---- menu ----
-const menuItemsOf = (m) => blocksOf().filter((b) => b.type === "menu_item" && bp(b, "menu", "") === m.id);
-const itemParent = (b) => String(bp(b, "parent", ""));
-const itemOrder = (b) => num(bp(b, "order", 0), 0);
-const itemKind = (b) => String(bp(b, "kind", "number"));
-function childrenOf(m, parent) {
-  return menuItemsOf(m).filter((b) => itemParent(b) === parent).sort((a, b) => itemOrder(a) - itemOrder(b));
-}
-function isUnder(m, id, ancestor) {
-  for (let p = id, n = 0; p && n < 100; n++) {
-    if (p === ancestor) return true;
-    const it = menuItemsOf(m).find((b) => b.id === p);
-    p = it ? itemParent(it) : "";
-  }
-  return false;
-}
-function menuOf(d) {
-  const ms = blocksOf().filter((b) => b.type === "menu" && bp(b, "display", "") === d.id);
-  if (curMenu && ms.some((m) => m.id === curMenu)) return ms.find((m) => m.id === curMenu);
-  curMenu = ms.length ? ms[0].id : null;
-  return ms[0] || null;
-}
-function needsVar(b) { return ["number", "bool", "choice", "action", "view"].includes(itemKind(b)); }
-
-function addMenuItem(d, kind) {
-  act(async () => {
-    await freshSchema();
-    const m = menuOf(d);
-    if (!m) return say("У дисплея нет блока меню: сначала создайте его на вкладке «Меню».", true);
-    const sel = menuItemsOf(m).find((b) => b.id === selected);
-    const parent = sel ? (itemKind(sel) === "submenu" ? sel.id : itemParent(sel)) : "";
-    const id = uniqueId("item");
-    const caption = kind === "submenu" ? "Подменю" : "Пункт";
-    await api("add_block", { type: "menu_item", id, params: { menu: m.id, parent, order: childrenOf(m, parent).length, kind, caption } });
-    selected = id;
-  });
-}
-
-// Moves item `id` under `parent` to position `index`; renumbers `order` of that level.
-function relocate(m, id, parent, index) {
-  const it = menuItemsOf(m).find((b) => b.id === id);
-  if (!it) return;
-  if (isUnder(m, parent, id)) return say("Нельзя вложить пункт сам в себя.", true);
-  const sibs = childrenOf(m, parent).filter((b) => b.id !== id);
-  sibs.splice(Math.max(0, Math.min(index, sibs.length)), 0, it);
-  return act(async () => {
-    for (let i = 0; i < sibs.length; i++) {
-      const params = {};
-      if (itemOrder(sibs[i]) !== i) params.order = i;
-      if (sibs[i] === it && itemParent(it) !== parent) params.parent = parent;
-      if (Object.keys(params).length) await api("set_params", { id: sibs[i].id, params });
-    }
-  });
-}
-function moveStep(m, it, delta) {
-  const sibs = childrenOf(m, itemParent(it));
-  const i = sibs.findIndex((b) => b.id === it.id);
-  if (i + delta < 0 || i + delta >= sibs.length) return;
-  return relocate(m, it.id, itemParent(it), i + delta);
-}
-function indent(m, it) {
-  const sibs = childrenOf(m, itemParent(it));
-  const prev = sibs[sibs.findIndex((b) => b.id === it.id) - 1];
-  if (!prev || itemKind(prev) !== "submenu") return say("Вложить можно в подменю, стоящее выше на этом уровне.", true);
-  return relocate(m, it.id, prev.id, childrenOf(m, prev.id).length);
-}
-function outdent(m, it) {
-  const p = itemParent(it);
-  if (!p) return;
-  const up = menuItemsOf(m).find((b) => b.id === p);
-  const grand = up ? itemParent(up) : "";
-  const at = childrenOf(m, grand).findIndex((b) => b.id === p) + 1;
-  return relocate(m, it.id, grand, at);
-}
-
-let dragItem = null;
-function renderMenu(d) {
-  const box = $("menuView");
-  box.textContent = "";
-  const m = menuOf(d);
-  if (!m) {
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = `У дисплея «${d.id}» нет блока меню.`;
-    const btn = document.createElement("button");
-    btn.textContent = "Создать блок «Меню» для этого дисплея";
-    btn.onclick = () => act(async () => {
-      await freshSchema();
-      await api("add_block", { type: "menu", id: uniqueId("menu"), params: { display: d.id } });
-    });
-    box.append(p, btn);
-    return;
-  }
-  const menus = blocksOf().filter((b) => b.type === "menu" && bp(b, "display", "") === d.id);
-  if (menus.length > 1) {
-    const sel = document.createElement("select");
-    for (const x of menus) sel.appendChild(new Option(x.id, x.id));
-    sel.value = m.id;
-    sel.onchange = () => { curMenu = sel.value; selected = null; render(); };
-    box.appendChild(sel);
-  }
-  const hint = document.createElement("p");
-  hint.className = "hint";
-  hint.textContent = `Меню «${m.id}». Перетащите пункт на другой: верхняя половина — перед ним, нижняя — после (внутрь, если это подменю). Кнопки: ↑ ↓ порядок, → вложить, ← вынести.`;
-  box.appendChild(hint);
-  const root = document.createElement("ul");
-  root.className = "mtree";
-  const build = (parent, ul) => {
-    for (const it of childrenOf(m, parent)) {
-      const li = document.createElement("li");
-      li.appendChild(menuRow(m, it));
-      const kids = childrenOf(m, it.id);
-      if (kids.length) {
-        const sub = document.createElement("ul");
-        build(it.id, sub);
-        li.appendChild(sub);
-      }
-      ul.appendChild(li);
-    }
-  };
-  build("", root);
-  if (!root.children.length) {
-    const e = document.createElement("p");
-    e.className = "hint";
-    e.textContent = "Пока пусто: «＋ Добавить пункт меню…» вверху.";
-    box.appendChild(e);
-  }
-  box.appendChild(root);
-}
-
-function menuRow(m, it) {
-  const row = document.createElement("div");
-  const bad = needsVar(it) && !String(bp(it, "var", ""));
-  row.className = "mrow" + (it.id === selected ? " sel" : "") + (bad ? " bad" : "");
-  row.draggable = true;
-  const cap = document.createElement("span");
-  cap.className = "cap";
-  cap.textContent = String(bp(it, "caption", it.id));
-  const kd = document.createElement("span");
-  kd.className = "kd";
-  const v = String(bp(it, "var", ""));
-  kd.textContent = `${itemKind(it)}${v ? " · " + v : (bad ? " · нет переменной" : "")}`;
-  row.append(cap, kd);
-  for (const [label, title, fn] of [
-    ["↑", "Выше", () => moveStep(m, it, -1)], ["↓", "Ниже", () => moveStep(m, it, 1)],
-    ["→", "Вложить в подменю выше", () => indent(m, it)], ["←", "Вынести на уровень выше", () => outdent(m, it)],
-  ]) {
-    const btn = document.createElement("button");
-    btn.textContent = label;
-    btn.title = title;
-    btn.onclick = (ev) => { ev.stopPropagation(); fn(); };
-    row.appendChild(btn);
-  }
-  row.onclick = () => { selected = it.id; render(); };
-  row.ondragstart = (ev) => { dragItem = it.id; ev.dataTransfer.setData("text/plain", it.id); dragging = true; };
-  row.ondragend = () => { dragItem = null; dragging = false; };
-  const zone = (ev) => {
-    const r = row.getBoundingClientRect();
-    return ev.clientY - r.top < r.height / 2 ? "b" : (itemKind(it) === "submenu" ? "i" : "a");
-  };
-  row.ondragover = (ev) => {
-    if (!dragItem || dragItem === it.id) return;
-    ev.preventDefault();
-    const z = zone(ev);
-    row.classList.toggle("dropb", z === "b");
-    row.classList.toggle("dropa", z === "a");
-    row.classList.toggle("dropi", z === "i");
-  };
-  row.ondragleave = () => row.classList.remove("dropb", "dropa", "dropi");
-  row.ondrop = (ev) => {
-    ev.preventDefault();
-    const z = zone(ev);
-    row.classList.remove("dropb", "dropa", "dropi");
-    const id = dragItem;
-    dragging = false;
-    if (!id || id === it.id) return;
-    if (z === "i") return relocate(m, id, it.id, childrenOf(m, it.id).length);
-    const parent = itemParent(it);
-    const at = childrenOf(m, parent).filter((b) => b.id !== id).findIndex((b) => b.id === it.id);
-    return relocate(m, id, parent, z === "b" ? at : at + 1);
-  };
-  return row;
-}
-
-function varSignal(t) {
-  if (t === "bool" || t === "boolean") return "bool";
-  if (t === "float" || t === "double") return "float";
-  if (/string/i.test(t)) return "text";
-  return "int";
-}
-function itemVarKinds(kind) {
-  return { number: ["int", "float"], bool: ["bool"], action: ["bool"], choice: ["int"], view: ["int", "float", "bool"] }[kind] || [];
-}
-const NEW_VAR = "__new__";
-function varPicker(b) {
-  const kind = itemKind(b);
-  const wanted = itemVarKinds(kind);
-  const cur = String(bp(b, "var", ""));
-  const vars = (schema.logic.var || []).filter((v) => !v.service);
-  const sel = document.createElement("select");
-  sel.appendChild(new Option("— не выбрана —", ""));
-  for (const v of vars.filter((x) => wanted.includes(varSignal(x.type)))) sel.appendChild(new Option(`${v.name} (${v.type})${v.retain ? " · flash" : ""}`, v.name));
-  if (cur && ![...sel.options].some((o) => o.value === cur)) sel.appendChild(new Option(`${cur} (не подходит по типу)`, cur));
-  sel.appendChild(new Option("＋ Новая переменная…", NEW_VAR));
-  sel.value = cur;
-  sel.onchange = () => {
-    if (sel.value !== NEW_VAR) return set(b, "var", sel.value);
-    const name = (prompt("Имя новой переменной (латиница, цифры, _):", b.id.replace(/\W/g, "_") + "_val") || "").trim();
-    if (!name) { sel.value = cur; return; }
-    const ty = kind === "bool" || kind === "action" ? "bool" : (kind === "choice" ? "int" : "float");
-    act(async () => {
-      // menu variables survive power-off: `retain` is set here, the menu writes to flash on «OK»
-      await api("set_variable", { name, type: ty, retain: true, description: `Меню: ${bp(b, "caption", b.id)}` });
-      await api("set_params", { id: b.id, params: { var: name } });
-    });
-  };
-  return sel;
-}
-
-function renderItemProps(el, h, d, b) {
-  if (!b) {
-    h.textContent = "Пункт меню";
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = "Выберите пункт в дереве, чтобы настроить подпись, вид и переменную.";
-    el.appendChild(p);
-    return;
-  }
-  h.textContent = `Пункт · ${b.id}`;
-  const kind = itemKind(b);
-  const show = {
-    submenu: ["caption", "kind"], number: ["caption", "kind", "var", "min", "max", "step", "unit"],
-    bool: ["caption", "kind", "var"], choice: ["caption", "kind", "var", "choices"], action: ["caption", "kind", "var"],
-    view: ["caption", "kind", "var", "unit"],
-  }[kind] || ["caption", "kind"];
-  for (const p of types.menu_item.params) {
-    if (!show.includes(p.name)) continue;
-    if (p.name === "var") {
-      const lab = document.createElement("label");
-      lab.className = "f";
-      lab.textContent = p.label || "Переменная";
-      lab.title = p.description || "";
-      el.append(lab, varPicker(b));
-      const v = (schema.logic.var || []).find((x) => x.name === bp(b, "var", ""));
-      if (v) {
-        const row = document.createElement("label");
-        row.className = "row hint";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!v.retain;
-        cb.onchange = () => act(async () => { await api("set_variable", { name: v.name, type: v.type, retain: cb.checked }); });
-        row.append(cb, document.createTextNode(" Хранить во флеше (retain)"));
-        el.appendChild(row);
-      }
-      continue;
-    }
-    el.appendChild(paramField(b, p));
-  }
-  const del = document.createElement("button");
-  del.textContent = "Удалить пункт";
-  del.style.marginTop = "14px";
-  del.onclick = () => act(async () => {
-    // children of a deleted submenu move one level up
-    const m = menuOf(d);
-    for (const c of childrenOf(m, b.id)) await api("set_params", { id: c.id, params: { parent: itemParent(b) } });
-    await api("remove_block", { id: b.id });
-    selected = null;
-  });
-  el.appendChild(del);
 }
 
 (async function init() {
   try {
-    const list = await api("list_block_types", { filter: "web_" });
-    for (const t of list) if (t.group === GROUP) types[t.type] = t;
-    for (const t of [...await api("list_block_types", { filter: "disp_" }), ...await api("list_block_types", { filter: "menu_item" })]) {
-      if (DISP_KINDS.includes(t.type) || t.type === "menu_item") types[t.type] = t;
-    }
-    fillPalette();
+    await loadTypes(["web_"], (t) => t.group === GROUP);
     const r = await fetch("/ui_page.html");
     if (!r.ok) throw new Error(await r.text());
     pageHtml = await r.text();
@@ -1167,19 +354,7 @@ function renderItemProps(el, h, d, b) {
     say("Готово. Изменения сохраняются в проект сразу; прошивку соберите в редакторе схемы или командой crablogic build.");
   } catch (e) { say(e.message, true); }
 })();
-// the editor may change widgets too: pick up its changes
-setInterval(async () => {
-  if (document.hidden || dragging || pointerDown || document.activeElement?.closest?.("#side")) return;
-  try {
-    const seen = epoch;
-    const next = await api("get_schema");
-    if (seen !== epoch || dragging || pointerDown) return;   // an edit happened meanwhile: this copy is stale
-    const text = JSON.stringify(next);
-    if (text !== lastSchema) { lastSchema = text; schema = next; render(); }
-  } catch (e) { /* the server may be busy; try again */ }
-}, 2000);
-// keeps the server alive while the page is open
-setInterval(() => fetch("/ping").catch(() => {}), 10000);
+startPolling();
 </script>
 </body>
 </html>
