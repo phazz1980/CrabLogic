@@ -186,7 +186,7 @@ impl Program<'_> {
         };
         for &bi in &blocks {
             let inst = &self.blocks[bi];
-            for (name, read, write) in var_accesses(inst) {
+            for (name, read, write) in var_accesses(self, inst) {
                 match table
                     .iter()
                     .find(|t| t.kind == TagKind::Var(name.to_owned()))
@@ -253,7 +253,7 @@ impl Program<'_> {
         self.blocks
             .iter()
             .flat_map(|b| {
-                var_accesses(b)
+                var_accesses(self, b)
                     .into_iter()
                     .filter(|a| a.0 == name)
                     .map(|a| (self.sheet_of(&b.block.id), a.2))
@@ -264,8 +264,23 @@ impl Program<'_> {
 }
 
 /// Variables a block reads or writes: `(name, reads, writes)`.
-fn var_accesses(inst: &crate::program::Instance) -> Vec<(String, bool, bool)> {
+fn var_accesses(program: &Program, inst: &crate::program::Instance) -> Vec<(String, bool, bool)> {
     let mut out = Vec::new();
+    // The variables of the items of a menu are edited by the display the menu is wired to.
+    if inst.block.kind == "menu" {
+        let text = |i: &crate::program::Instance, name: &str| match i.params.get(name) {
+            Some(ParamValue::Text(t)) => t.clone(),
+            _ => String::new(),
+        };
+        for item in program.blocks.iter().filter(|i| {
+            i.block.kind == "menu_item" && i.block.tag.is_none() && text(i, "menu") == inst.block.id
+        }) {
+            let (var, kind) = (text(item, "var"), text(item, "kind"));
+            if !var.is_empty() && kind != "submenu" {
+                out.push((var, true, kind != "view"));
+            }
+        }
+    }
     if let Some(name) = inst.block.var_name() {
         let write = inst.block.kind == crab_core::vars::VAR_SET;
         out.push((name.to_owned(), !write, write));

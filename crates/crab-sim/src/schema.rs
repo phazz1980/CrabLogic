@@ -14,6 +14,7 @@ use crab_core::{check, Library, Logic, Severity};
 use crab_core::{BlockDef, ParamKind, SignalType};
 
 use crate::builtin::{self, Behavior, Ctx};
+use crate::display::{DisplayDevice, DisplayView};
 use crate::SimModule;
 
 /// Who computes the outputs of a block.
@@ -179,6 +180,9 @@ pub struct Simulation {
     bench: Bench,
     /// Load problems of modules: the block falls back to manual outputs.
     pub notes: Vec<String>,
+    /// Display chips of the `oled` / `lcd` blocks: what a driver writes to the stub I²C bus
+    /// (see [`Simulation::display_write`]) ends up in their picture.
+    displays: Vec<DisplayDevice>,
 }
 
 fn number(v: &ParamValue, kind: ParamKind) -> f64 {
@@ -406,7 +410,17 @@ impl Simulation {
             })
             .collect();
         nodes.iter_mut().for_each(Node::apply_initial);
+        let displays = nodes
+            .iter()
+            .filter_map(|n| {
+                let at = |name: &str| n.def.params.iter().position(|p| p.name == name);
+                let model = at("model").map_or("", |i| n.param_texts[i].as_str());
+                let address = at("address").map_or(0.0, |i| n.params[i]);
+                DisplayDevice::for_block(&n.def.info.kind, model, &n.id, address as i64)
+            })
+            .collect();
         Ok(Self {
+            displays,
             nodes,
             index,
             order: report.order,
@@ -420,6 +434,28 @@ impl Simulation {
         })
     }
 
+    /// The pictures of the display blocks (`oled`, `lcd`), in the order of the blocks.
+    pub fn displays(&self) -> Vec<DisplayView> {
+        self.displays.iter().map(DisplayDevice::view).collect()
+    }
+
+    /// Whether the schema has display blocks.
+    pub fn has_displays(&self) -> bool {
+        !self.displays.is_empty()
+    }
+
+    /// Feeds one I²C write transaction (the bytes after the address byte) to the display of
+    /// block `id`, as its driver would send it; `false` if there is no such display.
+    pub fn display_write(&mut self, id: &str, bytes: &[u8]) -> bool {
+        match self.displays.iter_mut().find(|d| d.id == id) {
+            Some(d) => {
+                d.write(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Simulated time since the start.
     pub fn time_ms(&self) -> u64 {
         self.time_ms
@@ -431,6 +467,7 @@ impl Simulation {
         self.vars = self.var_init.clone();
         self.var_texts = self.var_text_init.clone();
         self.bench.clear_driven();
+        self.displays.iter_mut().for_each(DisplayDevice::reset);
         for node in &mut self.nodes {
             node.pulse_ms = 0;
             node.outputs.iter_mut().for_each(|v| *v = 0.0);

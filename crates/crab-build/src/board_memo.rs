@@ -22,6 +22,15 @@ pub struct MemoArea {
     pub gen: u32,
 }
 
+/// A module as uploaded: the CRC of the WASM it was built from and of the image sent
+/// (the same for plain WASM, different for AOT).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoModule {
+    pub name: String,
+    pub wasm_crc: u32,
+    pub image_crc: u32,
+}
+
 /// The board as it was at the last module upload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoardMemo {
@@ -29,6 +38,9 @@ pub struct BoardMemo {
     pub free: usize,
     pub capacity: usize,
     pub areas: Vec<MemoArea>,
+    /// Modules of the last upload; absent in old files.
+    #[serde(default)]
+    pub modules: Vec<MemoModule>,
 }
 
 impl BoardMemo {
@@ -47,7 +59,16 @@ impl BoardMemo {
                     gen: a.gen,
                 })
                 .collect(),
+            modules: Vec::new(),
         }
+    }
+
+    /// Image CRC recorded for a module of this name built from WASM with this CRC.
+    pub fn image_crc(&self, name: &str, wasm_crc: u32) -> Option<u32> {
+        self.modules
+            .iter()
+            .find(|m| m.name == name && m.wasm_crc == wasm_crc)
+            .map(|m| m.image_crc)
     }
 
     /// Master info with only the capabilities filled.
@@ -112,7 +133,13 @@ mod tests {
                 gen: 2,
             }],
         };
-        BoardMemo::new(&info, &space)
+        let mut memo = BoardMemo::new(&info, &space);
+        memo.modules.push(MemoModule {
+            name: "sheet1".into(),
+            wasm_crc: 1,
+            image_crc: 2,
+        });
+        memo
     }
 
     #[test]
@@ -125,6 +152,23 @@ mod tests {
         assert_eq!(loaded, memo);
         assert!(load(&dir.join("missing")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn image_crc_lookup_and_old_files() {
+        let memo = sample();
+        assert_eq!(memo.image_crc("sheet1", 1), Some(2));
+        assert_eq!(memo.image_crc("sheet1", 9), None);
+        assert_eq!(memo.image_crc("x", 1), None);
+        let old: BoardMemo = toml::from_str(
+            "caps = []
+free = 1
+capacity = 2
+areas = []
+",
+        )
+        .unwrap();
+        assert!(old.modules.is_empty());
     }
 
     #[test]

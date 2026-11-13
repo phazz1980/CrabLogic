@@ -1171,6 +1171,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
         if app.lib.is_user(&info.kind)
             || info.group == IO_GROUP
             || info.group == WEB_GROUP
+            || crab_core::project::is_screen_kind(&info.kind)
             || info.hidden
             || !info.fits_board(model)
         {

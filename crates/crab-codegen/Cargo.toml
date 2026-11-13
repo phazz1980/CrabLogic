@@ -8,6 +8,7 @@ edition.workspace = true
 crab-blocks = { path = "../crab-blocks" }
 crab-core = { path = "../crab-core" }
 crab-debug = { path = "../crab-debug" }
+crab-ui-format = { path = "../crab-ui-format" }
 minijinja = { version = "2", features = ["unicode"] }
 thiserror.workspace = true
 wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }

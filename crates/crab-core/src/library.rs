@@ -13,6 +13,17 @@ use crate::value::parse_duration_ms;
 use crate::{Error, ParamValue, Result};
 
 pub const BLOCK_FILE: &str = "block.toml";
+
+/// Whether `dir` is a block library: some subfolder holds a `block.toml`. Looking up `library/`
+/// in parent folders must skip other folders of that name (on Windows also the `Library`
+/// folder of some program in the user's home: names there ignore case).
+pub fn holds_blocks(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .flatten()
+            .any(|e| e.path().join(BLOCK_FILE).is_file())
+    })
+}
 pub const ESP32_CPP_TEMPLATE: &str = "esp32.cpp.tmpl";
 pub const DOCS_FILE: &str = "docs.md";
 /// WASM module that simulates the block on the PC (any source language).
@@ -1358,6 +1369,20 @@ fn read_blocks(dir: &Path) -> Result<(Vec<LibraryBlock>, Vec<Error>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_folder_with_blocks_is_a_library() {
+        let root = std::env::temp_dir().join(format!("crab_holds_blocks_{}", std::process::id()));
+        let other = root.join("Library").join("Application Support");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!holds_blocks(&root.join("Library")));
+        assert!(!holds_blocks(&root.join("missing")));
+        let lib = root.join("library2");
+        std::fs::create_dir_all(lib.join("and")).unwrap();
+        std::fs::write(lib.join("and").join(BLOCK_FILE), "").unwrap();
+        assert!(holds_blocks(&lib));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn def(src: &str) -> BlockDef {
         toml::from_str(src).unwrap()

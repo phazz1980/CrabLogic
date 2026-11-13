@@ -1,0 +1,6 @@
+[project]
+name = "display_menu"
+description = "Термостат с OLED-экраном, LCD 1602 и меню уставок на кнопках: уставка, гистерезис и разрешение нагрева хранятся во флеш. Только модулем на мастере Rust."
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

@@ -15,6 +15,7 @@ use crate::{Layout, Library, Link, Logic, ParamValue, PortRef, Project};
 
 mod blocks;
 mod boards;
+mod display;
 mod flow;
 mod graph;
 mod retain;
@@ -26,6 +27,7 @@ mod wifi_tests;
 
 pub use self::blocks::*;
 use self::boards::*;
+pub use self::display::{screen_size, LCD_CYRILLIC_LIMIT};
 pub use self::flow::*;
 use self::graph::*;
 use self::retain::check_retain_fast;
@@ -45,6 +47,7 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
     }
     check_pin_conflicts(&pin_uses(logic, lib), &mut report);
     check_expanders(logic, lib, &mut report);
+    display::check_displays(logic, &mut report);
     order_blocks(logic, &defs, &edges, &mut report);
     if !report.has_errors() {
         check_number_flow(logic, &defs, &mut report);

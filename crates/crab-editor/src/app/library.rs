@@ -445,7 +445,7 @@ pub(super) fn find_library(project: Option<&Path>) -> Option<PathBuf> {
             let own = d
                 .parent()
                 .is_some_and(|p| p.join(crab_core::project::PROJECT_FILE).is_file());
-            d.is_dir() && !own
+            d.is_dir() && !own && crab_core::library::holds_blocks(d)
         })
 }
 

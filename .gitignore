@@ -16,3 +16,7 @@
 /.m/
 /.embuild/
 /.llvm/
+
+# Bench reports and the real Wi-Fi/MQTT settings of the bench stands
+/bench/*.toml
+!/bench/secrets.example.toml

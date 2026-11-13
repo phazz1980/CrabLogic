@@ -226,3 +226,100 @@ mod tests {
         assert!(page.contains("/ui/layout") && page.contains("/ui/state"));
     }
 }
+
+#[cfg(test)]
+mod designer_tests {
+    use super::*;
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(e.file_name());
+            if e.path().is_dir() {
+                copy_dir(&e.path(), &target);
+            } else {
+                std::fs::copy(e.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// The commands the designer page sends for displays and menus: widgets and items
+    /// land in `web.toml`, the menu variable is created with `retain`, all survive a reopen.
+    #[test]
+    fn display_commands_of_the_designer_are_saved() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = std::env::temp_dir().join(format!("crab-web-disp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        copy_dir(&root.join("examples/blink"), &dir);
+        let mut ctx = FolderContext::open(&dir, &root.join("library")).unwrap();
+        let mut call = |name: &str, args: Value| {
+            crab_ai::call(&mut ctx, name, &args).unwrap_or_else(|e| panic!("{name}: {e}"))
+        };
+        call("add_block", json!({"type": "oled", "id": "scr"}));
+        call(
+            "add_block",
+            json!({"type": "disp_value", "id": "value", "params":
+                {"display": "scr", "screen": 2, "x": 4, "y": 8, "w": 48, "h": 8}}),
+        );
+        call(
+            "add_block",
+            json!({"type": "menu", "id": "menu", "params": {"display": "scr"}}),
+        );
+        call(
+            "add_block",
+            json!({"type": "menu_item", "id": "sub", "params":
+                {"menu": "menu", "parent": "", "order": 0, "kind": "submenu", "caption": "Настройки"}}),
+        );
+        call(
+            "add_block",
+            json!({"type": "menu_item", "id": "sp", "params":
+                {"menu": "menu", "parent": "sub", "order": 0, "kind": "number", "caption": "Уставка"}}),
+        );
+        call(
+            "set_variable",
+            json!({"name": "sp_val", "type": "float", "retain": true}),
+        );
+        call(
+            "set_params",
+            json!({"id": "sp", "params": {"var": "sp_val"}}),
+        );
+        call(
+            "set_params",
+            json!({"id": "sp", "params": {"order": 3, "parent": ""}}),
+        );
+
+        let schema = call("get_schema", json!({}));
+        let blocks = schema["logic"]["block"].as_array().unwrap();
+        let find = |id: &str| blocks.iter().find(|b| b["id"] == id).unwrap().clone();
+        assert_eq!(find("value")["x"], 4);
+        assert_eq!(find("value")["screen"], 2);
+        assert_eq!(find("sp")["var"], "sp_val");
+        assert_eq!(find("sp")["order"], 3);
+        let var = schema["logic"]["var"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "sp_val")
+            .unwrap();
+        assert_eq!(var["retain"], true);
+
+        // A folder project is saved as `<folder>/<name>.crab`; the screen blocks live in its `web.toml`.
+        let archive = dir.join(format!(
+            "{}.crab",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        let again = FolderContext::open(&archive, &root.join("library")).unwrap();
+        let p = crab_ai::Context::project(&again);
+        assert!(p.logic.block("sp").is_some() && p.logic.block("value").is_some());
+        assert!(p.logic.var("sp_val").is_some_and(|v| v.retain));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn page_exposes_the_font_hook_and_menu_tab() {
+        assert!(DESIGNER.contains("window.crabFont"));
+        // ids of new blocks are chosen from a fresh schema (a stale poll once produced duplicates)
+        assert!(DESIGNER.contains("await freshSchema();") && DESIGNER.contains("seen !== epoch"));
+        assert!(DESIGNER.contains("renderMenu") && DESIGNER.contains("disp_bar"));
+    }
+}

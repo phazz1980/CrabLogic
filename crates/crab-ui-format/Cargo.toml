@@ -1,0 +1,14 @@
+[package]
+name = "crab-ui-format"
+version.workspace = true
+edition.workspace = true
+description = "Compact binary description of display screens and menu (crab.config ABI)"
+
+[features]
+default = ["std"]
+alloc = []
+serde = ["alloc", "dep:serde"]
+std = ["alloc", "serde", "serde/std"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"], optional = true }

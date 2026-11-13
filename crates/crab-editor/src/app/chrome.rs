@@ -1012,13 +1012,13 @@ impl EditorApp {
                     } else {
                         self.theme.palette.warning
                     };
-                    ui.label(
-                        RichText::new(crate::i18n::fmt(
-                            "Отладка {0}: {1}",
-                            &[&d.port, &d.live.status],
-                        ))
-                        .color(color),
+                    // The status text itself is written to the messages (see `poll_debug`).
+                    let label = ui.label(
+                        RichText::new(crate::i18n::fmt("Отладка {0}", &[&d.port])).color(color),
                     );
+                    if !d.live.status.is_empty() {
+                        label.on_hover_text(&d.live.status);
+                    }
                     match d.same_project {
                         Some(true) => {
                             ui.label(crate::i18n::tr("Проект совпадает с платой"));

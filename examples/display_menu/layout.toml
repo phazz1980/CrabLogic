@@ -1,0 +1,163 @@
+[block.ain]
+x = 40.0
+y = 40.0
+
+[block.temp]
+x = 260.0
+y = 40.0
+
+[block.sp]
+x = 40.0
+y = 200.0
+
+[block.hy]
+x = 40.0
+y = 300.0
+
+[block.lo]
+x = 260.0
+y = 220.0
+
+[block.hi]
+x = 260.0
+y = 320.0
+
+[block.cold]
+x = 480.0
+y = 220.0
+
+[block.warm]
+x = 480.0
+y = 320.0
+
+[block.trig]
+x = 700.0
+y = 260.0
+
+[block.en]
+x = 700.0
+y = 400.0
+
+[block.run]
+x = 900.0
+y = 300.0
+
+[block.heater]
+x = 1100.0
+y = 300.0
+
+[block.tick]
+x = 40.0
+y = 440.0
+
+[block.pick]
+x = 260.0
+y = 440.0
+
+[block.oled]
+x = 1100.0
+y = 40.0
+
+[block.lcd]
+x = 1100.0
+y = 140.0
+
+[block.title]
+x = 40.0
+y = 560.0
+
+[block.t_val]
+x = 260.0
+y = 560.0
+
+[block.t_bar]
+x = 480.0
+y = 560.0
+
+[block.t_led]
+x = 700.0
+y = 560.0
+
+[block.t_lbl]
+x = 900.0
+y = 560.0
+
+[block.t_ico]
+x = 1100.0
+y = 560.0
+
+[block.s_cap]
+x = 40.0
+y = 680.0
+
+[block.s_val]
+x = 260.0
+y = 680.0
+
+[block.h_val]
+x = 480.0
+y = 680.0
+
+[block.l_val]
+x = 700.0
+y = 680.0
+
+[block.l_lbl]
+x = 900.0
+y = 680.0
+
+[block.l_led]
+x = 1100.0
+y = 680.0
+
+[block.btn_up]
+x = 40.0
+y = 800.0
+
+[block.btn_down]
+x = 40.0
+y = 880.0
+
+[block.btn_ok]
+x = 40.0
+y = 960.0
+
+[block.btn_back]
+x = 40.0
+y = 1040.0
+
+[block.menu]
+x = 260.0
+y = 900.0
+
+[block.m_set]
+x = 480.0
+y = 800.0
+
+[block.m_sp]
+x = 700.0
+y = 800.0
+
+[block.m_hy]
+x = 900.0
+y = 800.0
+
+[block.m_en]
+x = 480.0
+y = 900.0
+
+[block.m_view]
+x = 700.0
+y = 900.0
+
+[block.dcold]
+x = 370.0
+y = 140.0
+
+[block.dwarm]
+x = 370.0
+y = 420.0
+
+[block.temp_w]
+x = 480.0
+y = 40.0

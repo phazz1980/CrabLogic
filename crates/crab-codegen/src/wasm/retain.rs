@@ -73,6 +73,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 written_at,
                 settle: settle as i32,
                 period: period as i32,
+                force: None,
             });
         }
     }
@@ -217,6 +218,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.op(I::GlobalGet(r.saved));
             self.op(I::I32Ne);
             self.retain_due((r.changed_at, r.dirty_at, r.written_at), r.settle, r.period);
+            if let Some(force) = r.force {
+                self.op(I::GlobalGet(force));
+                self.op(I::I32Or);
+            }
             self.op(I::I32And);
             self.op(I::If(BlockType::Empty));
             self.c_i(1);
@@ -229,6 +234,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.op(I::GlobalGet(GLOBAL_NOW));
             self.op(I::GlobalSet(r.written_at));
             self.op(I::End);
+            if let Some(force) = r.force {
+                self.c_i(0);
+                self.op(I::GlobalSet(force));
+            }
         }
     }
 }

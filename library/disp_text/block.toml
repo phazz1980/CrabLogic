@@ -1,0 +1,83 @@
+[block]
+type = "disp_text"
+name = "Текст на экране"
+symbol = "TXT"
+group = "Экран дисплея"
+description = "Статичная надпись на экране дисплея."
+memory = true
+
+[[param]]
+name = "text"
+show = "value"
+type = "string"
+label = "Текст"
+default = "Текст"
+description = "Надпись (русские буквы на LCD занимают символы знакогенератора: не больше 8 разных на экран)"
+
+[[param]]
+name = "font"
+type = "int"
+label = "Шрифт"
+default = 8
+description = "Высота шрифта в пикселях (только OLED; на LCD знакоместо одно)"
+
+[[param.choice]]
+value = 8
+label = "8 пикселей"
+
+[[param.choice]]
+value = 16
+label = "16 пикселей"
+
+[[param]]
+name = "display"
+show = "hidden"
+type = "string"
+label = "Дисплей"
+default = ""
+description = "Идентификатор блока дисплея (oled или lcd), на экране которого стоит виджет"
+
+[[param]]
+name = "screen"
+show = "hidden"
+type = "int"
+label = "Экран"
+default = 1
+min = 1
+description = "Номер экрана дисплея (1, 2, …)"
+
+[[param]]
+name = "x"
+show = "hidden"
+type = "int"
+label = "Столбец"
+default = 0
+min = 0
+description = "Левый край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "y"
+show = "hidden"
+type = "int"
+label = "Строка"
+default = 0
+min = 0
+description = "Верхний край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "w"
+show = "hidden"
+type = "int"
+label = "Ширина"
+default = 64
+min = 1
+description = "Ширина: пиксели OLED или знакоместа LCD"
+
+[[param]]
+name = "h"
+show = "hidden"
+type = "int"
+label = "Высота"
+default = 8
+min = 1
+description = "Высота: пиксели OLED или знакоместа LCD"

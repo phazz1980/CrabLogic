@@ -37,6 +37,9 @@ pub struct ModuleMap {
     pub slots: Vec<Option<usize>>,
     /// CRC-32 of the module bytes; the board reports the same for what it runs.
     pub crc: u32,
+    /// CRC-32 of the image actually uploaded when it differs from the WASM (AOT);
+    /// the board reports it instead of `crc`.
+    pub image_crc: Option<u32>,
     /// Number of the sheet the module runs, for the diagnostics table.
     pub sheet: u32,
 }
@@ -329,9 +332,11 @@ fn handle_line(
     }
     if text == "end" {
         l.stats = make_stats(aux, modules);
-        let missing = modules
-            .iter()
-            .find(|m| !running.iter().any(|(n, c)| *n == m.name && *c == m.crc));
+        let missing = modules.iter().find(|m| {
+            !running
+                .iter()
+                .any(|(n, c)| *n == m.name && (*c == m.crc || Some(*c) == m.image_crc))
+        });
         running.clear();
         l.connected = true;
         l.schema_matches = Some(missing.is_none());
@@ -730,6 +735,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(1), None, Some(0)],
             crc: 5,
+            image_crc: None,
             sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live {
@@ -822,6 +828,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(0)],
             crc: 5,
+            image_crc: None,
             sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live::default()));
@@ -847,6 +854,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(0)],
             crc: 0xabc,
+            image_crc: None,
             sheet: 1,
         }];
         let live = Arc::new(Mutex::new(Live::default()));
@@ -874,6 +882,42 @@ mod tests {
         assert_eq!(run("00000001"), Some(false));
     }
 
+    #[test]
+    fn list_accepts_image_crc() {
+        let table = table();
+        let modules = vec![ModuleMap {
+            name: "sheet1".into(),
+            slots: vec![Some(0)],
+            crc: 0xabc,
+            image_crc: Some(0xdef),
+            sheet: 1,
+        }];
+        let live = Arc::new(Mutex::new(Live::default()));
+        let run = |crc: &str| {
+            let mut running = Vec::new();
+            let mut asked = Vec::new();
+            for line in [
+                format!("sheet1 run steps=1 restarts=0 out0=0 crc={crc}"),
+                "end".into(),
+            ] {
+                handle_line(
+                    &line,
+                    &table,
+                    &modules,
+                    &mut asked,
+                    &mut running,
+                    &mut Aux::default(),
+                    Instant::now(),
+                    &live,
+                );
+            }
+            live.lock().unwrap().schema_matches
+        };
+        assert_eq!(run("00000def"), Some(true));
+        assert_eq!(run("00000abc"), Some(true));
+        assert_eq!(run("00000001"), Some(false));
+    }
+
     fn bool_table() -> DebugTable {
         DebugTable {
             entries: vec![entry("led", SignalType::Bool), entry("n", SignalType::Int)],
@@ -886,6 +930,7 @@ mod tests {
             name: "sheet1".into(),
             slots: vec![Some(0), Some(1)],
             crc: 5,
+            image_crc: None,
             sheet: 1,
         }]
     }

@@ -1,0 +1,72 @@
+[block]
+type = "oled"
+name = "OLED-дисплей"
+symbol = "OLED"
+group = "Дисплеи"
+description = "Графический OLED-дисплей SSD1306 или SH1106 на шине I²C: показывает экраны, собранные в конструкторе."
+memory = true
+
+[[input]]
+name = "screen"
+type = "int"
+default = 1
+description = "Номер экрана, который показывается на дисплее (1, 2, …)"
+
+[[output]]
+name = "ok"
+type = "bool"
+description = "true, если дисплей ответил на последнюю запись"
+sim = 1
+
+[[param]]
+name = "model"
+type = "string"
+label = "Вид дисплея"
+default = "ssd1306_128x64"
+description = "Микросхема и размер экрана в пикселях"
+
+[[param.choice]]
+value = "ssd1306_128x64"
+label = "SSD1306, 128×64"
+
+[[param.choice]]
+value = "ssd1306_128x32"
+label = "SSD1306, 128×32"
+
+[[param.choice]]
+value = "sh1106_128x64"
+label = "SH1106, 128×64"
+
+[[param]]
+name = "address"
+type = "int"
+label = "Адрес I²C"
+default = 60
+bus = "i2c-address"
+description = "Адрес дисплея на шине I²C: обычно 0x3C, реже 0x3D"
+
+[[param.choice]]
+value = 60
+label = "0x3C"
+
+[[param.choice]]
+value = 61
+label = "0x3D"
+
+[[param]]
+name = "sda"
+label = "Вывод SDA"
+type = "pin"
+default = -1
+min = -1
+bus = "i2c-sda"
+description = "Вывод линии SDA; -1 — выводы I²C по умолчанию для платы"
+
+[[param]]
+name = "scl"
+label = "Вывод SCL"
+type = "pin"
+default = -1
+min = -1
+bus = "i2c-scl"
+description = "Вывод линии SCL; -1 — выводы I²C по умолчанию для платы"

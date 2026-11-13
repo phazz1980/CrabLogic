@@ -1,0 +1,130 @@
+[block]
+type = "lcd"
+name = "Текстовый LCD"
+symbol = "LCD"
+group = "Дисплеи"
+description = "Текстовый дисплей 1602 или 2004 с переходником PCF8574 на шине I²C: показывает экраны, собранные в конструкторе."
+memory = true
+
+[[input]]
+name = "screen"
+type = "int"
+default = 1
+description = "Номер экрана, который показывается на дисплее (1, 2, …)"
+
+[[input]]
+name = "backlight"
+type = "bool"
+default = true
+description = "Подсветка дисплея"
+
+[[output]]
+name = "ok"
+type = "bool"
+description = "true, если переходник ответил на последнюю запись"
+sim = 1
+
+[[param]]
+name = "model"
+type = "string"
+label = "Вид дисплея"
+default = "1602"
+description = "Размер дисплея в знакоместах"
+
+[[param.choice]]
+value = "1602"
+label = "1602 (16×2)"
+
+[[param.choice]]
+value = "2004"
+label = "2004 (20×4)"
+
+[[param]]
+name = "address"
+type = "int"
+label = "Адрес I²C"
+default = 39
+bus = "i2c-address"
+description = "Адрес переходника PCF8574 на шине I²C: 0x27 или 0x3F у большинства модулей"
+
+[[param.choice]]
+value = 32
+label = "0x20"
+
+[[param.choice]]
+value = 33
+label = "0x21"
+
+[[param.choice]]
+value = 34
+label = "0x22"
+
+[[param.choice]]
+value = 35
+label = "0x23"
+
+[[param.choice]]
+value = 36
+label = "0x24"
+
+[[param.choice]]
+value = 37
+label = "0x25"
+
+[[param.choice]]
+value = 38
+label = "0x26"
+
+[[param.choice]]
+value = 39
+label = "0x27"
+
+[[param.choice]]
+value = 56
+label = "0x38"
+
+[[param.choice]]
+value = 57
+label = "0x39"
+
+[[param.choice]]
+value = 58
+label = "0x3A"
+
+[[param.choice]]
+value = 59
+label = "0x3B"
+
+[[param.choice]]
+value = 60
+label = "0x3C"
+
+[[param.choice]]
+value = 61
+label = "0x3D"
+
+[[param.choice]]
+value = 62
+label = "0x3E"
+
+[[param.choice]]
+value = 63
+label = "0x3F"
+
+[[param]]
+name = "sda"
+label = "Вывод SDA"
+type = "pin"
+default = -1
+min = -1
+bus = "i2c-sda"
+description = "Вывод линии SDA; -1 — выводы I²C по умолчанию для платы"
+
+[[param]]
+name = "scl"
+label = "Вывод SCL"
+type = "pin"
+default = -1
+min = -1
+bus = "i2c-scl"
+description = "Вывод линии SCL; -1 — выводы I²C по умолчанию для платы"

@@ -263,7 +263,7 @@ fn find_library(project: &Path) -> Option<PathBuf> {
         .into_iter()
         .flatten()
         .flat_map(|s| s.ancestors().map(|a| a.join("library")).collect::<Vec<_>>())
-        .find(|d| d.is_dir())
+        .find(|d| d.is_dir() && crab_core::library::holds_blocks(d))
 }
 
 #[cfg(test)]

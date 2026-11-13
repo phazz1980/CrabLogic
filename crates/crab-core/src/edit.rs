@@ -505,8 +505,7 @@ impl Project {
         }
         // A deleted web widget leaves its links: the check reports them instead of the
         // sheet being edited behind the author's back.
-        let widget = crate::project::is_web_kind(&self.logic.blocks[index].kind)
-            && self.logic.blocks[index].kind != "web_ui"
+        let widget = crate::project::is_widget_kind(&self.logic.blocks[index].kind)
             && self.logic.blocks[index].tag.is_none();
         self.logic.blocks.remove(index);
         if !widget {
@@ -536,6 +535,22 @@ impl Project {
         for block in &mut self.logic.blocks {
             if block.tag.as_deref() == Some(old) {
                 block.tag = Some(new.to_owned());
+            }
+        }
+        // Screen widgets and menus name their display, menu and parent item by id.
+        for block in &mut self.logic.blocks {
+            let refs: &[&str] = match block.kind.as_str() {
+                "menu" => &["display"],
+                "menu_item" => &["menu", "parent"],
+                k if k.starts_with("disp_") => &["display"],
+                _ => &[],
+            };
+            for name in refs {
+                if let Some(crate::ParamValue::Text(t)) = block.params.get_mut(*name) {
+                    if t == old {
+                        *t = new.to_owned();
+                    }
+                }
             }
         }
         for link in &mut self.logic.links {

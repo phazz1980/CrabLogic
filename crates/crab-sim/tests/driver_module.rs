@@ -268,3 +268,74 @@ fn spi_and_onewire_calls_reach_the_master() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Asks `crab.config` for the length, copies the bytes to the window and outputs the length
+/// and the sum of the bytes; a second copy with a window-sized `cap` and a bad `ptr` must be
+/// ignored.
+const CONFIG_DRIVER: &str = r#"(module
+  (import "crab" "output" (func $out (param i32 f64)))
+  (import "crab" "config" (func $cfg (param i32 i32) (result i32)))
+  (memory 1)
+  (global $hb i32 (i32.const 512))
+  (export "__heap_base" (global $hb))
+  (func (export "step") (param i32)
+    (local $len i32) (local $i i32) (local $sum i32)
+    (local.set $len (call $cfg (i32.const 0) (i32.const 0)))
+    (drop (call $cfg (i32.const 100) (i32.const 400)))
+    ;; out of the window: nothing is copied, the length is still returned
+    (drop (call $cfg (i32.const 500) (i32.const 400)))
+    (block $done (loop $l
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (local.set $sum (i32.add (local.get $sum) (i32.load8_u (i32.add (i32.const 100) (local.get $i)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (call $out (i32.const 0) (f64.convert_i32_u (local.get $len)))
+    (call $out (i32.const 1) (f64.convert_i32_u (local.get $sum)))))"#;
+
+#[test]
+fn crab_config_reaches_the_driver_per_instance() {
+    let root = temp_root("driver_module_config");
+    let (lib, project) = setup(
+        &root,
+        "[[block]]\nid = \"with\"\ntype = \"drv\"\n\n[[block]]\nid = \"without\"\ntype = \"drv\"\n",
+    );
+    std::fs::write(
+        root.join("lib/drv/block.wasm"),
+        wat::parse_str(CONFIG_DRIVER).unwrap(),
+    )
+    .unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let mut configs = std::collections::BTreeMap::new();
+    configs.insert("with".to_owned(), vec![1u8, 2, 3, 250]);
+    let built = program.wasm_module_configured(1, true, &configs).unwrap();
+    wasmparser::Validator::new()
+        .validate_all(&built.wasm)
+        .unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    module.step(10).unwrap();
+    let out = |label: &str| {
+        let i = built.watched.iter().position(|l| l == label).unwrap();
+        module.outputs()[i]
+    };
+    assert_eq!(out("with.a"), Word::float(4.0));
+    assert_eq!(out("with.b"), Word::float(256.0));
+    assert_eq!(out("without.a"), Word::float(0.0));
+    assert_eq!(out("without.b"), Word::float(0.0));
+
+    // A configuration over the limit is refused with the block.
+    configs.insert(
+        "with".to_owned(),
+        vec![0u8; crab_codegen::MAX_BLOCK_CONFIG + 1],
+    );
+    let err = program
+        .wasm_module_configured(1, true, &configs)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err.contains("with") && err.contains("конфигурация"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -173,7 +173,7 @@ fn place_unplaced(project: &mut Project, lib: &Library) {
         .iter()
         .filter(|b| !layout.blocks.contains_key(&b.id))
         // A web widget waits in the project tree; the page designer made it, not the sheet.
-        .filter(|b| !(is_web_kind(&b.kind) && b.kind != "web_ui"))
+        .filter(|b| !crab_core::project::is_widget_kind(&b.kind))
         .filter(|b| {
             let tag = lib
                 .resolve(&project.logic, b)

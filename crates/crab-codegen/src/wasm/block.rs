@@ -3,6 +3,10 @@ use super::*;
 impl<'a, 'p> Emitter<'a, 'p> {
     /// Emits the block; the value of type `Ty` it leaves on the stack is output 0.
     pub(super) fn block(&mut self, inst: &Instance) -> Result<(), WasmError> {
+        // Widgets, menu items and the menu are served by the display they belong to.
+        if super::display::is_inert(&inst.block.kind) {
+            return Ok(());
+        }
         if self.hardware_block(inst)? {
             return Ok(());
         }

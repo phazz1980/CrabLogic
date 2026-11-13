@@ -33,7 +33,7 @@ pub use rust_master::{
     block_has_cpp, check_project, has_cpp_code, rust_master_diagnostics, CPP_BLOCK_HINT,
 };
 pub use sheet::{LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
-pub use wasm::{WasmError, WasmModule, MASTER_CAPS};
+pub use wasm::{WasmError, WasmModule, MASTER_CAPS, MAX_BLOCK_CONFIG};
 
 use crab_core::{Library, Project};
 

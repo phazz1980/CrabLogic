@@ -17,3 +17,5 @@ crab-pdf = { path = "../crab-pdf" }
 crab-debug = { path = "../crab-debug", features = ["serial"] }
 crab-sim = { path = "../crab-sim" }
 serialport = { version = "4", default-features = false }
+serde.workspace = true
+toml.workspace = true

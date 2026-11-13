@@ -26,7 +26,7 @@ mod pulse;
 mod retain;
 mod sparkplug;
 mod uart;
-mod usb;
+pub(crate) mod usb;
 mod web;
 
 use std::collections::VecDeque;
@@ -987,6 +987,20 @@ impl Master {
 
 pub fn main() {
     sys::link_patches();
+    // On the dual-core ESP32 the sheets run on the APP core, away from Wi-Fi, lwIP and the
+    // Ethernet driver on core 0 (a bench showed a 3.6× longer step with Wi-Fi and MQTT on).
+    #[cfg(target_arch = "xtensa")]
+    {
+        use esp_idf_svc::hal::{cpu::Core, task::thread::ThreadSpawnConfiguration};
+        let conf = ThreadSpawnConfiguration {
+            name: Some(b"crab-runtime\0"),
+            pin_to_core: Some(Core::Core1),
+            ..Default::default()
+        };
+        if let Err(e) = conf.set() {
+            println!("warn runtime core: {e}");
+        }
+    }
     let runtime = std::thread::Builder::new()
         .stack_size(RUNTIME_STACK)
         .spawn(|| {

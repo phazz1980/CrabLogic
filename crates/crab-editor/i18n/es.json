@@ -445,6 +445,7 @@
  "Открыть страницу устройства в браузере": "Abrir la página del dispositivo en el navegador",
  "Открыть...": "Abrir...",
  "Отладка": "Depuración",
+ "Отладка {0}": "Depuración {0}",
  "Отладка {0}: {1}": "Depuración {0}: {1}",
  "Отладка остановлена": "Depuración detenida",
  "Отладка: залить и подключиться": "Depuración: cargar y conectar",
@@ -1334,5 +1335,8 @@
  "Выход меняется часто (счётчик, измерение): проверка предупредит, если им кормят переменную с сохранением во флеш": "La salida cambia a menudo (contador, medición): la comprobación avisa si alimenta una variable guardada en flash",
  "Флеш: записей {0}, за час {1}": "Flash: {0} escrituras, {1} en la última hora",
  ", свободно {0} записей": ", {0} entradas libres",
- "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Escritura frecuente en flash: {0} en la última hora: la flash se desgasta. Revise las variables con guardado."
+ "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Escritura frecuente en flash: {0} en la última hora: la flash se desgasta. Revise las variables con guardado.",
+ "Дисплей": "Pantalla",
+ "Показывать дисплеи": "Mostrar pantallas",
+ "выключен": "apagada"
 }

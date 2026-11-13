@@ -5,6 +5,9 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # Most DevKits wire the flash for DIO; QIO is not safe to assume.
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+# 80 MHz flash (default 40): code and AOT modules run from flash through the cache, at 40 MHz the
+# ESP32 stepped 2–3× slower than the C3 (bench of 12.11.2026). WROOM-32 modules take 80 MHz.
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 # The EMAC for LAN8720 on RMII (the `ethernet` block with chip = "lan8720"); only the classic ESP32 has it.
 CONFIG_ETH_USE_ESP32_EMAC=y
 CONFIG_ETH_PHY_INTERFACE_RMII=y

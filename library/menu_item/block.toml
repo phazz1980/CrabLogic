@@ -1,0 +1,112 @@
+[block]
+type = "menu_item"
+name = "Пункт меню"
+symbol = "ITEM"
+group = "Экран дисплея"
+description = "Пункт меню дисплея: подменю, число, переключатель, выбор, действие или просмотр значения."
+memory = true
+
+[[param]]
+name = "menu"
+show = "hidden"
+type = "string"
+label = "Меню"
+default = ""
+description = "Идентификатор блока меню, к которому относится пункт"
+
+[[param]]
+name = "parent"
+show = "hidden"
+type = "string"
+label = "Родитель"
+default = ""
+description = "Идентификатор пункта-подменю, в котором лежит этот пункт; пусто — верхний уровень"
+
+[[param]]
+name = "order"
+show = "hidden"
+type = "int"
+label = "Порядок"
+default = 0
+description = "Место среди пунктов одного уровня (по возрастанию)"
+
+[[param]]
+name = "kind"
+type = "string"
+label = "Вид пункта"
+default = "number"
+description = "Что делает пункт"
+
+[[param.choice]]
+value = "submenu"
+label = "Подменю"
+
+[[param.choice]]
+value = "number"
+label = "Число"
+
+[[param.choice]]
+value = "bool"
+label = "Переключатель"
+
+[[param.choice]]
+value = "choice"
+label = "Выбор из списка"
+
+[[param.choice]]
+value = "action"
+label = "Действие"
+
+[[param.choice]]
+value = "view"
+label = "Просмотр значения"
+
+[[param]]
+name = "caption"
+show = "value"
+type = "string"
+label = "Название"
+default = "Пункт"
+description = "Название пункта в меню"
+
+[[param]]
+name = "var"
+type = "string"
+label = "Переменная"
+default = ""
+description = "Переменная схемы: число (int или float), переключатель (bool) или выбор (int, номер варианта с нуля); для действия — bool-переменная, получающая импульс"
+
+[[param]]
+name = "min"
+type = "float"
+label = "Минимум"
+default = 0.0
+description = "Нижний предел числа"
+
+[[param]]
+name = "max"
+type = "float"
+label = "Максимум"
+default = 100.0
+description = "Верхний предел числа"
+
+[[param]]
+name = "step"
+type = "float"
+label = "Шаг"
+default = 1.0
+description = "На сколько меняется число за одно нажатие"
+
+[[param]]
+name = "unit"
+type = "string"
+label = "Единица"
+default = ""
+description = "Единица измерения после числа"
+
+[[param]]
+name = "choices"
+type = "string"
+label = "Варианты"
+default = ""
+description = "Варианты выбора через точку с запятой, например «Выкл;Авто;Ручной»"

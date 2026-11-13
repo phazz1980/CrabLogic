@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
-use espflash::flasher::{FlashData, FlashMode, FlashSettings, Flasher};
+use espflash::flasher::{FlashData, FlashFrequency, FlashMode, FlashSettings, Flasher};
 use espflash::image_format::idf::IdfBootloaderFormat;
 use espflash::image_format::ImageFormat;
 use espflash::target::{Chip, ProgressCallbacks};
@@ -298,8 +298,11 @@ pub fn flash_master(
         .xtal_frequency(flasher.connection())
         .map_err(flash_err)?;
     let size = flasher.flash_detect().ok().flatten();
+    // The classic ESP32 master is built for 80 MHz flash (`sdkconfig.defaults.esp32`); the
+    // image header must say so, or the bootloader keeps the slow default of 40 MHz.
+    let freq = (chip == Chip::Esp32).then_some(FlashFrequency::_80Mhz);
     let flash_data = FlashData::new(
-        FlashSettings::new(Some(FlashMode::Dio), size, None),
+        FlashSettings::new(Some(FlashMode::Dio), size, freq),
         0,
         None,
         chip,

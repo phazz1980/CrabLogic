@@ -238,6 +238,10 @@ impl Transport for TcpClient {
         if self.stream.is_some() || self.last_try.is_some_and(|t| t.elapsed() < RECONNECT) {
             return;
         }
+        // No socket before the TCP/IP stack is up (see `TcpServer::accept`).
+        if !(super::net::link_ready() || super::eth::ready()) {
+            return;
+        }
         self.last_try = Some(Instant::now());
         if let Ok(s) = TcpStream::connect_timeout(&self.server, CONNECT_TIMEOUT) {
             if s.set_nonblocking(true).is_ok() {
@@ -273,6 +277,11 @@ impl TcpServer {
     /// Opens the listener once the network is up, then takes a waiting client.
     fn accept(&mut self) {
         if self.listener.is_none() {
+            // A socket before the TCP/IP stack is up asserts in lwIP ("Invalid mbox") and
+            // resets the board: wait for Wi-Fi or Ethernet, as MQTT does.
+            if !(super::net::link_ready() || super::eth::ready()) {
+                return;
+            }
             if self.last_try.is_some_and(|t| t.elapsed() < RECONNECT) {
                 return;
             }

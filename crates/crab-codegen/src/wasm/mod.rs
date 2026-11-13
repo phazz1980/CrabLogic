@@ -20,6 +20,7 @@ use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 
 mod block;
 mod block_emit;
+mod display;
 mod driver;
 mod expander;
 mod hardware;
@@ -32,10 +33,11 @@ mod text;
 mod types;
 mod uart;
 mod user_block;
+pub use user_block::MAX_BLOCK_CONFIG;
 mod web;
 use block_emit::BlockEmit;
 use text::{Buf, A, MEM_START, STR_CAP};
-pub(crate) use user_block::inspect_block_wasm;
+pub(crate) use user_block::{inspect_block_wasm, takes_text_params};
 
 /// Custom section with the bytes of memory a module needs (u32, little-endian); 0 without memory.
 pub const MEM_SECTION: &str = "crab.mem";
@@ -178,9 +180,25 @@ impl Program<'_> {
     /// With `watch` the module reports every block output through `output_i/f(i, v)`:
     /// for tests and the simulator, not for the board.
     pub fn wasm_module_with(&self, sheet: u32, watch: bool) -> Result<WasmModule, WasmError> {
+        self.wasm_module_configured(sheet, watch, &Default::default())
+    }
+
+    /// Like `wasm_module_with`, and `configs` (block id -> bytes, at most `MAX_BLOCK_CONFIG`
+    /// each) is what `crab.config` gives the `block.wasm` of that instance; instances without
+    /// an entry see length 0.
+    pub fn wasm_module_configured(
+        &self,
+        sheet: u32,
+        watch: bool,
+        configs: &std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> Result<WasmModule, WasmError> {
         let module = self.sheet_module(sheet)?;
         let mut em = Emitter::new(self, &module);
         em.watch = watch;
+        // The configs of the displays come from the project; explicit ones win.
+        em.configs = self.display_configs();
+        em.configs
+            .extend(configs.iter().map(|(k, v)| (k.clone(), v.clone())));
         em.step_body()?;
         if em.mem_overflow {
             return Err(WasmError::Unsupported {
@@ -254,6 +272,9 @@ struct Retained {
     settle: i32,
     /// Minimum milliseconds between two writes; 0 = no limit.
     period: i32,
+    /// Flag a menu sets when it wrote the variable: the value is saved in that scan, whatever
+    /// `settle` and `period` say (allocated only for variables a menu edits).
+    force: Option<u32>,
 }
 
 struct Global {
@@ -320,6 +341,8 @@ struct Emitter<'a, 'p> {
     drivers: Vec<user_block::DriverUse>,
     /// Parsed `block.wasm` by block type.
     parsed_drivers: HashMap<String, std::rc::Rc<driver::Driver>>,
+    /// Per-instance configuration bytes of user blocks by block id (`crab.config`).
+    configs: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 /// Blocks per generated function. wasm3 without tail-call optimization (ESP32 build) recurses once
@@ -438,6 +461,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             retained: Vec::new(),
             drivers: Vec::new(),
             parsed_drivers: HashMap::new(),
+            configs: Default::default(),
         };
         for &bi in &module.blocks {
             for &signal in program.blocks[bi].outputs.values() {

@@ -57,12 +57,12 @@ impl Project {
         })
     }
 
-    /// Whether `id` is a widget of the web page (or a copy of one). Widgets live in the
+    /// Whether `id` is a widget of the web page or of a display screen (or a copy of one). Widgets live in the
     /// project tree; the sheets only show images of them, like tags.
     pub fn is_widget(&self, id: &str) -> bool {
         self.logic
             .block(id)
-            .is_some_and(|b| crate::project::is_web_kind(&b.kind) && b.kind != "web_ui")
+            .is_some_and(|b| crate::project::is_widget_kind(&b.kind))
     }
 
     /// Tags that are not used: neither they nor their copies stand on a sheet or

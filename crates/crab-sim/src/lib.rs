@@ -13,10 +13,12 @@
 
 pub mod builtin;
 pub mod bus;
+pub mod display;
 pub mod mcu;
 pub mod schema;
 
 pub use crab_blocks::{Bench, Signal, OWN_SLAVE};
+pub use display::{DisplayDevice, DisplayKind, DisplayView};
 pub use schema::{BenchInput, Computed, Simulation};
 
 use wasmi::{

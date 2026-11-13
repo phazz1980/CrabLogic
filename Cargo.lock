@@ -1194,7 +1194,9 @@ dependencies = [
  "crab-debug",
  "crab-pdf",
  "crab-sim",
+ "serde",
  "serialport",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -1204,6 +1206,7 @@ dependencies = [
  "crab-blocks",
  "crab-core",
  "crab-debug",
+ "crab-ui-format",
  "minijinja",
  "thiserror 2.0.21",
  "toml 0.8.23",
@@ -1338,6 +1341,13 @@ dependencies = [
 [[package]]
 name = "crab-sparkplug"
 version = "1.5.0"
+
+[[package]]
+name = "crab-ui-format"
+version = "1.5.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "crab-web"

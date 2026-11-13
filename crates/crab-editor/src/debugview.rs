@@ -33,6 +33,8 @@ pub struct DebugState {
     checked: Option<([u8; 8], u64)>,
     /// The question "download the board's version?" was already put this session.
     pub hash_asked: bool,
+    /// The last connection status written to the messages, so each change is logged once.
+    pub logged_status: String,
 }
 
 /// One cycle time report with the time it arrived (seconds since the session start).
@@ -58,6 +60,7 @@ impl DebugState {
         let program = Program::build(project, lib).map_err(|e| e.to_string())?;
         let table = crab_codegen::debug::debug_table(&program);
         let inputs = input_ports(project, lib, &table);
+        let memo = crab_build::board_memo::load(&project.work_dir()).map(|(m, _)| m);
         let mut modules = Vec::new();
         for sheet in program.sheets() {
             let built = program
@@ -71,8 +74,15 @@ impl DebugState {
                     table.output_index(&port)
                 })
                 .collect();
+            let crc = crab_build::mcu_module::crc32(&built.wasm);
+            // An AOT image is what the board reports a CRC of.
+            let image_crc = memo
+                .as_ref()
+                .and_then(|m| m.image_crc(&built.name, crc))
+                .filter(|&c| c != crc);
             modules.push(ModuleMap {
-                crc: crab_build::mcu_module::crc32(&built.wasm),
+                crc,
+                image_crc,
                 sheet,
                 name: built.name,
                 slots,
@@ -99,6 +109,7 @@ impl DebugState {
             same_project: None,
             checked: None,
             hash_asked: false,
+            logged_status: String::new(),
         })
     }
 

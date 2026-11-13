@@ -173,11 +173,32 @@ impl EditorApp {
     }
 
     pub(super) fn poll_debug(&mut self) {
+        // A new connection status (e.g. "the module differs from the schema") goes to the
+        // messages once; the status bar only shows the port.
+        let note = self.debug.as_mut().and_then(|d| {
+            d.refresh();
+            if d.live.status == d.logged_status {
+                return None;
+            }
+            d.logged_status = d.live.status.clone();
+            let port = d.port.clone();
+            (!d.logged_status.is_empty()).then(|| (port, d.logged_status.clone(), d.online()))
+        });
+        if let Some((port, status, online)) = note {
+            let level = if online {
+                LogLevel::Info
+            } else {
+                LogLevel::Warning
+            };
+            self.info(
+                level,
+                crate::i18n::fmt("Отладка {0}: {1}", &[&port, &status]),
+            );
+        }
         let Some(d) = &mut self.debug else {
             *self.ai_live.lock().expect("live values") = None;
             return;
         };
-        d.refresh();
         if let Some(doc) = &self.doc {
             d.check_project(&doc.project, doc.revision);
         }

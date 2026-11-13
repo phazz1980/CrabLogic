@@ -1,0 +1,474 @@
+[[var]]
+name = "setpoint"
+type = "float"
+init = 25.0
+description = "Уставка температуры, °C"
+retain = true
+
+[[var]]
+name = "hyst"
+type = "float"
+init = 1.0
+description = "Гистерезис, °C"
+retain = true
+
+[[var]]
+name = "heat_on"
+type = "bool"
+init = true
+description = "Нагрев разрешён"
+retain = true
+
+[[var]]
+name = "temp_view"
+type = "float"
+description = "Температура для пункта меню «Температура»"
+
+[[block]]
+id = "ain"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "temp"
+type = "scale"
+in_min = 0.0
+in_max = 4095.0
+out_min = 0.0
+out_max = 50.0
+clamp = true
+
+[[block]]
+id = "sp"
+type = "var_get"
+var = "setpoint"
+
+[[block]]
+id = "hy"
+type = "var_get"
+var = "hyst"
+
+[[block]]
+id = "lo"
+type = "sub"
+
+[[block]]
+id = "hi"
+type = "add"
+
+[[block]]
+id = "dcold"
+type = "sub"
+
+[[block]]
+id = "dwarm"
+type = "sub"
+
+[[block]]
+id = "cold"
+type = "less"
+b = 0.0
+
+[[block]]
+id = "warm"
+type = "greater"
+b = 0.0
+
+[[block]]
+id = "trig"
+type = "sr_trigger"
+
+[[block]]
+id = "en"
+type = "var_get"
+var = "heat_on"
+
+[[block]]
+id = "run"
+type = "and"
+count = 2
+
+[[block]]
+id = "heater"
+type = "digital_out"
+pin = 2
+
+[[block]]
+id = "tick"
+type = "generator"
+time_on = "5s"
+time_off = "5s"
+
+[[block]]
+id = "pick"
+type = "switch"
+[block.const]
+a = 1
+b = 2
+
+[[block]]
+id = "oled"
+type = "oled"
+model = "ssd1306_128x64"
+address = 60
+sda = 21
+scl = 22
+
+[[block]]
+id = "lcd"
+type = "lcd"
+model = "1602"
+address = 39
+sda = 21
+scl = 22
+
+[[block]]
+id = "title"
+type = "disp_text"
+display = "oled"
+screen = 1
+x = 0
+y = 0
+w = 64
+h = 16
+text = "Теплица"
+font = 16
+
+[[block]]
+id = "t_val"
+type = "disp_value"
+display = "oled"
+screen = 1
+x = 0
+y = 24
+w = 100
+h = 8
+format = "Т = %v °C"
+decimals = 1
+
+[[block]]
+id = "t_bar"
+type = "disp_bar"
+display = "oled"
+screen = 1
+x = 0
+y = 36
+w = 100
+h = 8
+min = 0.0
+max = 50.0
+
+[[block]]
+id = "t_led"
+type = "disp_led"
+display = "oled"
+screen = 1
+x = 0
+y = 50
+w = 8
+h = 8
+
+[[block]]
+id = "t_lbl"
+type = "disp_text"
+display = "oled"
+screen = 1
+x = 12
+y = 50
+w = 60
+h = 8
+text = "нагрев"
+
+[[block]]
+id = "t_ico"
+type = "disp_icon"
+display = "oled"
+screen = 1
+x = 104
+y = 0
+w = 16
+h = 16
+icon = "flame"
+
+[[block]]
+id = "s_cap"
+type = "disp_text"
+display = "oled"
+screen = 2
+x = 0
+y = 0
+w = 100
+h = 8
+text = "Уставки"
+
+[[block]]
+id = "s_val"
+type = "disp_value"
+display = "oled"
+screen = 2
+x = 0
+y = 16
+w = 100
+h = 8
+format = "Уставка %v"
+decimals = 1
+unit = "°C"
+
+[[block]]
+id = "h_val"
+type = "disp_value"
+display = "oled"
+screen = 2
+x = 0
+y = 32
+w = 100
+h = 8
+format = "Гистерезис %v"
+decimals = 1
+
+[[block]]
+id = "l_val"
+type = "disp_value"
+display = "lcd"
+screen = 1
+x = 0
+y = 0
+w = 10
+h = 1
+format = "T=%v C"
+decimals = 1
+
+[[block]]
+id = "l_lbl"
+type = "disp_text"
+display = "lcd"
+screen = 1
+x = 0
+y = 1
+w = 6
+h = 1
+text = "Нагрев"
+
+[[block]]
+id = "l_led"
+type = "disp_led"
+display = "lcd"
+screen = 1
+x = 7
+y = 1
+w = 1
+h = 1
+
+[[block]]
+id = "btn_up"
+type = "digital_in"
+pin = 32
+pullup = true
+inverted = true
+
+[[block]]
+id = "btn_down"
+type = "digital_in"
+pin = 33
+pullup = true
+inverted = true
+
+[[block]]
+id = "btn_ok"
+type = "digital_in"
+pin = 25
+pullup = true
+inverted = true
+
+[[block]]
+id = "btn_back"
+type = "digital_in"
+pin = 26
+pullup = true
+inverted = true
+
+[[block]]
+id = "menu"
+type = "menu"
+display = "oled"
+timeout = 30
+
+[[block]]
+id = "m_set"
+type = "menu_item"
+menu = "menu"
+kind = "submenu"
+caption = "Уставки"
+order = 0
+
+[[block]]
+id = "m_sp"
+type = "menu_item"
+menu = "menu"
+parent = "m_set"
+kind = "number"
+caption = "Уставка"
+var = "setpoint"
+min = 10.0
+max = 40.0
+step = 0.5
+unit = "°C"
+order = 0
+
+[[block]]
+id = "m_hy"
+type = "menu_item"
+menu = "menu"
+parent = "m_set"
+kind = "number"
+caption = "Гистерезис"
+var = "hyst"
+min = 0.5
+max = 5.0
+step = 0.5
+order = 1
+
+[[block]]
+id = "m_en"
+type = "menu_item"
+menu = "menu"
+kind = "bool"
+caption = "Нагрев разрешён"
+var = "heat_on"
+order = 1
+
+[[block]]
+id = "m_view"
+type = "menu_item"
+menu = "menu"
+kind = "view"
+caption = "Температура"
+var = "temp_view"
+unit = "°C"
+order = 2
+
+[[link]]
+from = "ain.out"
+to = "temp.in"
+
+[[link]]
+from = "sp.out"
+to = "lo.a"
+
+[[link]]
+from = "hy.out"
+to = "lo.b"
+
+[[link]]
+from = "sp.out"
+to = "hi.a"
+
+[[link]]
+from = "hy.out"
+to = "hi.b"
+
+[[link]]
+from = "temp.out"
+to = "dcold.a"
+
+[[link]]
+from = "lo.out"
+to = "dcold.b"
+
+[[link]]
+from = "temp.out"
+to = "dwarm.a"
+
+[[link]]
+from = "hi.out"
+to = "dwarm.b"
+
+[[link]]
+from = "cold.out"
+to = "trig.set"
+
+[[link]]
+from = "warm.out"
+to = "trig.reset"
+
+[[link]]
+from = "trig.out"
+to = "run.a"
+
+[[link]]
+from = "en.out"
+to = "run.b"
+
+[[link]]
+from = "run.out"
+to = "heater.in"
+
+[[link]]
+from = "tick.out"
+to = "pick.sel"
+
+[[link]]
+from = "pick.out"
+to = "oled.screen"
+
+[[link]]
+from = "temp.out"
+to = "t_val.in"
+
+[[link]]
+from = "temp.out"
+to = "t_bar.in"
+
+[[link]]
+from = "run.out"
+to = "t_led.in"
+
+[[link]]
+from = "sp.out"
+to = "s_val.in"
+
+[[link]]
+from = "hy.out"
+to = "h_val.in"
+
+[[link]]
+from = "temp.out"
+to = "l_val.in"
+
+[[link]]
+from = "run.out"
+to = "l_led.in"
+
+[[link]]
+from = "btn_up.out"
+to = "menu.up"
+
+[[link]]
+from = "btn_down.out"
+to = "menu.down"
+
+[[link]]
+from = "btn_ok.out"
+to = "menu.ok"
+
+[[link]]
+from = "btn_back.out"
+to = "menu.back"
+
+[[link]]
+from = "dcold.out"
+to = "cold.a"
+
+[[link]]
+from = "dwarm.out"
+to = "warm.a"
+
+[[block]]
+id = "temp_w"
+type = "var_set"
+var = "temp_view"
+write_enable = true
+
+[[link]]
+from = "temp.out"
+to = "temp_w.in"

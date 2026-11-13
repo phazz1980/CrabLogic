@@ -1,0 +1,61 @@
+[block]
+type = "menu"
+name = "Меню"
+symbol = "MENU"
+group = "Дисплеи"
+description = "Меню настроек на дисплее: листается кнопками или энкодером, подключёнными к входам; пункты собираются в конструкторе."
+memory = true
+
+[[input]]
+name = "up"
+type = "bool"
+default = false
+description = "Вверх (по фронту): предыдущий пункт или значение больше"
+
+[[input]]
+name = "down"
+type = "bool"
+default = false
+description = "Вниз (по фронту): следующий пункт или значение меньше"
+
+[[input]]
+name = "ok"
+type = "bool"
+default = false
+description = "ОК (по фронту): войти в пункт, подтвердить значение, выполнить действие"
+
+[[input]]
+name = "back"
+type = "bool"
+default = false
+description = "Назад (по фронту): выйти из подменю или отменить правку значения"
+
+[[output]]
+name = "open"
+type = "bool"
+description = "true, пока меню открыто на дисплее"
+
+[[output]]
+name = "item"
+type = "int"
+description = "Номер текущего пункта меню (0, пока меню закрыто)"
+
+[[output]]
+name = "changed"
+type = "bool"
+description = "Импульс на один шаг: параметр изменён и подтверждён кнопкой ОК"
+
+[[param]]
+name = "display"
+type = "string"
+label = "Дисплей"
+default = ""
+description = "Идентификатор блока дисплея (oled или lcd), на котором показывается меню"
+
+[[param]]
+name = "timeout"
+type = "int"
+label = "Тайм-аут, с"
+default = 30
+min = 0
+description = "Через сколько секунд без нажатий меню закрывается; 0 — не закрывать"

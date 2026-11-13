@@ -77,6 +77,10 @@ pub struct StubIo {
     pub i2c_regs: Vec<u8>,
     /// Level lengths, µs, a pulse measurement (`bus` op 65) gives; the answer is their count.
     pub pulse_in: Vec<u16>,
+    /// Display chips on the I²C bus: writes (op 21) to their address go to the model, which keeps
+    /// the picture (see [`crate::display`]); the write answers with the byte count, a missing
+    /// address with -1 (no acknowledge).
+    pub displays: Vec<crate::display::DisplayDevice>,
     pub gpio_in: HashMap<i32, i32>,
     pub adc_in: HashMap<i32, i32>,
     pub gpio_out: HashMap<i32, i32>,
@@ -283,6 +287,11 @@ impl McuModule {
         self.host_mut().text_tags.insert(id, value);
     }
 
+    /// The pictures of the display chips on the stub bus.
+    pub fn displays(&self) -> Vec<crate::display::DisplayView> {
+        self.io().displays.iter().map(|d| d.view()).collect()
+    }
+
     pub fn io(&self) -> &StubIo {
         &self.host().devices
     }
@@ -391,6 +400,24 @@ impl StubIo {
                 } else {
                     -4
                 }
+            }
+            20 if !self.displays.is_empty() => 0,
+            21 if self
+                .displays
+                .iter()
+                .any(|d| i32::from(d.address) == call[1]) =>
+            {
+                let Some(bytes) = mem.read(call[2], call[3], 4096) else {
+                    return -4;
+                };
+                for d in self
+                    .displays
+                    .iter_mut()
+                    .filter(|d| i32::from(d.address) == call[1])
+                {
+                    d.write(&bytes);
+                }
+                bytes.len() as i32
             }
             21 if !self.i2c_regs.is_empty() => call[3],
             23 if !self.i2c_regs.is_empty() => {

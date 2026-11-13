@@ -1,0 +1,79 @@
+[block]
+type = "disp_bar"
+name = "Полоса на экране"
+symbol = "BAR"
+group = "Экран дисплея"
+description = "Горизонтальная полоса на экране дисплея: заполнена от min до max по значению входа."
+memory = true
+
+[[input]]
+name = "in"
+type = "float"
+description = "Показываемое число"
+
+[[param]]
+name = "min"
+type = "float"
+label = "Минимум"
+default = 0.0
+description = "Значение, при котором полоса пуста"
+
+[[param]]
+name = "max"
+type = "float"
+label = "Максимум"
+default = 100.0
+description = "Значение, при котором полоса заполнена"
+
+[[param]]
+name = "display"
+show = "hidden"
+type = "string"
+label = "Дисплей"
+default = ""
+description = "Идентификатор блока дисплея (oled или lcd), на экране которого стоит виджет"
+
+[[param]]
+name = "screen"
+show = "hidden"
+type = "int"
+label = "Экран"
+default = 1
+min = 1
+description = "Номер экрана дисплея (1, 2, …)"
+
+[[param]]
+name = "x"
+show = "hidden"
+type = "int"
+label = "Столбец"
+default = 0
+min = 0
+description = "Левый край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "y"
+show = "hidden"
+type = "int"
+label = "Строка"
+default = 0
+min = 0
+description = "Верхний край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "w"
+show = "hidden"
+type = "int"
+label = "Ширина"
+default = 64
+min = 1
+description = "Ширина: пиксели OLED или знакоместа LCD"
+
+[[param]]
+name = "h"
+show = "hidden"
+type = "int"
+label = "Высота"
+default = 8
+min = 1
+description = "Высота: пиксели OLED или знакоместа LCD"

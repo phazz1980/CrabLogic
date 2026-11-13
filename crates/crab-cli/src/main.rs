@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod audit;
+mod bench;
 
 use clap::{Parser, Subcommand};
 use crab_build::upload_plan::{self, SheetModule, StopReport, UploadReport};
@@ -146,6 +147,34 @@ enum Command {
         /// Порт платы, например COM3 (по умолчанию единственный найденный)
         #[arg(long, short)]
         port: Option<String>,
+    },
+    /// Замеры производительности мастера на плате: заливает стенды, снимает цифры из `list`, пишет
+    /// отчёт bench/<чип>-<мастер>-<дата>.{toml,md}. Модули на плате заменяются стендами.
+    Bench {
+        /// Порт платы, например COM10 (по умолчанию единственный найденный)
+        #[arg(long, short)]
+        port: Option<String>,
+        /// Только эти стенды через запятую: id (logic_100_aot), начало id (logic_10) или семейство (adc)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Папка для отчётов
+        #[arg(long, default_value = "bench")]
+        out: PathBuf,
+        /// Файл с настройками Wi-Fi и MQTT для сетевого стенда (в git не попадает)
+        #[arg(long, default_value = "bench/secrets.toml")]
+        secrets: PathBuf,
+        /// Чип платы: esp32 или esp32c3 (по умолчанию определяется по мастеру)
+        #[arg(long)]
+        chip: Option<String>,
+        /// Короткий прогон для проверки: 2 с разогрева и 1 с между чтениями (цифры неточны)
+        #[arg(long)]
+        quick: bool,
+        /// IP платы для стенда Modbus TCP (по умолчанию берётся из журнала мастера: «wifi ready, address»)
+        #[arg(long)]
+        modbus_host: Option<String>,
+        /// Сравнить два готовых отчёта .toml вместо замера: --compare a.toml b.toml
+        #[arg(long, num_args = 2, value_names = ["A", "B"])]
+        compare: Option<Vec<PathBuf>>,
     },
     /// Временная: что из библиотеки и примеров ещё не собирается модулями для мастера на Rust
     AuditRust {
@@ -307,6 +336,30 @@ fn run() -> ExitCode {
                 allow_stop,
             },
         ),
+        Command::Bench {
+            port,
+            only,
+            out,
+            secrets,
+            chip,
+            quick,
+            modbus_host,
+            compare,
+        } => match compare {
+            Some(files) => bench::run_compare(&files[0], &files[1]),
+            None => bench::run(
+                bench::BenchArgs {
+                    port,
+                    only,
+                    out,
+                    secrets,
+                    chip,
+                    quick,
+                    modbus_host,
+                },
+                cli.library.as_deref(),
+            ),
+        },
         Command::AuditRust { examples } => run_audit(cli.library.as_deref(), examples),
         Command::FlashMaster {
             project,
@@ -1474,7 +1527,7 @@ fn find_library(project_dir: &Path) -> Option<PathBuf> {
             let own = dir
                 .parent()
                 .is_some_and(|p| p.join(crab_core::project::PROJECT_FILE).is_file());
-            dir.is_dir() && !own
+            dir.is_dir() && !own && crab_core::library::holds_blocks(dir)
         })
 }
 

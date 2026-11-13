@@ -1,0 +1,29 @@
+[package]
+name = "display"
+version = "0.1.0"
+edition = "2021"
+description = "Display driver block (OLED SSD1306/SH1106 and HD44780 LCD via PCF8574): screens and menu"
+
+[lib]
+crate-type = ["cdylib"]
+
+# One code base, two blocks: `--features oled` -> library/oled/block.wasm,
+# `--features lcd` -> library/lcd/block.wasm (drivers\build.ps1 does both).
+[features]
+oled = []
+lcd = []
+
+[dependencies]
+crab-ui-format = { path = "../../crates/crab-ui-format", default-features = false }
+
+[dev-dependencies]
+crab-ui-format = { path = "../../crates/crab-ui-format" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1
+
+[workspace]

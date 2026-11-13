@@ -53,6 +53,11 @@ pub fn error_anchor(kind: DiagKind) -> &'static str {
         DiagKind::RustMaster => crate::i18n::tr("не-работает-на-мастере-на-rust"),
         DiagKind::CppBlock => crate::i18n::tr("блок-на-c-больше-не-поддерживается"),
         DiagKind::RetainFast => crate::i18n::tr("часто-меняющийся-выход-в-retain"),
+        DiagKind::DisplayWidget => crate::i18n::tr("виджет-вне-экрана-дисплея"),
+        DiagKind::DisplayAddress => crate::i18n::tr("два-дисплея-на-одном-адресе"),
+        DiagKind::DisplayCyrillic => crate::i18n::tr("много-русских-букв-на-lcd"),
+        DiagKind::MenuDisplay => crate::i18n::tr("меню-без-дисплея"),
+        DiagKind::MenuItemVar => crate::i18n::tr("переменная-пункта-меню"),
     }
 }
 
@@ -73,6 +78,7 @@ const FILES: &[(&str, &str)] = &[
     ),
     ("boards", include_str!("../../../help/11-boards.md")),
     ("drivers", include_str!("../../../help/12-drivers.md")),
+    ("displays", include_str!("../../../help/13-displays.md")),
     ("build", include_str!("../../../help/05-build.md")),
     ("debug", include_str!("../../../help/06-debug.md")),
     ("ai", include_str!("../../../help/07-ai.md")),

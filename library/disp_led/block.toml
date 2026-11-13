@@ -1,0 +1,65 @@
+[block]
+type = "disp_led"
+name = "Индикатор на экране"
+symbol = "LED"
+group = "Экран дисплея"
+description = "Индикатор на экране дисплея: закрашен, пока на входе true."
+memory = true
+
+[[input]]
+name = "in"
+type = "bool"
+description = "Состояние индикатора"
+
+[[param]]
+name = "display"
+show = "hidden"
+type = "string"
+label = "Дисплей"
+default = ""
+description = "Идентификатор блока дисплея (oled или lcd), на экране которого стоит виджет"
+
+[[param]]
+name = "screen"
+show = "hidden"
+type = "int"
+label = "Экран"
+default = 1
+min = 1
+description = "Номер экрана дисплея (1, 2, …)"
+
+[[param]]
+name = "x"
+show = "hidden"
+type = "int"
+label = "Столбец"
+default = 0
+min = 0
+description = "Левый край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "y"
+show = "hidden"
+type = "int"
+label = "Строка"
+default = 0
+min = 0
+description = "Верхний край: пиксель OLED или знакоместо LCD (с нуля)"
+
+[[param]]
+name = "w"
+show = "hidden"
+type = "int"
+label = "Ширина"
+default = 8
+min = 1
+description = "Ширина: пиксели OLED или знакоместа LCD"
+
+[[param]]
+name = "h"
+show = "hidden"
+type = "int"
+label = "Высота"
+default = 8
+min = 1
+description = "Высота: пиксели OLED или знакоместа LCD"

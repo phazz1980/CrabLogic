@@ -685,7 +685,16 @@ fn upload_modules(
     if info.takes_aot() {
         match crab_build::upload_plan::read_crabmod_space(&mut serial) {
             Ok(Some(space)) => {
-                let memo = crab_build::board_memo::BoardMemo::new(&info, &space);
+                let mut memo = crab_build::board_memo::BoardMemo::new(&info, &space);
+                memo.modules = modules
+                    .iter()
+                    .zip(&plan.images)
+                    .map(|(m, image)| crab_build::board_memo::MemoModule {
+                        name: m.name.clone(),
+                        wasm_crc: crab_build::mcu_module::crc32(&m.wasm),
+                        image_crc: crab_build::mcu_module::crc32(&image.bytes),
+                    })
+                    .collect();
                 if let Err(e) = crab_build::board_memo::save(&project.work_dir(), &memo) {
                     out(
                         LogLevel::Info,

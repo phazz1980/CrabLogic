@@ -48,6 +48,16 @@ pub enum DiagKind {
     CppBlock,
     /// A retained variable is fed straight from an output that changes often.
     RetainFast,
+    /// A screen widget has no display or does not fit the display screen.
+    DisplayWidget,
+    /// Two displays at one I²C address on one bus.
+    DisplayAddress,
+    /// More different Cyrillic letters on one LCD screen than the character generator holds.
+    DisplayCyrillic,
+    /// A `menu` block without a display, or with a block that is not a display.
+    MenuDisplay,
+    /// The variable of a menu item is missing or of a wrong type.
+    MenuItemVar,
 }
 
 impl DiagKind {
@@ -86,6 +96,11 @@ impl DiagKind {
         DiagKind::RustMaster,
         DiagKind::CppBlock,
         DiagKind::RetainFast,
+        DiagKind::DisplayWidget,
+        DiagKind::DisplayAddress,
+        DiagKind::DisplayCyrillic,
+        DiagKind::MenuDisplay,
+        DiagKind::MenuItemVar,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -125,6 +140,11 @@ impl DiagKind {
             DiagKind::RustMaster => "rust-master",
             DiagKind::CppBlock => "cpp-block",
             DiagKind::RetainFast => "retain-fast",
+            DiagKind::DisplayWidget => "display-widget",
+            DiagKind::DisplayAddress => "display-address",
+            DiagKind::DisplayCyrillic => "display-cyrillic",
+            DiagKind::MenuDisplay => "menu-display",
+            DiagKind::MenuItemVar => "menu-item-var",
         }
     }
 }

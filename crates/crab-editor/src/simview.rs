@@ -33,6 +33,8 @@ pub struct SimState {
     /// Length of the manual step button, ms.
     step_ms: u32,
     notes: Vec<String>,
+    /// The window with the pictures of the display blocks is open.
+    show_displays: bool,
 }
 
 fn build(project: &Project, lib: &Library) -> Result<Simulation, String> {
@@ -53,6 +55,7 @@ impl SimState {
             last_reload: Instant::now(),
             step_ms: 100,
             notes,
+            show_displays: true,
         })
     }
 
@@ -442,9 +445,134 @@ pub fn window(sim: &mut SimState, pal: &Palette, ctx: &egui::Context) -> bool {
             ui.weak(crate::i18n::tr(
                 "Входы платы и блоки с железом задаются правой кнопкой по их выходу.",
             ));
+            if sim.sim.has_displays() {
+                ui.checkbox(
+                    &mut sim.show_displays,
+                    crate::i18n::tr("Показывать дисплеи"),
+                );
+            }
             for line in &sim.notes {
                 ui.colored_label(pal.error, line);
             }
         });
+    if sim.show_displays && sim.sim.has_displays() {
+        display_window(sim, ctx);
+    }
     open
+}
+
+/// Scale of an OLED pixel on the screen, points.
+const OLED_SCALE: f32 = 3.0;
+/// Size of a dot of an LCD character, points.
+const LCD_DOT: f32 = 2.5;
+
+/// The pictures of the display blocks (OLED pixels, LCD characters); redrawn every frame.
+fn display_window(sim: &mut SimState, ctx: &egui::Context) {
+    let mut open = true;
+    egui::Window::new(crate::i18n::tr("Дисплей"))
+        .open(&mut open)
+        .resizable(false)
+        .show(ctx, |ui| {
+            for view in sim.sim.displays() {
+                ui.label(egui::RichText::new(&view.id).strong());
+                if view.kind == crab_sim::DisplayKind::Lcd {
+                    lcd_picture(ui, &view);
+                } else {
+                    oled_picture(ui, &view);
+                }
+                ui.add_space(6.0);
+            }
+        });
+    sim.show_displays = open;
+}
+
+fn oled_picture(ui: &mut Ui, view: &crab_sim::DisplayView) {
+    let size = egui::vec2(view.width as f32, view.height as f32) * OLED_SCALE;
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(8, 8, 12));
+    if !view.on {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            crate::i18n::tr("выключен"),
+            egui::FontId::proportional(14.0),
+            egui::Color32::from_gray(70),
+        );
+        return;
+    }
+    // Contrast dims the lit pixels a little, like the real panel.
+    let level = 120 + (u32::from(view.contrast) * 135 / 255) as u8;
+    let lit = egui::Color32::from_rgb(level, level, (u32::from(level) * 245 / 255) as u8);
+    for y in 0..view.height {
+        for x in 0..view.width {
+            if view.pixels[y * view.width + x] {
+                let at = rect.min + egui::vec2(x as f32, y as f32) * OLED_SCALE;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(at, egui::Vec2::splat(OLED_SCALE)),
+                    0.0,
+                    lit,
+                );
+            }
+        }
+    }
+}
+
+fn lcd_picture(ui: &mut Ui, view: &crab_sim::DisplayView) {
+    let cell = egui::vec2(6.0, 9.0) * LCD_DOT;
+    let size = egui::vec2(view.width as f32 * cell.x, view.height as f32 * cell.y)
+        + egui::Vec2::splat(LCD_DOT * 2.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let (back, ink) = if view.backlight {
+        (
+            egui::Color32::from_rgb(40, 140, 60),
+            egui::Color32::from_rgb(10, 40, 15),
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(30, 45, 32),
+            egui::Color32::from_rgb(20, 32, 22),
+        )
+    };
+    painter.rect_filled(rect, 3.0, back);
+    let origin = rect.min + egui::Vec2::splat(LCD_DOT);
+    for (row, codes) in view.codes.iter().enumerate() {
+        for (col, &code) in codes.iter().enumerate() {
+            let at = origin + egui::vec2(col as f32 * cell.x, row as f32 * cell.y);
+            let frame = egui::Rect::from_min_size(at, cell - egui::vec2(LCD_DOT, LCD_DOT));
+            painter.rect_filled(
+                frame,
+                0.0,
+                ink.gamma_multiply(if view.on { 0.15 } else { 0.05 }),
+            );
+            if !view.on {
+                continue;
+            }
+            if code < 16 {
+                // Custom character: 5x8 dots from CGRAM (codes 8..15 repeat 0..7).
+                let glyph = view.cgram[usize::from(code & 7)];
+                for (dy, line) in glyph.iter().enumerate() {
+                    for dx in 0..5 {
+                        if line >> (4 - dx) & 1 != 0 {
+                            let dot = at + egui::vec2(dx as f32, dy as f32) * LCD_DOT;
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(dot, egui::Vec2::splat(LCD_DOT)),
+                                0.0,
+                                ink,
+                            );
+                        }
+                    }
+                }
+            } else if (0x20..0x7F).contains(&code) && code != b' ' {
+                painter.text(
+                    frame.center(),
+                    egui::Align2::CENTER_CENTER,
+                    char::from(code),
+                    egui::FontId::monospace(cell.y * 0.8),
+                    ink,
+                );
+            }
+        }
+    }
 }

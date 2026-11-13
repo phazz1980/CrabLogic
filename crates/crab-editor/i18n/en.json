@@ -445,6 +445,7 @@
  "Открыть страницу устройства в браузере": "Open the device page in the browser",
  "Открыть...": "Open...",
  "Отладка": "Debugging",
+ "Отладка {0}": "Debugging {0}",
  "Отладка {0}: {1}": "Debugging {0}: {1}",
  "Отладка остановлена": "Debugging stopped",
  "Отладка: залить и подключиться": "Debugging: upload and connect",
@@ -1334,5 +1335,8 @@
  "Выход меняется часто (счётчик, измерение): проверка предупредит, если им кормят переменную с сохранением во флеш": "The output changes often (counter, measurement): the check warns if it feeds a flash-retained variable",
  "Флеш: записей {0}, за час {1}": "Flash: {0} writes, {1} in the last hour",
  ", свободно {0} записей": ", {0} entries free",
- "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Frequent flash writes: {0} in the last hour — the flash is wearing out. Check the retained variables."
+ "Частая запись во флеш: {0} за час — флеш изнашивается. Проверьте переменные с сохранением.": "Frequent flash writes: {0} in the last hour — the flash is wearing out. Check the retained variables.",
+ "Дисплей": "Display",
+ "Показывать дисплеи": "Show displays",
+ "выключен": "off"
 }

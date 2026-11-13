@@ -75,6 +75,9 @@ extern "C" {
 
 /// WASM operand stack and execution environment of one module, bytes (stage 0 measurements).
 const STACK: u32 = 4096;
+/// The same for an AOT module: compiled code runs on the native stack of the task, the WASM
+/// stack of its environment only keeps call frames (bench of 13.11.2026: 3 KB less per sheet).
+const AOT_STACK: u32 = 1024;
 /// The exception `crab.yield` raises when a call spent its work limit.
 const TOO_LONG: &CStr = c"crab: too long";
 
@@ -192,7 +195,11 @@ impl Wamr {
         if m.inst.is_null() {
             return Err(format!("модуль не запущен: {}", text(err.as_ptr())));
         }
-        m.env = unsafe { crab_wamr_exec_env(m.inst, STACK) };
+        let stack = match mode {
+            ExecutionMode::AotXip => AOT_STACK,
+            _ => STACK,
+        };
+        m.env = unsafe { crab_wamr_exec_env(m.inst, stack) };
         if m.env.is_null() {
             return Err("модуль не запущен: нет памяти под окружение".to_owned());
         }

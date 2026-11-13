@@ -79,7 +79,15 @@ pub fn audit_project(project: &Project, lib: &Library, caps: &[String]) -> Verdi
 /// Every block type of the library, alone.
 pub fn audit_blocks(lib: &Library, caps: &[String]) -> Vec<Row> {
     let root = std::env::temp_dir().join(format!("crab_audit_{}", std::process::id()));
-    let mut blocks: Vec<_> = lib.iter().collect();
+    // Screen widgets, menu items and the menu only exist next to a display: alone they fail the
+    // schema check by design. The examples audit covers them (`examples/display_menu`).
+    let mut blocks: Vec<_> = lib
+        .iter()
+        .filter(|b| {
+            let kind = b.def.info.kind.as_str();
+            !crab_core::project::is_screen_kind(kind) && kind != "menu"
+        })
+        .collect();
     blocks.sort_by(|a, b| a.def.info.kind.cmp(&b.def.info.kind));
     let rows = blocks
         .into_iter()

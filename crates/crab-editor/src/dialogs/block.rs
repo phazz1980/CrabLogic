@@ -3,7 +3,7 @@ use super::*;
 /// Web widgets (everything `web_*` but the service block) have a place on the page set in
 /// the web designer, so their position and size are not edited here.
 pub(super) fn is_widget_kind(kind: &str) -> bool {
-    kind.starts_with("web_") && kind != "web_ui"
+    crab_core::project::is_widget_kind(kind)
 }
 
 pub(super) fn block_body(app: &EditorApp, ui: &mut Ui, d: &mut BlockDialog) {

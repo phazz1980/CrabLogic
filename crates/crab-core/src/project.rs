@@ -38,7 +38,19 @@ pub const BOARDS_PDF: &str = "boards.pdf";
 
 /// Blocks of the web page (the `web_ui` host and the widgets) are stored in `web.toml`.
 pub fn is_web_kind(kind: &str) -> bool {
-    kind.starts_with("web_")
+    kind.starts_with("web_") || is_screen_kind(kind)
+}
+
+/// Blocks of the display constructor (screen widgets `disp_*` and menu items): they live
+/// in `web.toml` next to the web widgets, but belong to a display, not to the web page.
+pub fn is_screen_kind(kind: &str) -> bool {
+    kind.starts_with("disp_") || kind == "menu_item"
+}
+
+/// A widget of the web page or of a display screen: it waits in the project tree, its
+/// place is set in the constructor and the sheets only show images of it.
+pub fn is_widget_kind(kind: &str) -> bool {
+    is_web_kind(kind) && kind != "web_ui"
 }
 
 /// Project settings: `[project]`, `[board]`, `[[uart]]`.
@@ -185,7 +197,7 @@ impl Project {
                 self.logic
                     .blocks
                     .iter()
-                    .filter(|b| is_web_kind(&b.kind))
+                    .filter(|b| b.kind.starts_with("web_"))
                     .map(|b| b.id.clone()),
             );
         }

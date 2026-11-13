@@ -143,16 +143,19 @@ pub fn check_block(dir: &Path, lib: &Library) -> BlockCheck {
                 Err(e) => out.error(
                     "wasm",
                     e,
-                    "Нужен экспорт step(i32) и импорты только crab.input/param/output/log и bus.*.",
+                    "Нужен экспорт step(i32) и импорты только crab.input/param/output/log/config и bus.*.",
                 ),
             }
         }
     }
 
     let def = &block.def;
+    // The display drivers take their model from `crab.config`; the generator leaves the cell
+    // of their text parameter at 0 (see `wasm::user_block`).
+    let text_params_ok = crate::wasm::takes_text_params(&block.def.info.kind);
     let has_string = def.inputs.iter().any(|p| p.ty == SignalType::String)
         || def.outputs.iter().any(|p| p.ty == SignalType::String)
-        || def.params.iter().any(|p| p.kind == ParamKind::Text);
+        || (!text_params_ok && def.params.iter().any(|p| p.kind == ParamKind::Text));
     if has_string {
         out.error(
             "string",

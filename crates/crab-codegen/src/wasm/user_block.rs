@@ -39,6 +39,7 @@ pub(super) enum Shim {
     Param,
     Output,
     Log,
+    Config,
     Bus(i32, &'static [Arg]),
 }
 
@@ -90,13 +91,14 @@ fn shim_of(
         ("crab" | "flp", "param") => (Shim::Param, vec![I32], vec![F64]),
         ("crab" | "flp", "output") => (Shim::Output, vec![I32, F64], vec![]),
         ("crab" | "flp", "log") => (Shim::Log, vec![I32, I32], vec![]),
+        ("crab" | "flp", "config") => (Shim::Config, vec![I32, I32], vec![I32]),
         (crab_sim_bus::MODULE, _) => match BUS_IMPORTS.iter().find(|(n, ..)| *n == name) {
             Some(&(_, n, shim)) => (shim, vec![I32; n], vec![I32]),
             None => return Err(format!("нет такой функции шины: bus.{name}")),
         },
         _ => {
             return Err(format!(
-                "импорт {module}.{name} недоступен драйверу (только crab.input/param/output/log и bus.*)"
+                "импорт {module}.{name} недоступен драйверу (только crab.input/param/output/log/config и bus.*)"
             ))
         }
     };
@@ -126,6 +128,9 @@ pub(crate) fn inspect_block_wasm(bytes: &[u8]) -> Result<WasmInfo, String> {
     Ok(WasmInfo { driver })
 }
 
+/// Largest per-instance configuration a block may get through `crab.config`.
+pub const MAX_BLOCK_CONFIG: usize = 4096;
+
 /// Name of the import module of the bus functions (the same as `crab_sim::BUS_MODULE`).
 mod crab_sim_bus {
     pub const MODULE: &str = "bus";
@@ -146,6 +151,8 @@ pub(super) struct DriverUse {
     pub(super) n_out: u32,
     /// Resources the instance claims in `init`: (kind, value).
     pub(super) claims: Vec<(i32, i32)>,
+    /// Configuration bytes in the data segment: (address, length); length 0 when none.
+    pub(super) config: (u32, u32),
 }
 
 impl Emitter<'_, '_> {
@@ -203,7 +210,14 @@ impl Emitter<'_, '_> {
             }
             shims.push(shim);
         }
-        if let Some(p) = def.params.iter().find(|p| p.kind == ParamKind::Text) {
+        // A display takes its kind and size from `crab.config`; its text parameter (`model`)
+        // keeps a zero cell (the indices of the other parameters do not move).
+        let is_display = takes_text_params(&inst.block.kind);
+        let text_param = def
+            .params
+            .iter()
+            .find(|p| p.kind == ParamKind::Text && !is_display);
+        if let Some(p) = text_param {
             let why = format!(
                 "строковый параметр «{}» пока не передаётся в block.wasm в модуле",
                 p.name
@@ -235,6 +249,25 @@ impl Emitter<'_, '_> {
             }
         }
 
+        // Claims go through `crab.bus` even when the driver itself never calls `bus.*`.
+        if !claims.is_empty() {
+            self.hw.insert(HW_BUS);
+        }
+        let mut config = (0, 0);
+        if let Some(bytes) = self.configs.get(&inst.block.id).filter(|b| !b.is_empty()) {
+            if bytes.len() > MAX_BLOCK_CONFIG {
+                let why = format!(
+                    "конфигурация блока {} байт больше допустимых {MAX_BLOCK_CONFIG}",
+                    bytes.len()
+                );
+                return Err(self.unsupported(inst, &why));
+            }
+            let bytes = bytes.clone();
+            let at = self.alloc(bytes.len() as u32);
+            config = (at, bytes.len() as u32);
+            self.data.push((at, bytes));
+        }
+
         let base = self.alloc_aligned(d.window.max(16), 16);
         // Offsets past 4 GB cannot be encoded: refuse now rather than in `encode`.
         let probe = driver::Place {
@@ -248,9 +281,12 @@ impl Emitter<'_, '_> {
         if let Err(e) = d.bodies(&probe) {
             return Err(self.unsupported(inst, &e));
         }
-        let n_in = def.inputs.len() as u32;
+        let display = self.display_extras(inst)?;
+        let extra_in = display.as_ref().map_or(0, |d| d.n_in());
+        let extra_out = display.as_ref().map_or(0, |d| d.n_out());
+        let n_in = def.inputs.len() as u32 + extra_in;
         let n_param = def.params.len() as u32;
-        let n_out = def.outputs.len() as u32;
+        let n_out = def.outputs.len() as u32 + extra_out;
         let cells_in = self.alloc_aligned(8 * n_in.max(1), 8);
         let cells_param = self.alloc_aligned(8 * n_param.max(1), 8);
         let cells_out = self.alloc_aligned(8 * n_out.max(1), 8);
@@ -272,10 +308,16 @@ impl Emitter<'_, '_> {
             self.op(f64_store.clone());
         }
         for i in 0..def.params.len() {
+            if def.params[i].kind == ParamKind::Text {
+                continue;
+            }
             self.c_i((cells_param + 8 * i as u32) as i32);
             let ty = self.param(inst, i);
             self.op(to_f64(ty));
             self.op(f64_store.clone());
+        }
+        if let Some(d) = &display {
+            self.display_inputs(d, cells_in + 8 * def.inputs.len() as u32);
         }
         let k = self.drivers.len() as u32;
         self.op(I::LocalGet(0));
@@ -295,6 +337,9 @@ impl Emitter<'_, '_> {
             };
             self.set_out(inst, i, ty);
         }
+        if let Some(d) = &display {
+            self.display_outputs(d, cells_out + 8 * def.outputs.len() as u32);
+        }
         self.drivers.push(DriverUse {
             driver: d,
             shims,
@@ -306,8 +351,183 @@ impl Emitter<'_, '_> {
             cells_out,
             n_out,
             claims,
+            config,
         });
         Ok(true)
+    }
+}
+
+/// What a display block gets besides its own ports (see `display.rs`).
+struct DisplayExtras<'a, 'p> {
+    /// The widget input slots: the instance that feeds the widget on this sheet, if any.
+    widgets: Vec<Option<&'a Instance<'p>>>,
+    menu: Option<MenuExtras<'a, 'p>>,
+}
+
+struct MenuExtras<'a, 'p> {
+    inst: &'a Instance<'p>,
+    vars: Vec<super::display::MenuVar>,
+}
+
+impl DisplayExtras<'_, '_> {
+    fn n_in(&self) -> u32 {
+        self.widgets.len() as u32 + self.menu.as_ref().map_or(0, |m| 4 + m.vars.len() as u32)
+    }
+
+    fn n_out(&self) -> u32 {
+        self.menu.as_ref().map_or(0, |m| 4 + m.vars.len() as u32)
+    }
+}
+
+/// The `in` of an instance is linked (not the default of an unconnected port).
+fn in_linked(i: &Instance) -> bool {
+    !matches!(i.inputs["in"].source, Source::Default(_))
+}
+
+impl<'a, 'p> Emitter<'a, 'p> {
+    /// The extra inputs and outputs of a display block; `None` for any other block.
+    fn display_extras(
+        &mut self,
+        inst: &Instance,
+    ) -> Result<Option<DisplayExtras<'a, 'p>>, WasmError> {
+        let program = self.program;
+        let Some(plan) = program.display_plan(&inst.block.id) else {
+            return Ok(None);
+        };
+        let module = self.module;
+        let on_sheet = |id: String| {
+            module
+                .blocks
+                .iter()
+                .map(|&bi| &program.blocks[bi])
+                .filter(move |i| i.block.id == id || i.block.tag.as_deref() == Some(id.as_str()))
+        };
+        // The widget itself or an image of it on this sheet feeds it; a linked one wins.
+        let widgets = plan
+            .widgets
+            .iter()
+            .map(|w| {
+                let all: Vec<&Instance> = on_sheet(w.clone())
+                    .filter(|i| i.inputs.contains_key("in"))
+                    .collect();
+                all.iter()
+                    .copied()
+                    .find(|i| in_linked(i))
+                    .or(all.first().copied())
+            })
+            .collect();
+        let menu = match plan.menu {
+            Some(m) => {
+                let Some(menu) = on_sheet(m.block.clone()).find(|i| i.block.id == m.block) else {
+                    return Err(self.unsupported(
+                        inst,
+                        &format!(
+                            "меню «{}» должно стоять на том же листе, что и дисплей",
+                            m.block
+                        ),
+                    ));
+                };
+                Some(MenuExtras {
+                    inst: menu,
+                    vars: m.vars,
+                })
+            }
+            None => None,
+        };
+        Ok(Some(DisplayExtras { widgets, menu }))
+    }
+
+    /// Stores the widget values, the menu buttons and the menu variables in the input cells
+    /// after the block's own ports (`first` is the address of the first extra cell).
+    fn display_inputs(&mut self, d: &DisplayExtras, first: u32) {
+        let f64_store = I::F64Store(Self::mem_arg(0, 3));
+        let mut cell = first;
+        for w in d.widgets.iter().copied() {
+            if let Some(w) = w {
+                self.c_i(cell as i32);
+                let ty = self.operand(w, "in");
+                self.op(to_f64(ty));
+                self.op(f64_store.clone());
+            }
+            cell += 8;
+        }
+        let Some(menu) = &d.menu else {
+            return;
+        };
+        for button in ["up", "down", "ok", "back"] {
+            if menu.inst.inputs.contains_key(button) {
+                self.c_i(cell as i32);
+                let ty = self.operand(menu.inst, button);
+                self.op(to_f64(ty));
+                self.op(f64_store.clone());
+            }
+            cell += 8;
+        }
+        for v in &menu.vars {
+            self.c_i(cell as i32);
+            let ty = self.var_read(&v.name);
+            self.op(to_f64(ty));
+            self.op(f64_store.clone());
+            cell += 8;
+        }
+    }
+
+    /// After the driver's step: the menu outputs go to the `menu` block, a confirmed variable
+    /// is written (and saved at once when it is retained).
+    fn display_outputs(&mut self, d: &DisplayExtras, first: u32) {
+        let Some(menu) = &d.menu else {
+            return;
+        };
+        let load = |e: &mut Self, cell: u32| {
+            e.c_i(cell as i32);
+            e.op(I::F64Load(Self::mem_arg(0, 3)));
+        };
+        let def = &menu.inst.lib.def;
+        for (k, port) in ["open", "item", "changed"].into_iter().enumerate() {
+            let Some(i) = def.outputs.iter().position(|p| p.name == port) else {
+                continue;
+            };
+            if !menu.inst.outputs.contains_key(port) {
+                continue;
+            }
+            load(self, first + 8 * k as u32);
+            self.op(I::I32TruncSatF64S);
+            self.set_out(menu.inst, i, Ty::I);
+        }
+        let slot = first + 8 * 3;
+        for (v, var) in menu.vars.iter().enumerate() {
+            load(self, slot);
+            self.op(I::F64Const((v as f64).into()));
+            self.op(I::F64Eq);
+            if var.action {
+                // A pulse of one step.
+                self.var_write(&var.name, Ty::I);
+                continue;
+            }
+            self.op(I::If(BlockType::Empty));
+            load(self, slot + 8 * (1 + v as u32));
+            let ty = self.var_ty(&var.name);
+            self.op(if ty == Ty::F {
+                I::F32DemoteF64
+            } else {
+                I::I32TruncSatF64S
+            });
+            self.var_write(&var.name, ty);
+            // Retained: saved in this scan, not after `settle` and `period`.
+            if let Some(at) = self.retained.iter().position(|r| r.name == var.name) {
+                let force = match self.retained[at].force {
+                    Some(g) => g,
+                    None => {
+                        let g = self.state_i();
+                        self.retained[at].force = Some(g);
+                        g
+                    }
+                };
+                self.c_i(1);
+                self.op(I::GlobalSet(force));
+            }
+            self.op(I::End);
+        }
     }
 }
 
@@ -365,6 +585,7 @@ pub(super) fn shim_body(shim: Shim, u: &DriverUse, bus: u32, log: u32) -> Functi
             f.instruction(&I::LocalGet(1));
             f.instruction(&I::Call(log));
         }
+        Shim::Config => return config_shim(u),
         Shim::Bus(op, args) => {
             f.instruction(&I::I32Const(op));
             for a in args {
@@ -393,6 +614,67 @@ pub(super) fn shim_body(shim: Shim, u: &DriverUse, bus: u32, log: u32) -> Functi
         }
     }
     f.instruction(&I::End);
+    f
+}
+
+/// `config(ptr, cap) -> len`: copies `min(cap, len)` bytes of the instance's configuration to
+/// `ptr` of the driver's window (nothing when that does not fit the window) and returns `len`.
+fn config_shim(u: &DriverUse) -> Function {
+    let (at, len) = u.config;
+    let window = u.driver.window;
+    // Locals: 0 ptr, 1 cap, 2 n, 3 i.
+    let mut f = Function::new([(2, ValType::I32)]);
+    let mut i = |x: I<'static>| {
+        f.instruction(&x);
+    };
+    // n = cap > len ? len : cap
+    i(I::I32Const(len as i32));
+    i(I::LocalGet(1));
+    i(I::LocalGet(1));
+    i(I::I32Const(len as i32));
+    i(I::I32GtU);
+    i(I::Select);
+    i(I::LocalSet(2));
+    // if ptr > window || n > window - ptr { n = 0 }
+    i(I::LocalGet(0));
+    i(I::I32Const(window as i32));
+    i(I::I32GtU);
+    i(I::If(BlockType::Empty));
+    i(I::I32Const(0));
+    i(I::LocalSet(2));
+    i(I::Else);
+    i(I::LocalGet(2));
+    i(I::I32Const(window as i32));
+    i(I::LocalGet(0));
+    i(I::I32Sub);
+    i(I::I32GtU);
+    i(I::If(BlockType::Empty));
+    i(I::I32Const(0));
+    i(I::LocalSet(2));
+    i(I::End);
+    i(I::End);
+    // for i in 0..n { window[ptr + i] = data[i] }
+    i(I::Block(BlockType::Empty));
+    i(I::Loop(BlockType::Empty));
+    i(I::LocalGet(3));
+    i(I::LocalGet(2));
+    i(I::I32GeU);
+    i(I::BrIf(1));
+    i(I::LocalGet(0));
+    i(I::LocalGet(3));
+    i(I::I32Add);
+    i(I::LocalGet(3));
+    i(I::I32Load8U(Emitter::mem_arg(u64::from(at), 0)));
+    i(I::I32Store8(Emitter::mem_arg(u64::from(u.base), 0)));
+    i(I::LocalGet(3));
+    i(I::I32Const(1));
+    i(I::I32Add);
+    i(I::LocalSet(3));
+    i(I::Br(0));
+    i(I::End);
+    i(I::End);
+    i(I::I32Const(len as i32));
+    i(I::End);
     f
 }
 
@@ -427,5 +709,32 @@ pub(super) fn init_drivers(
     }
     for init in init_of.iter().flatten() {
         f.instruction(&I::Call(*init));
+    }
+}
+
+/// Blocks with `block.wasm` whose text parameters are allowed: the displays take their model
+/// from `crab.config`, the cell of the text parameter stays 0.
+pub fn takes_text_params(kind: &str) -> bool {
+    matches!(kind, "oled" | "lcd")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspect_block_wasm;
+
+    #[test]
+    fn config_import_is_known() {
+        let ok = wat::parse_str(
+            r#"(module (import "crab" "config" (func (param i32 i32) (result i32)))
+                 (func (export "step") (param i32)))"#,
+        )
+        .unwrap();
+        assert!(!inspect_block_wasm(&ok).unwrap().driver);
+        let bad = wat::parse_str(
+            r#"(module (import "crab" "config" (func (param i32) (result i32)))
+                 (func (export "step") (param i32)))"#,
+        )
+        .unwrap();
+        assert!(inspect_block_wasm(&bad).unwrap_err().contains("сигнатур"));
     }
 }
