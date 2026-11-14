@@ -104,6 +104,10 @@ fn start(n: usize, c: &[i32; 16]) -> bool {
 
 /// Writes to the console of the master; gives up after 200 ms (nobody is reading the USB of a C3).
 fn console(bytes: &[u8]) {
+    // Once `crab-io` runs, the bytes go out with the answers: the step does not wait for the port.
+    if super::usb::queue_console(bytes) {
+        return;
+    }
     let started = Instant::now();
     let mut out = std::io::stdout().lock();
     let mut rest = bytes;

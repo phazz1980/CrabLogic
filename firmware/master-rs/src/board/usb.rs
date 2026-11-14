@@ -3,9 +3,9 @@
 //! damage it. ESP32-C3: the built-in USB Serial/JTAG; classic ESP32: UART0, which the board's
 //! USB-UART bridge (CP2102/CH340) brings to USB.
 
+use super::spin::Spin;
 use esp_idf_svc::sys;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 /// Bytes the driver keeps until the master reads them; a `put` chunk must fit.
 const RX_BUFFER: u32 = 4096;
@@ -64,7 +64,7 @@ static UART_READY: AtomicBool = AtomicBool::new(false);
 /// waits for the 115200 baud line). Before it (start, errors of `init`) the line is written at once.
 pub fn write_line(text: &str) {
     if QUEUED.load(Ordering::Acquire) {
-        let mut out = OUT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = OUT.lock_any();
         if out.len() + text.len() + 2 <= OUT_MAX {
             out.extend_from_slice(text.as_bytes());
             out.extend_from_slice(NEWLINE);
@@ -79,7 +79,9 @@ pub fn write_line(text: &str) {
 
 /// Bytes of answers waiting for the port; beyond it a line is written at once by its writer.
 const OUT_MAX: usize = 16 * 1024;
-static OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// Written by any task (the scan above all), taken by `crab-io`: a `Spin` taken by priority
+/// ([`Spin::lock_any`]), the sections only copy bytes (`specs/safety-audit`, item 11).
+static OUT: Spin<Vec<u8>> = Spin::new(Vec::new());
 /// Answers go through [`OUT`].
 static QUEUED: AtomicBool = AtomicBool::new(false);
 
@@ -90,8 +92,22 @@ pub fn queue_answers(on: bool) {
 
 /// Moves the queued answers into `buf` (swapped, nothing copied).
 pub fn take_answers(buf: &mut Vec<u8>) {
-    let mut out = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = OUT.lock_any();
     core::mem::swap(&mut *out, buf);
+}
+
+/// Raw bytes of a module for the console (`uart_send` to USB/UART0) go out with the answers, so
+/// the step does not wait for the port. `false` before `crab-io` runs or when the queue is full.
+pub fn queue_console(bytes: &[u8]) -> bool {
+    if !QUEUED.load(Ordering::Acquire) {
+        return false;
+    }
+    let mut out = OUT.lock_any();
+    if out.len() + bytes.len() > OUT_MAX {
+        return false;
+    }
+    out.extend_from_slice(bytes);
+    true
 }
 
 #[cfg(not(target_arch = "riscv32"))]

@@ -76,6 +76,18 @@ impl<T> Spin<T> {
         }
     }
 
+    /// A "ceiling" lock taken by any task: the scan (or a task above it) as [`Spin::lock_scan`],
+    /// a background one as [`Spin::lock_ceiling`].
+    pub fn lock_any(&self) -> Guard<'_, T> {
+        // SAFETY: a plain query of the calling task (a null handle means "this task").
+        let prio = unsafe { sys::uxTaskPriorityGet(core::ptr::null_mut()) };
+        if prio >= super::SCAN_PRIORITY as u32 {
+            self.lock_scan()
+        } else {
+            self.lock_ceiling()
+        }
+    }
+
     /// For a background thread on a "ceiling" lock: above the scan priority while held.
     pub fn lock_ceiling(&self) -> Guard<'_, T> {
         // SAFETY: plain FreeRTOS calls on the calling task (a null handle means "this task").

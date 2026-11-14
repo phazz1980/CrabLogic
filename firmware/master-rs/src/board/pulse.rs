@@ -20,9 +20,10 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 use esp_idf_svc::sys;
+
+use super::spin::Spin;
 
 /// Most levels one measurement returns (the `bus.pulse_read` limit).
 pub(super) const MAX_LEVELS: usize = 128;
@@ -49,11 +50,13 @@ struct Channel {
     symbols: [u32; BUF_SYMBOLS],
 }
 
-// SAFETY: the raw handles are used only under the `CHANNELS` mutex (or by the callback, which
+// SAFETY: the raw handles are used only under the `CHANNELS` lock (or by the callback, which
 // touches `got` atomically and the semaphore, both safe from an interrupt).
 unsafe impl Send for Channel {}
 
-static CHANNELS: Mutex<Vec<Box<Channel>>> = Mutex::new(Vec::new());
+/// Only the scan uses the channels (driver calls, a module going away, the `pulsetest` and
+/// `pulsebench` commands): an uncontended `Spin`, not an OS mutex (`specs/safety-audit`, item 11).
+static CHANNELS: Spin<Vec<Box<Channel>>> = Spin::new(Vec::new());
 
 /// `on_recv_done`: remembers how many symbols came and wakes the waiting task. Runs in the RMT
 /// interrupt.
@@ -139,7 +142,7 @@ fn destroy(channel: &mut Channel) {
 /// Frees the channel of `pin`, if there is one (the module that used the pin is gone). The driver
 /// resets the pin; the caller does that anyway.
 pub(super) fn release(pin: i32) {
-    let mut table = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = CHANNELS.lock_scan();
     if let Some(at) = table.iter().position(|c| c.pin == pin) {
         let mut channel = table.swap_remove(at);
         destroy(&mut channel);
@@ -153,7 +156,7 @@ fn wait_ticks(ms: u32) -> u32 {
 /// Makes the channel of `pin` ahead of the start pulse: making it reconfigures the pin and would
 /// cut a start pulse short. False when no channel can be made (the caller falls back).
 pub(super) fn prepare(pin: i32) -> bool {
-    let mut table = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = CHANNELS.lock_scan();
     if table.iter().any(|c| c.pin == pin) {
         return true;
     }
@@ -170,8 +173,16 @@ pub(super) fn prepare(pin: i32) -> bool {
 /// armed and must release the line (or start the signal). `None` means no RMT channel is
 /// available (`start` was not called); an empty vector means nothing came before the timeout.
 pub(super) fn measure(pin: i32, count: usize, start: &mut dyn FnMut()) -> Option<Vec<u16>> {
-    let count = count.min(MAX_LEVELS);
-    let mut table = CHANNELS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut buf = [0u16; MAX_LEVELS];
+    let n = measure_into(pin, &mut buf[..count.min(MAX_LEVELS)], start)?;
+    Some(buf[..n].to_vec())
+}
+
+/// As [`measure`], into `out` (up to `out.len()` levels, no heap): the count, `Some(0)` for
+/// nothing before the timeout.
+pub(super) fn measure_into(pin: i32, out: &mut [u16], start: &mut dyn FnMut()) -> Option<usize> {
+    let count = out.len().min(MAX_LEVELS);
+    let mut table = CHANNELS.lock_scan();
     let at = match table.iter().position(|c| c.pin == pin) {
         Some(at) => at,
         None => {
@@ -214,25 +225,26 @@ pub(super) fn measure(pin: i32, count: usize, start: &mut dyn FnMut()) -> Option
             sys::rmt_disable(channel.handle);
             sys::rmt_enable(channel.handle);
         }
-        return Some(Vec::new());
+        return Some(0);
     }
     let symbols = channel.got.load(Ordering::Acquire).min(BUF_SYMBOLS);
-    Some(levels(&channel.symbols[..symbols], count))
+    Some(levels(&channel.symbols[..symbols], &mut out[..count]))
 }
 
 /// The level lengths of `RMT` symbols: two per symbol (duration 15 bits at bit 0 and 16, level at
 /// bit 15 and 31); a zero length is the end marker, a length over the idle threshold ends the list.
-fn levels(symbols: &[u32], count: usize) -> Vec<u16> {
-    let mut out = Vec::with_capacity(count);
+fn levels(symbols: &[u32], out: &mut [u16]) -> usize {
+    let mut n = 0;
     for word in symbols {
         for length in [word & 0x7FFF, (word >> 16) & 0x7FFF] {
-            if length == 0 || length > IDLE_US || out.len() >= count {
-                return out;
+            if length == 0 || length > IDLE_US || n >= out.len() {
+                return n;
             }
-            out.push(length as u16);
+            out[n] = length as u16;
+            n += 1;
         }
     }
-    out
+    n
 }
 
 /// LEDC channel for the self-test: the last one, because `analog::pwm_write` takes the first free.

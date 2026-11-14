@@ -10,6 +10,8 @@
 
 use std::sync::Mutex;
 
+use super::spin::Spin;
+
 use crab_kernel::abi::bus_op::{ERR_ARGS, ERR_BUS, ERR_NOT_CLAIMED, ERR_TIMEOUT, MAX_LEN};
 use crab_kernel::host::Mem;
 use crab_master_rs::bus_cfg::{i2c_open_rule, spi_open_rule, Claims, Request};
@@ -43,11 +45,11 @@ const SPI_HOST: sys::spi_host_device_t = sys::spi_host_device_t_SPI2_HOST;
 #[cfg(not(target_arch = "riscv32"))]
 const SPI_HOST: sys::spi_host_device_t = sys::spi_host_device_t_SPI3_HOST;
 
-/// An ESP-IDF SPI device handle (a raw pointer, only touched under the `SPI` mutex).
+/// An ESP-IDF SPI device handle (a raw pointer, only touched under the `SPI` lock).
 #[derive(Clone, Copy)]
 struct SpiDev(sys::spi_device_handle_t);
 
-// SAFETY: the handle is used only while the `SPI` mutex is held.
+// SAFETY: the handle is used only while the `SPI` lock is held.
 unsafe impl Send for SpiDev {}
 
 const NO_DEV: SpiDev = SpiDev(core::ptr::null_mut());
@@ -62,7 +64,9 @@ struct SpiShared {
     cs_ready: u64,
 }
 
-static SPI: Mutex<SpiShared> = Mutex::new(SpiShared {
+/// Only the scan uses it (driver calls, a module going away): an uncontended `Spin`, not an OS
+/// mutex (`specs/safety-audit`, item 11).
+static SPI: Spin<SpiShared> = Spin::new(SpiShared {
     pins: None,
     hz: 0,
     users: 0,
@@ -341,13 +345,19 @@ impl Bus {
                     return ERR_ARGS;
                 }
                 self.ow_setup(pin);
-                let lengths = pulse_read(pin, start_us, count);
-                if lengths.is_empty() {
+                // On the stack: no heap work in the step (`specs/safety-audit`, item 11).
+                let mut lengths = [0u16; super::pulse::MAX_LEVELS];
+                let count = count.min(lengths.len());
+                let n = pulse_read(pin, start_us, &mut lengths[..count]);
+                if n == 0 {
                     return ERR_TIMEOUT;
                 }
-                let bytes: Vec<u8> = lengths.iter().flat_map(|l| l.to_le_bytes()).collect();
-                if mem.write(ptr, &bytes) {
-                    lengths.len() as i32
+                let mut bytes = [0u8; super::pulse::MAX_LEVELS * 2];
+                for (i, l) in lengths[..n].iter().enumerate() {
+                    bytes[2 * i..2 * i + 2].copy_from_slice(&l.to_le_bytes());
+                }
+                if mem.write(ptr, &bytes[..2 * n]) {
+                    n as i32
                 } else {
                     ERR_ARGS
                 }
@@ -426,7 +436,7 @@ impl Bus {
     }
 
     fn spi_open(&mut self, sck: i32, mosi: i32, miso: i32, hz: u32) -> i32 {
-        let mut shared = SPI.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = SPI.lock_scan();
         let setup = match spi_open_rule(shared.pins, sck, mosi, miso) {
             Ok(setup) => setup,
             Err(code) => return code,
@@ -558,7 +568,7 @@ impl Drop for Bus {
             }
         }
         if self.spi {
-            let mut shared = SPI.lock().unwrap_or_else(|e| e.into_inner());
+            let mut shared = SPI.lock_scan();
             shared.users = shared.users.saturating_sub(1);
             if shared.users == 0 {
                 for dev in shared.devs {
@@ -697,7 +707,7 @@ pub fn system_i2c_read(addr: u8, buf: &mut [u8]) -> bool {
 
 /// One full-duplex SPI transfer with CS held low by GPIO. `Ok(None)`: nothing to read back (no MISO).
 fn spi_transfer(cs: i32, mode: u8, tx: &[u8], rx: &mut [u8]) -> Result<bool, i32> {
-    let mut shared = SPI.lock().unwrap_or_else(|e| e.into_inner());
+    let mut shared = SPI.lock_scan();
     let Some((_, _, miso)) = shared.pins else {
         return Err(ERR_NOT_CLAIMED);
     };
@@ -827,20 +837,21 @@ const PULSE_MAX_US: i64 = 300;
 /// (`pulse.rs`, interrupts on, the task sleeps; the first entry is the time from the release to the
 /// first edge of the answer). When no RMT channel is available it falls back to
 /// [`pulse_read_polled`].
-fn pulse_read(pin: i32, start_us: u32, count: usize) -> Vec<u16> {
+/// The lengths go into `out`; returns how many.
+fn pulse_read(pin: i32, start_us: u32, out: &mut [u16]) -> usize {
     // The channel first: making it reconfigures the pin, which must not happen mid-pulse.
     if !super::pulse::prepare(pin) {
-        return pulse_read_polled(pin, start_us, count);
+        return pulse_read_polled(pin, start_us, out);
     }
     ow_low(pin);
     wait_start(start_us);
-    let measured = super::pulse::measure(pin, count, &mut || {
+    let measured = super::pulse::measure_into(pin, out, &mut || {
         ow_release(pin);
     });
     match measured {
-        Some(lengths) => lengths,
+        Some(n) => n,
         // The line is still low if the receiver could not be armed; the polled loop releases it.
-        None => pulse_read_polled_released(pin, count),
+        None => pulse_read_polled_released(pin, out),
     }
 }
 
@@ -855,44 +866,48 @@ fn wait_start(start_us: u32) {
 
 /// The old implementation, kept as the fallback: start pulse, then the levels measured in a busy
 /// loop with interrupts off (a DHT22 answer takes about 5 ms).
-fn pulse_read_polled(pin: i32, start_us: u32, count: usize) -> Vec<u16> {
+fn pulse_read_polled(pin: i32, start_us: u32, out: &mut [u16]) -> usize {
     ow_low(pin);
     wait_start(start_us);
-    pulse_read_polled_released(pin, count)
+    pulse_read_polled_released(pin, out)
 }
 
 /// Releases the (low) line and measures `count` levels with interrupts off.
-fn pulse_read_polled_released(pin: i32, count: usize) -> Vec<u16> {
+fn pulse_read_polled_released(pin: i32, out: &mut [u16]) -> usize {
     critical(|| {
         ow_release(pin);
-        pulse_levels_loop(pin, count)
+        pulse_levels_loop(pin, out)
     })
 }
 
 /// The busy loop alone, for the benchmark (`pulsebench`): the line is neither released nor driven.
 /// Interrupts are off for the whole measurement, as in the polled fallback.
 pub(super) fn pulse_measure_polled(pin: i32, count: usize) -> Vec<u16> {
-    critical(|| pulse_levels_loop(pin, count))
+    let mut buf = [0u16; super::pulse::MAX_LEVELS];
+    let out = &mut buf[..count.min(super::pulse::MAX_LEVELS)];
+    let n = critical(|| pulse_levels_loop(pin, out));
+    buf[..n].to_vec()
 }
 
 /// Measures up to `count` levels of the line as it is now (the caller turned interrupts off).
-fn pulse_levels_loop(pin: i32, count: usize) -> Vec<u16> {
+fn pulse_levels_loop(pin: i32, out: &mut [u16]) -> usize {
     // SAFETY: plain reads of the clock and the (claimed) pin.
     let now = || unsafe { sys::esp_timer_get_time() };
-    let mut lengths = Vec::with_capacity(count);
+    let mut n = 0;
     let mut level = ow_level(pin);
     let mut since = now();
-    while lengths.len() < count {
+    while n < out.len() {
         let t = now();
         if ow_level(pin) != level {
-            lengths.push((t - since).clamp(0, i64::from(u16::MAX)) as u16);
+            out[n] = (t - since).clamp(0, i64::from(u16::MAX)) as u16;
+            n += 1;
             level = !level;
             since = t;
         } else if t - since > PULSE_MAX_US {
             break;
         }
     }
-    lengths
+    n
 }
 
 /// Copies `data` into the module; the byte count, or `ERR_ARGS` if the range is outside its memory.
