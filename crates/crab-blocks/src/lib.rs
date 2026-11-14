@@ -2,6 +2,7 @@
 //! int is a whole number; strings travel beside them (see `text`). Port and parameter indexes follow `block.toml` order.
 
 mod bench;
+mod counters;
 mod hardware;
 mod more;
 mod netsim;

@@ -1,0 +1,66 @@
+[block]
+type = "frequency"
+name = "Частота"
+symbol = "FREQ"
+group = "Счётчики"
+description = "Измеряет частоту импульсов на выводе, 1 Гц…40 кГц: датчики оборотов, расходомеры."
+memory = true
+
+[[output]]
+name = "hz"
+type = "float"
+fast = true
+sim = 0.0
+description = "Частота, Гц"
+
+[[output]]
+name = "count"
+type = "int"
+description = "Всего импульсов с запуска (32 бита, заворачивается)"
+
+[[output]]
+name = "ok"
+type = "bool"
+sim = true
+description = "true, если счётчик работает"
+
+[[param]]
+name = "pin"
+type = "pin"
+mode = "in"
+description = "Вывод импульсов"
+
+[[param]]
+name = "edge"
+label = "фронт"
+type = "int"
+default = 0
+min = 0
+max = 1
+description = "По какому перепаду считать период"
+
+[[param.choice]]
+value = 0
+label = "нарастающий"
+
+[[param.choice]]
+value = 1
+label = "спадающий"
+
+[[param]]
+name = "window"
+label = "окно"
+type = "duration"
+default = "1s"
+min = 10
+max = 60000
+description = "Как часто обновляется частота. Ниже ~1 кГц частота считается по периоду и точна при любом окне; выше — по числу импульсов за окно"
+
+[[param]]
+name = "filter"
+label = "фильтр, мкс"
+type = "int"
+default = 0
+min = 0
+max = 1000
+description = "Импульсы короче этого не считаются (0 — без фильтра)"

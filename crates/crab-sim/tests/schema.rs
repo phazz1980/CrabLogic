@@ -472,3 +472,89 @@ fn bench_uart_read_gets_the_typed_line() {
     assert_eq!(s.output("rx", "ready"), Some(0.0));
     assert_eq!(s.output_text("rx", "line"), Some("hello"));
 }
+
+fn counters_sim() -> Simulation {
+    let (lib, _) = Library::load(repo("library")).unwrap();
+    let logic = toml::from_str(
+        r#"
+[[block]]
+id = "rst"
+type = "digital_in"
+pin = 13
+
+[[block]]
+id = "hsc"
+type = "fast_counter"
+pin = 25
+
+[[block]]
+id = "f"
+type = "frequency"
+pin = 26
+
+[[block]]
+id = "enc"
+type = "quad_encoder"
+pin_a = 32
+pin_b = 33
+
+[[link]]
+from = "rst.out"
+to = "hsc.reset"
+
+[[link]]
+from = "rst.out"
+to = "enc.reset"
+"#,
+    )
+    .unwrap();
+    Simulation::new(&logic, &lib).unwrap()
+}
+
+#[test]
+fn bench_counters_count_the_set_rate() {
+    let mut s = counters_sim();
+    for (block, port) in [("hsc", "count"), ("f", "hz"), ("enc", "pos")] {
+        assert!(matches!(
+            s.bench_input(block, port),
+            Some(BenchInput::Rate { .. })
+        ));
+    }
+    assert_eq!(s.bench_input("hsc", "ok"), None);
+    s.set_pin_level(25, 1000.0);
+    s.set_pin_level(26, 250.0);
+    s.set_pin_level(32, 100.0);
+    for _ in 0..100 {
+        s.step(10).unwrap();
+    }
+    // One second of simulated time.
+    assert_eq!(s.output("hsc", "count"), Some(1000.0));
+    assert_eq!(s.output("hsc", "ok"), Some(1.0));
+    assert_eq!(s.output("f", "hz"), Some(250.0));
+    assert_eq!(s.output("f", "count"), Some(250.0));
+    assert_eq!(s.output("enc", "pos"), Some(100.0));
+    assert_eq!(s.output("enc", "dir"), Some(1.0));
+    // Reset holds the counters at zero.
+    s.set_pin_level(13, 1.0);
+    s.step(10).unwrap();
+    assert_eq!(s.output("hsc", "count"), Some(0.0));
+    assert_eq!(s.output("enc", "pos"), Some(0.0));
+    s.set_pin_level(13, 0.0);
+    s.step(10).unwrap();
+    assert_eq!(s.output("hsc", "count"), Some(10.0));
+}
+
+#[test]
+fn bench_encoder_counts_backwards_on_negative_rate() {
+    let mut s = counters_sim();
+    s.set_pin_level(32, -50.0);
+    for _ in 0..100 {
+        s.step(10).unwrap();
+    }
+    assert_eq!(s.output("enc", "pos"), Some(-50.0));
+    assert_eq!(s.output("enc", "dir"), Some(-1.0));
+    s.set_pin_level(32, 0.0);
+    s.step(10).unwrap();
+    assert_eq!(s.output("enc", "dir"), Some(0.0));
+    assert_eq!(s.output("enc", "pos"), Some(-50.0));
+}

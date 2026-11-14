@@ -26,3 +26,8 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_CHECK_BOOT=y
+
+# Pulse counters (specs/pcnt): the counter interrupts keep counting while a module is written to
+# flash, so the PCNT driver ISR and the GPIO calls they make live in IRAM.
+CONFIG_PCNT_ISR_IRAM_SAFE=y
+CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y

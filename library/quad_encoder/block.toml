@@ -1,0 +1,72 @@
+[block]
+type = "quad_encoder"
+name = "Энкодер"
+symbol = "ENC"
+group = "Счётчики"
+description = "Квадратурный энкодер A/B: позиция со знаком и направление (ручки, положение вала)."
+memory = true
+
+[[input]]
+name = "reset"
+type = "bool"
+default = false
+description = "Пока true, позиция равна 0"
+
+[[output]]
+name = "pos"
+type = "int"
+fast = true
+description = "Позиция в шагах (32 бита со знаком, при переполнении заворачивается)"
+
+[[output]]
+name = "dir"
+type = "int"
+description = "Направление: 1 — вперёд, −1 — назад, 0 — стоит (нет шагов 200 мс)"
+
+[[output]]
+name = "ok"
+type = "bool"
+sim = true
+description = "true, если счётчик работает"
+
+[[param]]
+name = "pin_a"
+type = "pin"
+mode = "in"
+description = "Вывод канала A"
+
+[[param]]
+name = "pin_b"
+type = "pin"
+mode = "in"
+description = "Вывод канала B"
+
+[[param]]
+name = "mode"
+label = "режим"
+type = "int"
+default = 2
+min = 0
+max = 2
+description = "Сколько шагов на период сигнала: x1 — один, x2 — два, x4 — четыре (все перепады A и B)"
+
+[[param.choice]]
+value = 0
+label = "x1"
+
+[[param.choice]]
+value = 1
+label = "x2"
+
+[[param.choice]]
+value = 2
+label = "x4"
+
+[[param]]
+name = "filter"
+label = "фильтр, мкс"
+type = "int"
+default = 1
+min = 0
+max = 1000
+description = "Импульсы короче этого не считаются (0 — без фильтра). Для механических ручек дребезг гасите RC-цепочкой"

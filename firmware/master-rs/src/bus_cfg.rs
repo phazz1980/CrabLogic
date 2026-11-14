@@ -113,6 +113,28 @@ pub enum Request {
         ptr: i32,
         count: usize,
     },
+    /// `COUNT_OPEN`: pins checked and claimed; `pin_b` -1 when not used.
+    CountOpen {
+        pin_a: i32,
+        pin_b: i32,
+        /// One of `COUNT_RISING`..`COUNT_QUAD_X4`.
+        mode: i32,
+        /// Keep the edge times for `COUNT_PERIOD`.
+        period: bool,
+        filter_us: u32,
+    },
+    /// A counter this module opened.
+    CountRead {
+        n: usize,
+    },
+    CountClear {
+        n: usize,
+    },
+    CountPeriod {
+        n: usize,
+        ptr: i32,
+    },
+    CountKind,
 }
 
 /// Fastest SPI clock a module may ask for, Hz.
@@ -147,6 +169,8 @@ pub struct Claims {
     pins: u64,
     addrs: u128,
     ports: u8,
+    /// Bit per counter (`COUNT_OPEN`) the module opened.
+    counters: u8,
     locked: bool,
 }
 
@@ -196,6 +220,29 @@ impl Claims {
 
     pub fn check_addr(&self, addr: i32) -> bool {
         (0..128).contains(&addr) && self.addrs >> addr & 1 != 0
+    }
+
+    /// Records a counter the hardware opened for the module.
+    pub fn own_counter(&mut self, n: usize) {
+        if n < COUNTERS as usize {
+            self.counters |= 1 << n;
+        }
+    }
+
+    /// The counters the module opened, one bit each.
+    pub fn counters(&self) -> u8 {
+        self.counters
+    }
+
+    fn counter(&self, n: i32) -> Result<usize, i32> {
+        if !(0..COUNTERS).contains(&n) {
+            return Err(ERR_ARGS);
+        }
+        if self.counters >> n & 1 != 0 {
+            Ok(n as usize)
+        } else {
+            Err(ERR_NOT_CLAIMED)
+        }
     }
 
     pub fn check_port(&self, port: i32) -> bool {
@@ -253,6 +300,7 @@ impl Claims {
                 return Ok(Request::Done);
             }
             MICROS => return Ok(Request::Micros),
+            COUNT_KIND => return Ok(Request::CountKind),
             DELAY_US => {
                 return Ok(Request::DelayUs {
                     us: a.clamp(0, 100) as u32,
@@ -261,7 +309,7 @@ impl Claims {
             GPIO_MODE | GPIO_READ | GPIO_WRITE | I2C_OPEN | I2C_WRITE | I2C_READ
             | I2C_WRITE_READ | I2C_SEND | UART_OPEN | UART_WRITE | UART_READ | UART_AVAILABLE
             | SPI_OPEN | SPI_TRANSFER | OW_RESET | OW_WRITE | OW_READ | OW_READ_BIT
-            | OW_WRITE_BIT | PULSE_READ => {}
+            | OW_WRITE_BIT | PULSE_READ | COUNT_OPEN | COUNT_READ | COUNT_CLEAR | COUNT_PERIOD => {}
             _ => return Err(ERR_ARGS),
         }
         if !self.locked {
@@ -465,6 +513,41 @@ impl Claims {
                     count: d as usize,
                 })
             }
+            COUNT_OPEN => {
+                let mode = c & 0xFF;
+                if c & !(0xFF | COUNT_PERIOD_FLAG) != 0
+                    || !(COUNT_RISING..=COUNT_QUAD_X4).contains(&mode)
+                    || !(0..=1000).contains(&d)
+                    || a == b
+                {
+                    return Err(ERR_ARGS);
+                }
+                let quad = mode >= COUNT_QUAD_X1;
+                if quad && b < 0 || b < -1 {
+                    return Err(ERR_ARGS);
+                }
+                self.pin(chip, a, false)?;
+                if b >= 0 {
+                    self.pin(chip, b, false)?;
+                }
+                Ok(Request::CountOpen {
+                    pin_a: a,
+                    pin_b: b,
+                    mode,
+                    period: c & COUNT_PERIOD_FLAG != 0,
+                    filter_us: d as u32,
+                })
+            }
+            COUNT_READ => Ok(Request::CountRead {
+                n: self.counter(a)?,
+            }),
+            COUNT_CLEAR => Ok(Request::CountClear {
+                n: self.counter(a)?,
+            }),
+            COUNT_PERIOD => Ok(Request::CountPeriod {
+                n: self.counter(a)?,
+                ptr: b,
+            }),
             _ => {
                 self.pin(chip, a, true)?;
                 Ok(Request::OwWriteBit {
@@ -908,6 +991,75 @@ mod tests {
         assert_eq!(
             c.request(C3, PULSE_READ, 5, 1100, 64, 10),
             Err(ERR_NOT_CLAIMED)
+        );
+    }
+
+    #[test]
+    fn counter_rules() {
+        let mut c = locked(ESP, &[4, 5, 35], &[], &[]);
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 35, -1, COUNT_RISING | COUNT_PERIOD_FLAG, 5),
+            Ok(Request::CountOpen {
+                pin_a: 35,
+                pin_b: -1,
+                mode: COUNT_RISING,
+                period: true,
+                filter_us: 5
+            }),
+            "input-only pins count"
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 4, 5, COUNT_QUAD_X4, 0),
+            Ok(Request::CountOpen {
+                pin_a: 4,
+                pin_b: 5,
+                mode: COUNT_QUAD_X4,
+                period: false,
+                filter_us: 0
+            })
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 4, -1, COUNT_QUAD_X1, 0),
+            Err(ERR_ARGS),
+            "quadrature needs B"
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 4, 4, COUNT_BOTH, 0),
+            Err(ERR_ARGS)
+        );
+        assert_eq!(c.request(ESP, COUNT_OPEN, 4, -1, 6, 0), Err(ERR_ARGS));
+        assert_eq!(c.request(ESP, COUNT_OPEN, 4, -1, 0x200, 0), Err(ERR_ARGS));
+        assert_eq!(c.request(ESP, COUNT_OPEN, 4, -1, 0, 1001), Err(ERR_ARGS));
+        assert_eq!(c.request(ESP, COUNT_OPEN, 4, -2, 0, 0), Err(ERR_ARGS));
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 6, -1, 0, 0),
+            Err(ERR_ARGS),
+            "flash pin"
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_OPEN, 13, -1, 0, 0),
+            Err(ERR_NOT_CLAIMED)
+        );
+        assert_eq!(c.request(ESP, COUNT_READ, 2, 0, 0, 0), Err(ERR_NOT_CLAIMED));
+        c.own_counter(2);
+        assert_eq!(c.counters(), 0b100);
+        assert_eq!(
+            c.request(ESP, COUNT_READ, 2, 0, 0, 0),
+            Ok(Request::CountRead { n: 2 })
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_CLEAR, 2, 0, 0, 0),
+            Ok(Request::CountClear { n: 2 })
+        );
+        assert_eq!(
+            c.request(ESP, COUNT_PERIOD, 2, 64, 0, 0),
+            Ok(Request::CountPeriod { n: 2, ptr: 64 })
+        );
+        assert_eq!(c.request(ESP, COUNT_READ, 8, 0, 0, 0), Err(ERR_ARGS));
+        assert_eq!(c.request(ESP, COUNT_READ, -1, 0, 0, 0), Err(ERR_ARGS));
+        assert_eq!(
+            Claims::default().request(ESP, COUNT_KIND, 0, 0, 0, 0),
+            Ok(Request::CountKind)
         );
     }
 

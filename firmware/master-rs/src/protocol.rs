@@ -122,6 +122,13 @@ pub enum Command {
     SelfTestPanic,
     /// `selftest hang`: hangs the scan on purpose, to check the scan watchdog.
     SelfTestHang,
+    /// `selftest pwm <pin> <hz> [<pin2>]`: a square wave on the pin with its input left on, for
+    /// counters on the same pin (and `pin2` a quarter period later, an encoder).
+    SelfTestPwm {
+        pin: i32,
+        hz: u32,
+        pin2: Option<i32>,
+    },
 }
 
 /// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
@@ -431,6 +438,14 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
         "selftest" => match one(&mut args)? {
             "panic" => Command::SelfTestPanic,
             "hang" => Command::SelfTestHang,
+            "pwm" => Command::SelfTestPwm {
+                pin: number(&mut args)?,
+                hz: number(&mut args)?,
+                pin2: match args.next() {
+                    Some(p) => Some(p.parse().map_err(|_| ParseError::InvalidNumber)?),
+                    None => None,
+                },
+            },
             _ => return Err(ParseError::UnknownCommand),
         },
         _ => return Err(ParseError::UnknownCommand),
@@ -603,6 +618,22 @@ mod core_tests {
         assert!(parse_command("core info 1").is_err());
         assert!(parse_command("selftest").is_err());
         assert_eq!(parse_command("selftest hang"), Ok(Command::SelfTestHang));
+        assert_eq!(
+            parse_command("selftest pwm 4 1000"),
+            Ok(Command::SelfTestPwm {
+                pin: 4,
+                hz: 1000,
+                pin2: None
+            })
+        );
+        assert_eq!(
+            parse_command("selftest pwm 4 1000 5"),
+            Ok(Command::SelfTestPwm {
+                pin: 4,
+                hz: 1000,
+                pin2: Some(5)
+            })
+        );
         assert!(parse_command("selftest other").is_err());
     }
 

@@ -214,6 +214,38 @@ pub mod bus_op {
     /// (1..=128) levels as `u16` microseconds at `ptr`; a level longer than 300 µs ends the
     /// measurement. Returns the number of lengths stored, `ERR_TIMEOUT` if none (DHT sensors).
     pub const PULSE_READ: i32 = 65;
+    /// `COUNT_OPEN(pin_a, pin_b, mode, filter_us)`: a pulse counter of the board (`specs/pcnt`; PCNT on
+    /// the classic ESP32, GPIO interrupts on the C3). Both pins must be claimed; `pin_b` -1 means
+    /// none. `mode & 0xFF`: [`COUNT_RISING`], [`COUNT_FALLING`], [`COUNT_BOTH`] (with `pin_b`: its
+    /// level is the direction, high counts up) or [`COUNT_QUAD_X1`]..[`COUNT_QUAD_X4`] (A/B,
+    /// `pin_b` required). [`COUNT_PERIOD_FLAG`] also keeps the times of the edges for
+    /// `COUNT_PERIOD`. `filter_us` 0..=1000: pulses shorter than this are ignored (the PCNT filter
+    /// reaches ~12 µs; longer values are clamped). Returns the counter number (0..=7) or an error,
+    /// [`ERR_BUSY`] when every counter is taken. The counter is freed with the module.
+    pub const COUNT_OPEN: i32 = 70;
+    /// `COUNT_READ(n)`: the count since open or the last clear, 32 bit, wrapping.
+    pub const COUNT_READ: i32 = 71;
+    /// `COUNT_CLEAR(n)`: sets the count to 0. Returns 0.
+    pub const COUNT_CLEAR: i32 = 72;
+    /// `COUNT_PERIOD(n, ptr)`: edges counted since the last call that have a measured interval to
+    /// the edge before them (the one before may be in an earlier call), returned as N >= 0; the
+    /// sum of those N intervals, µs, goes to `ptr` as an `i32`. 0 while the edges come too fast to
+    /// be timed (the master times edges only below ~1 kHz) or none came; the driver then uses the
+    /// count. Needs [`COUNT_PERIOD_FLAG`] at open.
+    pub const COUNT_PERIOD: i32 = 73;
+    /// `COUNT_KIND()`: 1 hardware counters (PCNT), 2 counting in GPIO interrupts (C3).
+    pub const COUNT_KIND: i32 = 74;
+
+    /// Modes of `COUNT_OPEN`.
+    pub const COUNT_RISING: i32 = 0;
+    pub const COUNT_FALLING: i32 = 1;
+    pub const COUNT_BOTH: i32 = 2;
+    pub const COUNT_QUAD_X1: i32 = 3;
+    pub const COUNT_QUAD_X2: i32 = 4;
+    pub const COUNT_QUAD_X4: i32 = 5;
+    pub const COUNT_PERIOD_FLAG: i32 = 0x100;
+    /// Most counters of a board (ESP32: 8 PCNT units).
+    pub const COUNTERS: i32 = 8;
 
     /// Claim kinds.
     pub const KIND_PIN: i32 = 1;
@@ -227,6 +259,8 @@ pub mod bus_op {
     pub const ERR_TIMEOUT: i32 = -3;
     /// Bad arguments: pin not usable on the chip, length over `MAX_LEN`, pointer outside the memory.
     pub const ERR_ARGS: i32 = -4;
+    /// Every resource of the kind is taken (counters).
+    pub const ERR_BUSY: i32 = -5;
     /// Largest transfer of one call, bytes.
     pub const MAX_LEN: i32 = 256;
 }

@@ -116,6 +116,11 @@ const BUS_IMPORTS: &[(&str, usize, Shim)] = &[
     ("ow_read_bit", 1, Shim::Bus(63, &[P(0)])),
     ("ow_write_bit", 2, Shim::Bus(64, &[P(0), P(1)])),
     ("pulse_read", 4, Shim::Bus(65, &[P(0), P(1), Ptr(2), P(3)])),
+    ("count_open", 4, Shim::Bus(70, &[P(0), P(1), P(2), P(3)])),
+    ("count_read", 1, Shim::Bus(71, &[P(0)])),
+    ("count_clear", 1, Shim::Bus(72, &[P(0)])),
+    ("count_period", 2, Shim::Bus(73, &[P(0), Ptr(1)])),
+    ("count_kind", 0, Shim::Bus(74, &[])),
 ];
 
 /// The shim of an import, or why the driver may not have it.

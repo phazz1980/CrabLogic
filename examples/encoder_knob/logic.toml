@@ -1,0 +1,36 @@
+# Энкодер: канал A на GPIO32, B на GPIO33, кнопка ручки на GPIO25. Один щелчок — 4 шага (x4),
+# поэтому яркость меняется на 4 % за щелчок. Светодиод на GPIO26 (ШИМ).
+[[block]]
+id = "knob"
+type = "quad_encoder"
+pin_a = 32
+pin_b = 33
+mode = 2
+
+[[block]]
+id = "push"
+type = "digital_in"
+pin = 25
+
+[[block]]
+id = "brightness"
+type = "limit"
+lo = 0.0
+hi = 100.0
+
+[[block]]
+id = "led"
+type = "pwm_out"
+pin = 26
+
+[[link]]
+from = "push.out"
+to = "knob.reset"
+
+[[link]]
+from = "knob.pos"
+to = "brightness.in"
+
+[[link]]
+from = "brightness.out"
+to = "led.in"

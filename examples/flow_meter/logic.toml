@@ -1,0 +1,76 @@
+# Датчик потока (типа YF-S201) на GPIO27: 450 импульсов на литр, 7,5 Гц на 1 л/мин.
+# Датчик заведён на два вывода (GPIO27 и GPIO14, провод-перемычка): один вывод занимает один счётчик.
+# Кнопка на GPIO12 обнуляет счётчик литров.
+[[block]]
+id = "reset_btn"
+type = "digital_in"
+pin = 12
+
+[[block]]
+id = "pulses"
+type = "fast_counter"
+pin = 27
+edge = 0
+filter = 5
+
+[[block]]
+id = "pulses_f"
+type = "int_to_float"
+
+[[block]]
+id = "liters"
+type = "scale"
+in_max = 450.0
+out_max = 1.0
+clamp = false
+
+[[block]]
+id = "rate"
+type = "frequency"
+pin = 14
+window = "500ms"
+
+[[block]]
+id = "lpm"
+type = "scale"
+in_max = 7.5
+out_max = 1.0
+clamp = false
+
+# Лампа горит, пока датчик исправен.
+[[block]]
+id = "both_ok"
+type = "and"
+
+[[block]]
+id = "ok_led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "reset_btn.out"
+to = "pulses.reset"
+
+[[link]]
+from = "pulses.count"
+to = "pulses_f.in"
+
+[[link]]
+from = "pulses_f.out"
+to = "liters.in"
+
+[[link]]
+from = "rate.hz"
+to = "lpm.in"
+
+[[link]]
+from = "pulses.ok"
+to = "both_ok.a"
+
+[[link]]
+from = "rate.ok"
+to = "both_ok.b"
+
+[[link]]
+from = "both_ok.out"
+to = "ok_led.in"

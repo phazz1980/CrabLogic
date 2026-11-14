@@ -1,0 +1,6 @@
+[project]
+name = "encoder_knob"
+description = "Ручка-энкодер задаёт яркость светодиода: 0…100 %, нажатие на ручку сбрасывает"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

@@ -1,0 +1,75 @@
+[block]
+type = "fast_counter"
+name = "Быстрый счётчик"
+symbol = "HSC"
+group = "Счётчики"
+description = "Считает импульсы на выводе быстрее шага схемы (до десятков кГц): расходомеры, счётчики продукции."
+memory = true
+
+[[input]]
+name = "reset"
+type = "bool"
+default = false
+description = "Пока true, счёт равен 0"
+
+[[output]]
+name = "count"
+type = "int"
+fast = true
+description = "Накопленное число импульсов (32 бита, при переполнении заворачивается)"
+
+[[output]]
+name = "ok"
+type = "bool"
+sim = true
+description = "true, если счётчик работает"
+
+[[param]]
+name = "pin"
+type = "pin"
+mode = "in"
+description = "Вывод импульсов"
+
+[[param]]
+name = "edge"
+label = "фронт"
+type = "int"
+default = 0
+min = 0
+max = 2
+description = "Какие перепады считать"
+
+[[param.choice]]
+value = 0
+label = "нарастающий"
+
+[[param.choice]]
+value = 1
+label = "спадающий"
+
+[[param.choice]]
+value = 2
+label = "оба"
+
+[[param]]
+name = "direction"
+label = "вход направления"
+type = "bool"
+default = false
+description = "Считать вверх и вниз по уровню второго вывода (1 — вверх, 0 — вниз)"
+
+[[param]]
+name = "dir_pin"
+type = "pin"
+mode = "in"
+when = "direction"
+description = "Вывод направления: 1 — вверх, 0 — вниз"
+
+[[param]]
+name = "filter"
+label = "фильтр, мкс"
+type = "int"
+default = 0
+min = 0
+max = 1000
+description = "Импульсы короче этого не считаются (0 — без фильтра). Аппаратный фильтр ESP32 — до 12 мкс, больше — до 12"

@@ -17,6 +17,7 @@
 mod analog;
 mod bus;
 mod coredump;
+mod count;
 mod devices;
 mod engine;
 mod eth;
@@ -880,7 +881,17 @@ impl Master {
                 }
             }
             #[cfg(not(feature = "selftest"))]
-            Ok(Command::SelfTestHang) => println!("err selftest is not in this build"),
+            Ok(Command::SelfTestHang | Command::SelfTestPwm { .. }) => {
+                println!("err selftest is not in this build")
+            }
+            #[cfg(feature = "selftest")]
+            Ok(Command::SelfTestPwm { pin, hz, pin2 }) => {
+                if count::selftest_pwm(pin, hz, pin2) {
+                    println!("ok");
+                } else {
+                    println!("err pwm not started");
+                }
+            }
             // The answers the editor knows from the C++ master.
             Err(
                 e @ (ParseError::BadIndexOrType

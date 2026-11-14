@@ -84,6 +84,11 @@ pub struct StubIo {
     pub i2c_regs: Vec<u8>,
     /// Level lengths, µs, a pulse measurement (`bus` op 65) gives; the answer is their count.
     pub pulse_in: Vec<u16>,
+    /// The pulse counter (`bus` ops 70-73): the value `count_read` gives; `count_clear` zeroes it.
+    /// `count_open` always gives counter 0.
+    pub count: i32,
+    /// What `count_period` gives next, `(edges, sum of their intervals in µs)`; taken by the call.
+    pub count_period: (i32, i32),
     /// Display chips on the I²C bus: writes (op 21) to their address go to the model, which keeps
     /// the picture (see [`crate::display`]); the write answers with the byte count, a missing
     /// address with -1 (no acknowledge).
@@ -405,6 +410,20 @@ impl StubIo {
                     .collect();
                 if mem.write(call[3], &bytes) {
                     n as i32
+                } else {
+                    -4
+                }
+            }
+            70 => 0,
+            71 => self.count,
+            72 => {
+                self.count = 0;
+                0
+            }
+            73 => {
+                let (n, sum_us) = std::mem::take(&mut self.count_period);
+                if mem.write(call[2], &sum_us.to_le_bytes()) {
+                    n
                 } else {
                     -4
                 }

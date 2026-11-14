@@ -263,3 +263,51 @@ pub(super) fn check_board_pins(
         }
     }
 }
+
+/// Block types that count pulses with a hardware counter (PCNT) on ESP32 and ESP32-S3.
+pub const COUNTER_BLOCKS: [&str; 3] = ["fast_counter", "frequency", "quad_encoder"];
+/// PCNT units of the classic ESP32.
+pub const PCNT_UNITS_ESP32: usize = 8;
+/// PCNT units of the ESP32-S3.
+pub const PCNT_UNITS_ESP32_S3: usize = 4;
+/// Pulse rate the software counter of the ESP32-C3 counts without loss with margin (measured 14.11.2026:
+/// 100 kHz without Wi-Fi, losses from 150 kHz; specs/pcnt).
+pub const SOFT_COUNTER_KHZ_ESP32_C3: u32 = 50;
+
+/// Counter blocks of one board: the PCNT units run out, the C3 counts in software.
+pub(super) fn check_counters(project: &Project, chip: Option<Chip>, report: &mut Report) {
+    let ids: Vec<&str> = project
+        .logic
+        .blocks
+        .iter()
+        .filter(|b| b.tag.is_none() && COUNTER_BLOCKS.contains(&b.kind.as_str()))
+        .map(|b| b.id.as_str())
+        .collect();
+    let (limit, name) = match chip {
+        Some(Chip::Esp32) => (PCNT_UNITS_ESP32, "ESP32"),
+        Some(Chip::Esp32S3) => (PCNT_UNITS_ESP32_S3, "ESP32-S3"),
+        Some(Chip::Esp32C3 | Chip::Esp32C3SuperMini) => {
+            for id in ids {
+                report.push(
+                    DiagKind::PinWarning,
+                    Severity::Warning,
+                    Some(id),
+                    None,
+                    format!("блок «{id}»: ESP32-C3: нет аппаратного счётчика, счёт на прерываниях GPIO — до ~{SOFT_COUNTER_KHZ_ESP32_C3} кГц, нагружает процессор"),
+                );
+            }
+            return;
+        }
+        None => return,
+    };
+    if ids.len() > limit {
+        report.block_error(
+            DiagKind::BoardBlock,
+            ids[limit],
+            format!(
+                "на плате {} быстрых счётчиков, у {name} их {limit} (блоки PCNT)",
+                ids.len()
+            ),
+        );
+    }
+}

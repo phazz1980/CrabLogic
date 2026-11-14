@@ -104,6 +104,7 @@ pub fn check_project(project: &Project, lib: &Library) -> Report {
         check_board_expanders(project, lib, layout, &mut report);
     }
     check_lan8720(project, layout.as_ref().map(BoardLayout::chip), &mut report);
+    check_counters(project, layout.as_ref().map(BoardLayout::chip), &mut report);
     check_cycle(project, &mut report);
     report
 }

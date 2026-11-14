@@ -352,6 +352,33 @@ impl Bus {
                     ERR_ARGS
                 }
             }
+            Request::CountOpen {
+                pin_a,
+                pin_b,
+                mode,
+                period,
+                filter_us,
+            } => {
+                let n = super::count::open(pin_a, pin_b, mode, period, filter_us);
+                if let Ok(slot) = usize::try_from(n) {
+                    self.claims.own_counter(slot);
+                }
+                n
+            }
+            Request::CountRead { n } => super::count::read(n),
+            Request::CountClear { n } => {
+                super::count::clear(n);
+                0
+            }
+            Request::CountPeriod { n, ptr } => {
+                if mem.slice(ptr, 4).is_none() {
+                    return ERR_ARGS;
+                }
+                let (edges, sum) = super::count::period(n);
+                mem.write(ptr, &sum.to_le_bytes());
+                edges
+            }
+            Request::CountKind => super::count::KIND,
         }
     }
 
@@ -507,6 +534,12 @@ impl Bus {
 
 impl Drop for Bus {
     fn drop(&mut self) {
+        let counters = self.claims.counters();
+        for n in 0..8 {
+            if counters >> n & 1 != 0 {
+                super::count::release(n);
+            }
+        }
         for port in 0..8 {
             if self.owns_uart(port) {
                 // SAFETY: this module installed the driver.

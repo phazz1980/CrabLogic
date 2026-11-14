@@ -221,6 +221,16 @@ fn bench_menu(ui: &mut Ui, sim: &mut SimState, port: &PortRef, input: BenchInput
                 sim.sim.set_pin_level(pin, counts.round());
             }
         }
+        BenchInput::Rate { pin } => {
+            let mut rate = sim.sim.bench().level(pin).unwrap_or(0.0);
+            ui.label(crate::i18n::fmt("Пин {0}: частота, Гц", &[&pin]));
+            if ui
+                .add(egui::DragValue::new(&mut rate).speed(10.0).suffix(" Гц"))
+                .changed()
+            {
+                sim.sim.set_pin_level(pin, rate);
+            }
+        }
         BenchInput::Link => {
             let mut offline = sim.sim.bench().offline();
             if ui

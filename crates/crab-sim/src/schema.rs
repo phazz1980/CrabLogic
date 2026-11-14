@@ -80,6 +80,9 @@ fn reads_bench(kind: &str) -> bool {
             | "analog_in"
             | "dht22"
             | "ds18b20"
+            | "fast_counter"
+            | "frequency"
+            | "quad_encoder"
             | "wifi"
             | "ethernet"
             | "mqtt"
@@ -98,6 +101,9 @@ pub enum BenchInput {
     Analog { pin: i64 },
     /// A sensor channel: a value that may change in time, or a fault.
     Sensor { pin: i64, channel: String },
+    /// Pulse rate on a counter's pin, Hz (negative = backwards for the encoder and for
+    /// a counter with a direction input).
+    Rate { pin: i64 },
     /// The link of Wi-Fi or Ethernet.
     Link,
     /// The MQTT broker: reachable or not (the link is set on the network block).
@@ -674,6 +680,17 @@ impl Simulation {
         };
         if net.is_some() {
             return net;
+        }
+        if matches!(kind, "fast_counter" | "frequency" | "quad_encoder") && port != "ok" {
+            let name = if kind == "quad_encoder" {
+                "pin_a"
+            } else {
+                "pin"
+            };
+            let at = node.def.params.iter().position(|p| p.name == name)?;
+            return Some(BenchInput::Rate {
+                pin: node.params[at] as i64,
+            });
         }
         let pin = node.pin()?;
         match (kind, port) {

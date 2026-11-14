@@ -766,3 +766,77 @@ fn var_timing_override_and_default_serialization() {
         toml::from_str("name = \"v\"\ntype = \"int\"\nsettle_s = 1\nperiod_s = 0\n").unwrap();
     assert_eq!((own.settle_s, own.period_s), (Some(1), Some(0)));
 }
+
+fn counter_messages(fqbn: &str, blocks: &[(&str, &str, &str)]) -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
+    let (lib, _) = Library::load(dir).unwrap();
+    let mut project = pin_project(blocks);
+    project.config.board.fqbn = fqbn.into();
+    check_project(&project, &lib)
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error || d.message.contains("счёт на прерываниях"))
+        .map(|d| d.message)
+        .collect()
+}
+
+#[test]
+fn counter_pin_conflicts() {
+    let esp32 = "esp32:esp32:esp32";
+    let m = counter_messages(
+        esp32,
+        &[
+            ("c", "fast_counter", "pin = 25"),
+            ("d", "digital_in", "pin = 25"),
+        ],
+    );
+    assert_eq!(m, ["блок «d»: вывод GPIO25 уже занят блоком «c»"]);
+    let m = counter_messages(esp32, &[("e", "quad_encoder", "pin_a = 25\npin_b = 25")]);
+    assert_eq!(
+        m,
+        ["блок «e»: параметры «pin_a» и «pin_b» на одном выводе GPIO25"]
+    );
+    let m = counter_messages(
+        esp32,
+        &[(
+            "c",
+            "fast_counter",
+            "pin = 25\ndirection = true\ndir_pin = 25",
+        )],
+    );
+    assert_eq!(
+        m,
+        ["блок «c»: параметры «pin» и «dir_pin» на одном выводе GPIO25"]
+    );
+}
+
+#[test]
+fn counter_units_per_chip() {
+    let pins = [4, 5, 13, 14, 16, 17, 18, 19, 21];
+    let blocks: Vec<(String, String)> = pins
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("c{i}"), format!("pin = {p}")))
+        .collect();
+    let refs: Vec<(&str, &str, &str)> = blocks
+        .iter()
+        .map(|(id, params)| (id.as_str(), "fast_counter", params.as_str()))
+        .collect();
+    let m = counter_messages("esp32:esp32:esp32", &refs[..8]);
+    assert!(m.is_empty(), "{m:#?}");
+    let m = counter_messages("esp32:esp32:esp32", &refs);
+    assert_eq!(
+        m,
+        ["на плате 9 быстрых счётчиков, у ESP32 их 8 (блоки PCNT)"]
+    );
+    let m = counter_messages("esp32:esp32:esp32s3", &refs[..5]);
+    assert_eq!(
+        m,
+        ["на плате 5 быстрых счётчиков, у ESP32-S3 их 4 (блоки PCNT)"]
+    );
+    let m = counter_messages("esp32:esp32:esp32c3", &refs[..1]);
+    assert_eq!(
+        m,
+        ["блок «c0»: ESP32-C3: нет аппаратного счётчика, счёт на прерываниях GPIO — до ~50 кГц, нагружает процессор"]
+    );
+}
