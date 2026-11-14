@@ -1,0 +1,49 @@
+# Пила 0…3,3 В на GPIO25: 20 тактов в секунду, 256 ступеней (~13 мВ каждая), период около 12,8 с.
+# Выход слабый: нагрузку подключайте через повторитель на операционном усилителе.
+[[block]]
+id = "tick"
+type = "generator"
+time_on = "25ms"
+time_off = "25ms"
+
+[[block]]
+id = "steps"
+type = "counter"
+
+[[block]]
+id = "modulus"
+type = "constant"
+value = 256.0
+
+[[block]]
+id = "wrap"
+type = "mod"
+
+[[block]]
+id = "code"
+type = "float_to_int"
+
+[[block]]
+id = "dac"
+type = "analog_out"
+pin = 25
+
+[[link]]
+from = "tick.out"
+to = "steps.up"
+
+[[link]]
+from = "steps.count"
+to = "wrap.a"
+
+[[link]]
+from = "modulus.out"
+to = "wrap.b"
+
+[[link]]
+from = "wrap.out"
+to = "code.in"
+
+[[link]]
+from = "code.out"
+to = "dac.in"

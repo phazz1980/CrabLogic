@@ -49,9 +49,13 @@ fn write_pin(pin: u8, high: bool) {
     // SAFETY: the pin number was checked; the calls only change this pin.
     unsafe {
         if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
-            // Some ESP32 pins (12–15 are JTAG) boot with another function: take them as GPIO.
+            // Some ESP32 pins (12–15 are JTAG) boot with another function: take them as GPIO
+            // (a DAC channel of the pin is freed first).
             #[cfg(not(target_arch = "riscv32"))]
-            sys::gpio_reset_pin(pin as i32);
+            {
+                analog::dac_release(pin);
+                sys::gpio_reset_pin(pin as i32);
+            }
             sys::gpio_set_direction(pin as i32, sys::gpio_mode_t_GPIO_MODE_OUTPUT);
         }
         sys::gpio_set_level(pin as i32, high as u32);
@@ -125,6 +129,18 @@ pub struct BoardHal;
 
 impl Hal for BoardHal {
     fn safe(&self, pin: u8, use_: PinUse, fault: Fault) {
+        if use_ == PinUse::Dac {
+            // 0 V or the set value; the channel stays set up and driven.
+            #[cfg(not(target_arch = "riscv32"))]
+            analog::dac_write(
+                pin,
+                match fault {
+                    Fault::Value(code) => code,
+                    _ => 0,
+                },
+            );
+            return;
+        }
         let high = fault == Fault::High;
         if use_ == PinUse::Pwm && analog::pwm_safe(pin, high) {
             return;
@@ -175,7 +191,23 @@ impl Devices for BoardDevices {
                 if usable(pin) {
                     // LEDC takes the pin over: a later `gpio_write` sets it up again.
                     forget_output(i32::from(pin));
+                    #[cfg(not(target_arch = "riscv32"))]
+                    analog::dac_release(pin);
                     analog::pwm_write(pin, a(1));
+                }
+                None
+            }
+            id::DAC_WRITE => {
+                // The ESP32 only: the C3 has no DAC (its modules never pass the `dac` capability).
+                #[cfg(not(target_arch = "riscv32"))]
+                {
+                    let pin = (a(0) & 0xFF) as u8;
+                    // The DAC takes the pin over (once): a later `gpio_write` or `pwm_write` frees it.
+                    if !analog::dac_active(pin) {
+                        forget_output(i32::from(pin));
+                        analog::pwm_safe(pin, false);
+                    }
+                    analog::dac_write(pin, a(1).clamp(0, 255) as u8);
                 }
                 None
             }

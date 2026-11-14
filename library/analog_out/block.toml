@@ -1,0 +1,61 @@
+[block]
+type = "analog_out"
+name = "Аналоговый выход"
+symbol = "DAC"
+group = "Входы и выходы"
+description = "Выдаёт напряжение 0…3,3 В на вывод ЦАП (только ESP32, GPIO25 и GPIO26): код 0 — 0 В, 255 — 3,3 В."
+
+[[input]]
+name = "in"
+type = "int"
+description = "Код ЦАП 0…255 (вне диапазона ограничивается); 0 — 0 В, 255 — ~3,3 В"
+
+[[input]]
+name = "en"
+type = "bool"
+default = true
+when = "write_enable"
+description = "Разрешение записи: пока false, выход сохраняет прежнее напряжение"
+
+[[param]]
+name = "pin"
+type = "pin"
+mode = "dac"
+description = "Номер вывода GPIO с ЦАП (ESP32: 25 или 26)"
+
+[[param]]
+name = "write_enable"
+type = "bool"
+default = false
+description = "Добавить вход «Разрешение записи» (en)"
+
+[[param]]
+name = "on_fault"
+label = "при аварии"
+type = "int"
+default = 0
+min = 0
+max = 2
+description = "Что делает мастер с выходом, когда модуль упал (ошибка, зависание) или выгружен: выдать 0 В, держать прежнее напряжение или выдать заданное значение"
+
+[[param.choice]]
+value = 0
+label = "0 В"
+
+[[param.choice]]
+value = 1
+label = "держать"
+
+[[param.choice]]
+value = 2
+label = "значение"
+
+[[param]]
+name = "fault_value"
+label = "значение при аварии"
+type = "int"
+default = 0
+min = 0
+max = 255
+when = "on_fault == 2"
+description = "Код ЦАП 0…255, который мастер выдаёт при аварии модуля"

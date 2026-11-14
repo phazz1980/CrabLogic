@@ -376,6 +376,7 @@ fn cap_title(cap: &str) -> &str {
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
         "modbus" => "Modbus RTU/TCP",
+        "dac" => "аналоговые выходы (ЦАП)",
         "abi5" => "модули нового формата (ABI 5)",
         "bus" => {
             "шины для драйверов (GPIO, I²C, SPI, UART, 1-Wire из block.wasm; только мастер на Rust)"

@@ -119,7 +119,7 @@ pub fn family_of(kind: &str) -> Family {
         | "text_const" | "text_find" | "text_length" | "text_substring" | "text_to_num"
         | "string_change" | "ip_to_text" | "text_to_ip" => Family::Text,
         "digital_in" => Family::GpioIn,
-        "digital_out" | "pwm_out" => Family::GpioOut,
+        "digital_out" | "pwm_out" | "analog_out" => Family::GpioOut,
         "analog_in" => Family::Adc,
         "pcf8574_in" | "pcf8574_out" => Family::I2c,
         "uart_read" | "uart_send" | "uart_config" => Family::Uart,

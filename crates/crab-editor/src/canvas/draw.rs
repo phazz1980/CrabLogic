@@ -738,6 +738,8 @@ pub(super) fn draw_blocks(
         if let Some((_, state)) = sim.and_then(|s| s.output_pin(&block.id)) {
             let text = if block.kind == "pwm_out" {
                 format!("{state:.0} %")
+            } else if block.kind == "analog_out" {
+                format!("{:.2} В", state * 3.3 / 255.0)
             } else if state != 0.0 {
                 "HIGH".to_owned()
             } else {

@@ -287,7 +287,7 @@ id и совпадение с папкой, чип, FQBN, повторы уст�
 
 | Группа | Блоки |
 | --- | --- |
-| Входы и выходы | `digital_in`, `digital_out`, `analog_in`, `pwm_out` |
+| Входы и выходы | `digital_in`, `digital_out`, `analog_in`, `pwm_out`, `analog_out` |
 | Датчики | `ds18b20`, `dht22` |
 | Базовые элементы | `and`, `or`, `xor`, `not`, `debounce`, `constant`, `number_change`, `string_change`, `bit_change` |
 | Масштабирование | `scale`, `scale_table` |

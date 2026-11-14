@@ -2,7 +2,7 @@
 //! replacement without hand-over) puts the output into its safe state.
 //!
 //! The safe state comes from the block's `on_fault` (bits 9–10 of the pin number the emitter
-//! passes): 0 low, 1 high, 2 hold. Levels are physical (an inverted output already accounts
+//! passes): 0 low, 1 high, 2 hold, 3 a value (bits 16–23, a DAC code). Levels are physical (an inverted output already accounts
 //! for the inversion when the emitter computes the bits).
 //!
 //! At a module replacement the leases pass to the new version marked as inherited, so outputs do
@@ -18,6 +18,8 @@ pub enum PinUse {
     Out,
     /// PWM output (`pwm_write`).
     Pwm,
+    /// DAC output (`dac_write`).
+    Dac,
 }
 
 /// What an output does when its module is gone.
@@ -30,14 +32,18 @@ pub enum Fault {
     High,
     /// Keep the last value.
     Hold,
+    /// A set value (DAC code 0..255).
+    Value(u8),
 }
 
 impl Fault {
-    /// The `on_fault` bits 9–10 of a pin number as the emitter passes it.
+    /// The `on_fault` bits 9–10 of a pin number as the emitter passes it (3: the value in bits
+    /// 16–23).
     pub fn from_pin_bits(pin: i32) -> Self {
         match pin >> 9 & 3 {
             1 => Fault::High,
             2 => Fault::Hold,
+            3 => Fault::Value((pin >> 16 & 0xFF) as u8),
             _ => Fault::Low,
         }
     }
@@ -226,6 +232,17 @@ mod tests {
         );
         assert!(new.holds(4) && !new.holds(1) && !new.holds(3));
         assert_eq!(new.release_inherited(), 0);
+    }
+
+    #[test]
+    fn fault_bits() {
+        assert_eq!(Fault::from_pin_bits(25), Fault::Low);
+        assert_eq!(Fault::from_pin_bits(25 | 1 << 9), Fault::High);
+        assert_eq!(Fault::from_pin_bits(25 | 2 << 9 | 0x100), Fault::Hold);
+        assert_eq!(
+            Fault::from_pin_bits(25 | 3 << 9 | 200 << 16),
+            Fault::Value(200)
+        );
     }
 
     /// Records the hooks a board uses for its watchdog table.

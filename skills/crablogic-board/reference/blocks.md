@@ -11,6 +11,7 @@
 | `digital_out` — цифровой выход | `in`, `en` | — | `pin`, `inverted` (реле/светодиод «включаются нулём»), `write_enable`, `on_fault` |
 | `analog_in` — аналоговый вход | — | `out` | `pin` |
 | `pwm_out` — ШИМ-выход | `in`, `en` | — | `pin`, `write_enable`, `on_fault` |
+| `analog_out` — аналоговый выход (ЦАП, ESP32 GPIO25/26, код 0…255) | `in`, `en` | — | `pin`, `write_enable`, `on_fault`, `fault_value` |
 
 `pin` — номер GPIO числом. Вход `en` можно не подключать.
 

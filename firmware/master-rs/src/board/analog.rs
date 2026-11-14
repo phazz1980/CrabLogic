@@ -372,3 +372,137 @@ pub fn pwm_safe(pin: u8, high: bool) -> bool {
     pwm.pins[channel] = None;
     true
 }
+
+/// The DAC of the classic ESP32: two 8-bit channels on GPIO25 and GPIO26.
+#[cfg(not(target_arch = "riscv32"))]
+mod dac {
+    use core::sync::atomic::{AtomicPtr, Ordering};
+    use esp_idf_svc::sys;
+
+    /// Handle of each channel once set up (only the scan thread writes it).
+    static CHANNELS: [AtomicPtr<sys::dac_oneshot_s>; 2] = [
+        AtomicPtr::new(core::ptr::null_mut()),
+        AtomicPtr::new(core::ptr::null_mut()),
+    ];
+
+    /// `RTC_IO_PAD_DAC1_REG`, `RTC_IO_PAD_DAC2_REG` (ESP32 TRM, RTC IO): the code is bits 19–26.
+    const PAD_DAC: [usize; 2] = [
+        sys::DR_REG_RTCIO_BASE as usize + 0x84,
+        sys::DR_REG_RTCIO_BASE as usize + 0x88,
+    ];
+    const CODE_SHIFT: u32 = 19;
+
+    /// The channel of a DAC pin.
+    pub fn channel(pin: u8) -> Option<usize> {
+        match pin {
+            25 => Some(0),
+            26 => Some(1),
+            _ => None,
+        }
+    }
+
+    /// Writes `code` (0..255) to the DAC of `pin`; the first write sets the channel up (the pin
+    /// leaves the GPIO matrix). A failed setup is retried at the next write.
+    pub fn write(pin: u8, code: u8) {
+        let Some(ch) = channel(pin) else { return };
+        let mut handle = CHANNELS[ch].load(Ordering::Acquire);
+        if handle.is_null() {
+            let cfg = sys::dac_oneshot_config_t {
+                chan_id: ch as sys::dac_channel_t,
+            };
+            // SAFETY: the config lives through the call; the handle is stored only on success.
+            if unsafe { sys::dac_oneshot_new_channel(&cfg, &mut handle) } != 0 || handle.is_null() {
+                return;
+            }
+            CHANNELS[ch].store(handle, Ordering::Release);
+        }
+        // SAFETY: a channel set up above; the driver only takes a short critical section.
+        unsafe {
+            sys::dac_oneshot_output_voltage(handle, code);
+        }
+    }
+
+    /// Frees the channel of `pin`, if set up: the pin can be a GPIO again.
+    pub fn release(pin: u8) {
+        let Some(ch) = channel(pin) else { return };
+        let handle = CHANNELS[ch].swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if !handle.is_null() {
+            // SAFETY: a channel this module set up, deleted once (the swap took it).
+            unsafe {
+                sys::dac_oneshot_del_channel(handle);
+            }
+        }
+    }
+
+    /// Whether the channel of `pin` is set up.
+    pub fn active(pin: u8) -> bool {
+        channel(pin).is_some_and(|ch| !CHANNELS[ch].load(Ordering::Relaxed).is_null())
+    }
+
+    /// The code the DAC of `pin` outputs (from its pad register), when the channel is set up.
+    pub fn code(pin: u8) -> Option<u8> {
+        let ch = channel(pin)?;
+        if CHANNELS[ch].load(Ordering::Relaxed).is_null() {
+            return None;
+        }
+        // SAFETY: a readable register of the chip; reading has no side effects.
+        let v = unsafe { (PAD_DAC[ch] as *const u32).read_volatile() };
+        Some((v >> CODE_SHIFT & 0xFF) as u8)
+    }
+
+    /// Sets the code straight in the pad register, for the watchdog interrupt (no driver call,
+    /// no lock); only for a channel already set up.
+    #[link_section = ".iram1.crab_dac_trip"]
+    pub fn write_from_isr(pin: u8, code: u8) {
+        let ch = match pin {
+            25 => 0,
+            26 => 1,
+            _ => return,
+        };
+        if CHANNELS[ch].load(Ordering::Relaxed).is_null() {
+            return;
+        }
+        let reg = PAD_DAC[ch] as *mut u32;
+        // SAFETY: the DAC pad register of the chip; only the code bits change.
+        unsafe {
+            let v = reg.read_volatile() & !(0xFF << CODE_SHIFT);
+            reg.write_volatile(v | u32::from(code) << CODE_SHIFT);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "riscv32"))]
+pub use dac::{
+    active as dac_active, code as dac_code, release as dac_release, write as dac_write,
+    write_from_isr as dac_write_from_isr,
+};
+
+/// `selftest dac <pin> <code>`: sets the DAC and reads the same pad back through its ADC2 channel
+/// (GPIO25/26 are ADC2 8/9): the mean of 32 reads, raw and calibrated mV. Test builds only.
+#[cfg(all(feature = "selftest", not(target_arch = "riscv32")))]
+pub fn selftest_dac(pin: u8, code: u8) -> Option<(i32, i32)> {
+    dac::channel(pin)?;
+    // Setting the ADC channel up turns the pad's DAC off: set the ADC up first, then the DAC
+    // again.
+    adc_read(pin);
+    dac::release(pin);
+    dac::write(pin, code);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let raw = (0..32).map(|_| adc_read(pin)).sum::<i32>() / 32;
+    let cfg = sys::adc_cali_line_fitting_config_t {
+        unit_id: sys::adc_unit_t_ADC_UNIT_2,
+        atten: sys::adc_atten_t_ADC_ATTEN_DB_12,
+        bitwidth: sys::adc_bitwidth_t_ADC_BITWIDTH_DEFAULT,
+        ..Default::default()
+    };
+    let mut cali: sys::adc_cali_handle_t = core::ptr::null_mut();
+    let mut mv = -1;
+    // SAFETY: the config lives through the call; the handle is deleted below.
+    unsafe {
+        if sys::adc_cali_create_scheme_line_fitting(&cfg, &mut cali) == 0 {
+            sys::adc_cali_raw_to_voltage(cali, raw, &mut mv);
+            sys::adc_cali_delete_scheme_line_fitting(cali);
+        }
+    }
+    Some((raw, mv))
+}

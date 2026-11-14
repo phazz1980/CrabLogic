@@ -8,7 +8,7 @@
 //! checks of core 0, and a timeout of 0.2 s would restart the board on a long flash write there.
 //! A hang with the interrupts off is caught by the interrupt watchdog of ESP-IDF.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 use crab_kernel::lease::{Fault, PinUse};
 use esp_idf_svc::sys;
@@ -22,8 +22,9 @@ const PERIODS: u32 = 100;
 /// GPIOs the table covers (ESP32: 0–39, C3: 0–21).
 const PINS: usize = 40;
 
-/// Safe state of an output for the trip: 0 none, 1 low, 2 high, 3 hold.
-static SAFE: [AtomicU8; PINS] = [const { AtomicU8::new(0) }; PINS];
+/// Safe state of an output for the trip: 0 none, 1 low, 2 high, 3 hold, 4 a DAC code (in the high
+/// byte).
+static SAFE: [AtomicU16; PINS] = [const { AtomicU16::new(0) }; PINS];
 /// The deadline, ms since boot (wrapping); checked only while armed.
 static DEADLINE_MS: AtomicU32 = AtomicU32::new(0);
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -94,9 +95,15 @@ pub fn check() {
 #[link_section = ".iram1.crab_wdt_trip"]
 fn trip() -> ! {
     for (pin, state) in SAFE.iter().enumerate() {
-        let high = match state.load(Ordering::Relaxed) {
+        let state = state.load(Ordering::Relaxed);
+        let high = match state & 0xFF {
             1 => false,
             2 => true,
+            #[cfg(not(target_arch = "riscv32"))]
+            4 => {
+                super::analog::dac_write_from_isr(pin as u8, (state >> 8) as u8);
+                continue;
+            }
             _ => continue,
         };
         // SAFETY: the pin was an output of a module; the ROM call takes it back from LEDC (PWM)
@@ -142,13 +149,15 @@ pub fn boot_trip() -> Option<u32> {
 
 /// Keeps the safe state of a leased output for the trip.
 pub fn leased(pin: u8, use_: PinUse, fault: Fault) {
-    let _ = use_;
     if let Some(slot) = SAFE.get(pin as usize) {
         slot.store(
-            match fault {
-                Fault::Low => 1,
-                Fault::High => 2,
-                Fault::Hold => 3,
+            match (use_, fault) {
+                (_, Fault::Hold) => 3,
+                (PinUse::Dac, Fault::Value(code)) => 4 | u16::from(code) << 8,
+                (PinUse::Dac, Fault::High) => 4 | 0xFF << 8,
+                (PinUse::Dac, _) => 4,
+                (_, Fault::Low) => 1,
+                (_, Fault::High | Fault::Value(_)) => 2,
             },
             Ordering::Relaxed,
         );

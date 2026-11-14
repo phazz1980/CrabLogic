@@ -88,9 +88,11 @@ const HW_RETAIN_TEXT: u32 = HW_BASE + 15;
 const HW_BUS: u32 = HW_BASE + 16;
 /// `crab.log(ptr, len)`: a line of a driver block for the master journal.
 const HW_LOG: u32 = HW_BASE + 17;
+/// `crab.dac_write(pin | fault bits, code)`: the DAC of an ESP32 (GPIO25/26), code 0..255.
+const HW_DAC_WRITE: u32 = HW_BASE + 18;
 /// Placeholder of the module's own text append function (see `Emitter::append`), defined last.
 const APPEND_FN: u32 = HW_BASE - 1;
-const HW_NAMES: [&str; 18] = [
+const HW_NAMES: [&str; 19] = [
     "gpio_read",
     "gpio_write",
     "adc_read",
@@ -109,6 +111,7 @@ const HW_NAMES: [&str; 18] = [
     "retain_text",
     "bus",
     "log",
+    "dac_write",
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
@@ -119,13 +122,16 @@ const PIN_FAULT_SHIFT: i32 = 9;
 const FAULT_LOW: i32 = 0;
 const FAULT_HIGH: i32 = 1;
 const FAULT_HOLD: i32 = 2;
+/// `dac_write` only: the master writes the code in bits 16-23 of the pin number.
+const FAULT_VALUE: i32 = 3;
+const PIN_FAULT_VALUE_SHIFT: i32 = 16;
 /// `f32` scratch locals are numbered from here until `finish` knows how many `i32` ones there are.
 const F_LOCAL_BASE: u32 = 1000;
 
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 12] = [
+pub const MASTER_CAPS: [&str; 13] = [
     "math",
     "retain",
     "tag_text",
@@ -141,6 +147,8 @@ pub const MASTER_CAPS: [&str; 12] = [
     "bus",
     // Modbus RTU/TCP of the Rust master (`specs/rust-only`).
     "modbus",
+    // The DAC outputs (`dac_write`, ESP32 only): `analog_out` always needs it.
+    "dac",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
@@ -1050,7 +1058,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32], [ValType::I32]); // 0: tag_get_i, gpio_read, adc_read
         types.ty().function([ValType::I32], [ValType::F32]); // 1: tag_get_f
-        types.ty().function([ValType::I32, ValType::I32], []); // 2: tag_set_i, output_i, gpio_write, pwm_write
+        types.ty().function([ValType::I32, ValType::I32], []); // 2: tag_set_i, output_i, gpio_write, pwm_write, dac_write
         types.ty().function([ValType::I32, ValType::F32], []); // 3: tag_set_f, output_f
         types.ty().function([], [ValType::I32]); // 4: abi_version
         types.ty().function([ValType::I32], []); // 5: step

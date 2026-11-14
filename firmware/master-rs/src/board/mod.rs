@@ -88,7 +88,7 @@ const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,re
 /// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
 /// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
 #[cfg(not(target_arch = "riscv32"))]
-const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,xtensa-esp32";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,dac,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
@@ -743,17 +743,29 @@ impl Master {
                 let word = match use_ {
                     PinUse::Out => "out",
                     PinUse::Pwm => "pwm",
+                    PinUse::Dac => "dac",
                 };
+                let value;
                 let fault = match lease.fault() {
                     Fault::Low => "0",
                     Fault::High => "1",
                     Fault::Hold => "hold",
+                    Fault::Value(code) => {
+                        value = code.to_string();
+                        value.as_str()
+                    }
                 };
                 let level = (use_ == PinUse::Out && pin < 32).then(|| out >> pin & 1 != 0);
                 println!("{}", format_pin(pin, &s.name, word, fault, level));
             }
         }
         println!("out={out:08x}");
+        // The codes the DAC outputs (`-` for a channel not set up).
+        #[cfg(not(target_arch = "riscv32"))]
+        {
+            let code = |pin| analog::dac_code(pin).map_or("-".to_string(), |c| c.to_string());
+            println!("dac={},{}", code(25), code(26));
+        }
         println!("end");
     }
 
@@ -881,7 +893,9 @@ impl Master {
                 }
             }
             #[cfg(not(feature = "selftest"))]
-            Ok(Command::SelfTestHang | Command::SelfTestPwm { .. }) => {
+            Ok(
+                Command::SelfTestHang | Command::SelfTestPwm { .. } | Command::SelfTestDac { .. },
+            ) => {
                 println!("err selftest is not in this build")
             }
             #[cfg(feature = "selftest")]
@@ -890,6 +904,19 @@ impl Master {
                     println!("ok");
                 } else {
                     println!("err pwm not started");
+                }
+            }
+            #[cfg(feature = "selftest")]
+            Ok(Command::SelfTestDac { pin, code }) => {
+                #[cfg(not(target_arch = "riscv32"))]
+                match analog::selftest_dac(pin.clamp(0, 255) as u8, code.clamp(0, 255) as u8) {
+                    Some((raw, mv)) => println!("ok raw={raw} mv={mv}"),
+                    None => println!("err no dac on this pin"),
+                }
+                #[cfg(target_arch = "riscv32")]
+                {
+                    let _ = (pin, code);
+                    println!("err no dac on this chip");
                 }
             }
             // The answers the editor knows from the C++ master.

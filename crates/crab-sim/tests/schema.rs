@@ -558,3 +558,32 @@ fn bench_encoder_counts_backwards_on_negative_rate() {
     assert_eq!(s.output("enc", "dir"), Some(0.0));
     assert_eq!(s.output("enc", "pos"), Some(-50.0));
 }
+
+#[test]
+fn analog_out_drives_the_dac_code_in_the_bench() {
+    let (lib, _) = Library::load(repo("library")).unwrap();
+    let logic = toml::from_str(
+        r#"
+[[block]]
+id = "pot"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "dac"
+type = "analog_out"
+pin = 25
+
+[[link]]
+from = "pot.out"
+to = "dac.in"
+"#,
+    )
+    .unwrap();
+    let mut s = Simulation::new(&logic, &lib).unwrap();
+    for (level, code) in [(128.0, 128.0), (300.0, 255.0), (0.0, 0.0)] {
+        s.set_pin_level(34, level);
+        s.step(10).unwrap();
+        assert_eq!(s.output_pin("dac"), Some((25, code)), "level {level}");
+    }
+}

@@ -97,6 +97,8 @@ pub struct StubIo {
     pub adc_in: HashMap<i32, i32>,
     pub gpio_out: HashMap<i32, i32>,
     pub pwm_out: HashMap<i32, i32>,
+    /// DAC codes (0..255) by pin from `dac_write`.
+    pub dac_out: HashMap<i32, i32>,
     /// What the master would do with an output pin when the module fails, by pin, from bits 9-10
     /// of the pin number of `gpio_write` / `pwm_write`: 0 low (PWM off), 1 high (full), 2 hold.
     pub on_fault: HashMap<i32, i32>,
@@ -354,6 +356,13 @@ impl Devices for StubIo {
                     &mut self.pwm_out
                 };
                 out.insert(pin & 0xFF, v);
+                None
+            }
+            // Bits 9-10 of the pin: the fault mode (3 = fixed code in bits 16-23).
+            id::DAC_WRITE => {
+                let (pin, v) = (a(0), a(1));
+                self.on_fault.insert(pin & 0xFF, pin >> 9 & 3);
+                self.dac_out.insert(pin & 0xFF, v);
                 None
             }
             id::ADC_READ => int(self.adc_in.get(&a(0)).copied().unwrap_or(0)),

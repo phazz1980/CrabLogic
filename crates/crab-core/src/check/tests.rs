@@ -840,3 +840,27 @@ fn counter_units_per_chip() {
         ["блок «c0»: ESP32-C3: нет аппаратного счётчика, счёт на прерываниях GPIO — до ~50 кГц, нагружает процессор"]
     );
 }
+
+#[test]
+fn analog_out_needs_a_dac_pin() {
+    let pin_errors = |fqbn: &str, pin: u32| -> Vec<String> {
+        counter_messages(fqbn, &[("dac", "analog_out", &format!("pin = {pin}"))])
+            .into_iter()
+            .filter(|m| m.contains("GPIO"))
+            .collect()
+    };
+    let esp32 = "esp32:esp32:esp32";
+    assert!(pin_errors(esp32, 25).is_empty());
+    assert!(pin_errors(esp32, 26).is_empty());
+    assert_eq!(
+        pin_errors(esp32, 4),
+        ["блок «dac»: вывод GPIO4 без ЦАП (ЦАП есть только у ESP32: GPIO25 и GPIO26) у ESP32"]
+    );
+    assert_eq!(
+        pin_errors("esp32:esp32:esp32c3", 25),
+        ["блок «dac»: у ESP32-C3 нет вывода GPIO25 (ЦАП есть только у ESP32: GPIO25 и GPIO26)"]
+    );
+    let on_c3_pin = pin_errors("esp32:esp32:esp32c3", 4);
+    assert_eq!(on_c3_pin.len(), 1, "{on_c3_pin:?}");
+    assert!(on_c3_pin[0].contains("без ЦАП"));
+}

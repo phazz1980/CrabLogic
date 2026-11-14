@@ -142,7 +142,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
             return Ok(true);
         }
         let kind = inst.block.kind.as_str();
-        if !matches!(kind, "digital_in" | "analog_in" | "digital_out" | "pwm_out") {
+        if !matches!(
+            kind,
+            "digital_in" | "analog_in" | "digital_out" | "pwm_out" | "analog_out"
+        ) {
             return Ok(false);
         }
         if let Some(name) = inst
@@ -202,6 +205,28 @@ impl<'a, 'p> Emitter<'a, 'p> {
                     self.op(I::I32Eqz);
                 }
                 self.hw_call(HW_GPIO_WRITE);
+                return Ok(true);
+            }
+            "analog_out" => {
+                let code = self.state_i();
+                self.hold_unless_enabled(inst, |e| {
+                    e.input_as(inst, 0, Ty::I);
+                    e.clamp_int(0, 255);
+                    e.op(I::GlobalSet(code));
+                });
+                // Fault bits: 0 volts adds none, hold is `FAULT_HOLD`, a fixed code rides in bits 16-23.
+                let fault = match self.const_param(inst, 2)? as i32 {
+                    1 => self.fault_pin(0, FAULT_HOLD),
+                    2 => {
+                        let value = (self.const_param(inst, 3)? as i32).clamp(0, 255);
+                        self.fault_pin(0, FAULT_VALUE) | value << PIN_FAULT_VALUE_SHIFT
+                    }
+                    _ => 0,
+                };
+                self.extras.insert("dac");
+                self.c_i(pin | fault);
+                self.op(I::GlobalGet(code));
+                self.hw_call(HW_DAC_WRITE);
                 return Ok(true);
             }
             _ => {

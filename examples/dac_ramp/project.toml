@@ -1,0 +1,6 @@
+[project]
+name = "dac_ramp"
+description = "Пила на ЦАП: счётчик считает такты, остаток от деления на 256 идёт кодом на аналоговый выход GPIO25"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit: ЦАП есть на GPIO25 и GPIO26

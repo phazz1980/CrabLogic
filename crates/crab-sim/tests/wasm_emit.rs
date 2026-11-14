@@ -1205,3 +1205,62 @@ fn project_and_variable_timing_overrides_are_used() {
     }
     assert_eq!(m.io().retain_writes, 3);
 }
+
+const DAC_LOGIC: &str = r#"
+[[block]]
+id = "pot"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "dac"
+type = "analog_out"
+pin = 25
+on_fault = 2
+fault_value = 77
+
+[[link]]
+from = "pot.out"
+to = "dac.in"
+"#;
+
+fn dac_project() -> Project {
+    let mut project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_hw")).unwrap();
+    project.logic = toml::from_str(DAC_LOGIC).unwrap();
+    project
+}
+
+#[test]
+fn analog_out_clamps_the_code_and_asks_for_the_dac_capability() {
+    let lib = library();
+    let mut project = dac_project();
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert_eq!(built.needs, ["abi5", "dac", "on_fault"]);
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert!(manifest.allow.iter().any(|n| n == "dac_write"));
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    for (adc, code) in [(128, 128), (300, 255), (4095, 255), (0, 0)] {
+        module.io_mut().adc_in.insert(34, adc);
+        module.step(50).unwrap();
+        assert_eq!(module.io().dac_out.get(&25), Some(&code), "adc {adc}");
+    }
+    // Fault bits: 3 (fixed code) in bits 9-10 and the code 77 in bits 16-23 of the pin argument.
+    assert_eq!(module.io().on_fault.get(&25), Some(&3));
+
+    // Default `on_fault`: no fault bits, so only the `dac` capability is needed.
+    let dac = project
+        .logic
+        .blocks
+        .iter_mut()
+        .find(|b| b.id == "dac")
+        .unwrap();
+    dac.params.remove("on_fault");
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert_eq!(built.needs, ["abi5", "dac"]);
+}

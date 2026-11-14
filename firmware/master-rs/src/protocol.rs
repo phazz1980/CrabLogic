@@ -129,6 +129,11 @@ pub enum Command {
         hz: u32,
         pin2: Option<i32>,
     },
+    /// `selftest dac <pin> <code>`: sets the DAC and reads the pad back through the ADC.
+    SelfTestDac {
+        pin: i32,
+        code: i32,
+    },
 }
 
 /// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
@@ -446,6 +451,10 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
                     None => None,
                 },
             },
+            "dac" => Command::SelfTestDac {
+                pin: number(&mut args)?,
+                code: number(&mut args)?,
+            },
             _ => return Err(ParseError::UnknownCommand),
         },
         _ => return Err(ParseError::UnknownCommand),
@@ -633,6 +642,10 @@ mod core_tests {
                 hz: 1000,
                 pin2: Some(5)
             })
+        );
+        assert_eq!(
+            parse_command("selftest dac 25 128"),
+            Ok(Command::SelfTestDac { pin: 25, code: 128 })
         );
         assert!(parse_command("selftest other").is_err());
     }

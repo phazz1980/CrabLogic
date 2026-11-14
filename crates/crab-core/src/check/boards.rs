@@ -224,7 +224,15 @@ pub(super) fn check_board_pins(
             report.block_error(
                 DiagKind::PinUnavailable,
                 id,
-                format!("блок «{id}»: у {} нет вывода GPIO{gpio}", layout.name()),
+                format!(
+                    "блок «{id}»: у {} нет вывода GPIO{gpio}{}",
+                    layout.name(),
+                    if u.mode == crate::PinMode::Dac {
+                        " (ЦАП есть только у ESP32: GPIO25 и GPIO26)"
+                    } else {
+                        ""
+                    }
+                ),
             );
             continue;
         };
@@ -233,7 +241,7 @@ pub(super) fn check_board_pins(
         } else if !pin.fits(u.mode) {
             Some(match u.mode {
                 crate::PinMode::Adc => "без АЦП",
-                crate::PinMode::Dac => "без ЦАП",
+                crate::PinMode::Dac => "без ЦАП (ЦАП есть только у ESP32: GPIO25 и GPIO26)",
                 crate::PinMode::Pwm => "не умеет ШИМ",
                 crate::PinMode::In => "не работает как цифровой вход",
                 _ if pin.input_only => "работает только на вход",

@@ -335,12 +335,12 @@ impl<D: Devices> Host for ModuleHost<D> {
                 }
                 None
             }
-            id::GPIO_WRITE | id::PWM_WRITE => {
+            id::GPIO_WRITE | id::PWM_WRITE | id::DAC_WRITE => {
                 let pin = a(0);
-                let use_ = if import == id::GPIO_WRITE {
-                    PinUse::Out
-                } else {
-                    PinUse::Pwm
+                let use_ = match import {
+                    id::GPIO_WRITE => PinUse::Out,
+                    id::PWM_WRITE => PinUse::Pwm,
+                    _ => PinUse::Dac,
                 };
                 self.leases
                     .take((pin & 0xFF) as u8, use_, Fault::from_pin_bits(pin));

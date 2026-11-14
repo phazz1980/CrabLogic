@@ -16,6 +16,7 @@ pub fn behavior(kind: &str) -> Option<Box<dyn Behavior>> {
         "analog_in" => Some(Box::new(AnalogIn)),
         "digital_out" => Some(Box::<DigitalOut>::default()),
         "pwm_out" => Some(Box::<PwmOut>::default()),
+        "analog_out" => Some(Box::<AnalogOut>::default()),
         "dht22" => Some(Box::<Dht22>::default()),
         "fast_counter" => Some(Box::<crate::counters::FastCounter>::default()),
         "frequency" => Some(Box::<crate::counters::Frequency>::default()),
@@ -169,6 +170,24 @@ impl Behavior for PwmOut {
 
     fn drive(&self) -> Option<f64> {
         Some(self.duty)
+    }
+}
+
+/// DAC output: the code 0..255 (3.3 V at 255). Inputs: in, en. Params: pin.
+#[derive(Default)]
+struct AnalogOut {
+    code: f64,
+}
+
+impl Behavior for AnalogOut {
+    fn step(&mut self, c: &Ctx, _: &mut [f64]) {
+        if may_write(c) {
+            self.code = c.input(0).clamp(0.0, 255.0).trunc();
+        }
+    }
+
+    fn drive(&self) -> Option<f64> {
+        Some(self.code)
     }
 }
 
@@ -370,5 +389,12 @@ mod tests {
         let mut p = behavior("pwm_out").unwrap();
         scan(&mut *p, &bench, 0, &[150.0, 0.0], &[2.0], &mut out);
         assert_eq!(p.drive(), Some(100.0));
+        let mut a = behavior("analog_out").unwrap();
+        scan(&mut *a, &bench, 0, &[300.0, 0.0], &[25.0], &mut out);
+        assert_eq!(a.drive(), Some(255.0));
+        scan(&mut *a, &bench, 0, &[-5.0, 0.0], &[25.0], &mut out);
+        assert_eq!(a.drive(), Some(0.0));
+        scan(&mut *a, &bench, 0, &[128.0, 0.0], &[25.0], &mut out);
+        assert_eq!(a.drive(), Some(128.0));
     }
 }

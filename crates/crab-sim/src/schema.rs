@@ -714,7 +714,10 @@ impl Simulation {
     /// The pin an output block drives and its state (`None` while the block does not write).
     pub fn output_pin(&self, block: &str) -> Option<(i64, f64)> {
         let node = &self.nodes[*self.index.get(block)?];
-        if !matches!(node.def.info.kind.as_str(), "digital_out" | "pwm_out") {
+        if !matches!(
+            node.def.info.kind.as_str(),
+            "digital_out" | "pwm_out" | "analog_out"
+        ) {
             return None;
         }
         let pin = node.pin()?;

@@ -115,6 +115,7 @@ pub const IMPORTS: &[Import] = &[
     imp("retain_text", &[I32, I32, I32, I32], &[I32], Allow),
     imp("yield", &[], &[I32], Always),
     imp("bus", &[I32, I32, I32, I32, I32], &[I32], Allow),
+    imp("dac_write", &[I32, I32], &[], Allow),
 ];
 
 /// Import ids by name, for hosts that dispatch with `match`.
@@ -151,6 +152,7 @@ pub mod id {
     pub const RETAIN_TEXT: usize = 29;
     pub const YIELD: usize = 30;
     pub const BUS: usize = 31;
+    pub const DAC_WRITE: usize = 32;
 }
 
 /// Operation codes and error codes of `crab.bus(op, a, b, c, d)`: GPIO, I²C and UART of the board
@@ -327,11 +329,12 @@ mod tests {
             (id::RETAIN_TEXT, "retain_text"),
             (id::YIELD, "yield"),
             (id::BUS, "bus"),
+            (id::DAC_WRITE, "dac_write"),
         ];
         for (i, name) in named {
             assert_eq!(IMPORTS[i].name, name);
         }
-        assert_eq!(IMPORTS.len(), id::BUS + 1);
+        assert_eq!(IMPORTS.len(), id::DAC_WRITE + 1);
     }
 
     #[test]
