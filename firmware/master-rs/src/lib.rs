@@ -14,6 +14,7 @@ pub mod bus_cfg;
 pub mod cycle;
 pub mod eth_cfg;
 pub mod modbus;
+pub mod netauth;
 pub mod protocol;
 pub mod restart;
 pub mod send_queue;

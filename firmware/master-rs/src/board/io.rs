@@ -55,28 +55,50 @@ fn run() {
     let mut out = Vec::new();
     loop {
         let n = usb::read(&mut buf, READ_WAIT_MS);
-        if n > 0 {
-            with_input(|input| {
-                input.push(&buf[..n]);
-                while let Some(event) = input.next_event() {
-                    events.push(event);
-                }
-            });
-        }
-        for event in events.drain(..) {
-            handle(event);
+        // While a network client is logged in, USB input is not taken: two command streams would
+        // mix in the middle of an upload (`specs/ota`).
+        if n > 0 && !super::netcmd::active() {
+            feed_events(&buf[..n], false, &mut events);
         }
         usb::take_answers(&mut out);
         if !out.is_empty() {
             usb::write_raw(&out);
+            super::netcmd::mirror(&out);
             out.clear();
         }
     }
 }
 
-fn handle(event: Event) {
+/// Bytes of a network client (`board/netcmd.rs`) into the same parser as USB.
+pub fn feed(bytes: &[u8], from_net: bool) {
+    let mut events = Vec::new();
+    feed_events(bytes, from_net, &mut events);
+}
+
+fn feed_events(bytes: &[u8], from_net: bool, events: &mut Vec<Event>) {
+    with_input(|input| {
+        input.push(bytes);
+        while let Some(event) = input.next_event() {
+            events.push(event);
+        }
+    });
+    for event in events.drain(..) {
+        handle(event, from_net);
+    }
+}
+
+fn handle(event: Event, from_net: bool) {
     if let Event::Line(line) = &event {
         match parse_command(line) {
+            // The key of the network server: over USB only (physical access).
+            Ok(Command::NetKey(_)) if from_net => return println!("err netkey only over USB"),
+            Ok(Command::NetKey(key)) => {
+                return if super::netcmd::set_key(key) {
+                    println!("ok")
+                } else {
+                    println!("err nvs")
+                };
+            }
             Ok(Command::List) => return snapshot::answer_list(),
             Ok(Command::Info) => return snapshot::answer_info(),
             Ok(Command::Outputs { name, count }) => return snapshot::answer_outputs(&name, count),

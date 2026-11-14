@@ -5,6 +5,7 @@ mod debug;
 mod editing;
 mod jobs;
 mod library;
+mod netlink;
 mod project;
 mod selfupdate_ui;
 use library::{find_library, is_block_file};
@@ -209,6 +210,10 @@ pub struct EditorApp {
     pub port: String,
     pub ports: Vec<SerialPort>,
     port_scan: Option<Receiver<Result<Vec<SerialPort>, String>>>,
+    /// Board address being typed in the network window.
+    net_input: Option<String>,
+    /// Result of writing the network key over USB.
+    net_key_rx: Option<Receiver<Result<String, String>>>,
     /// Online debugging session, when running.
     pub debug: Option<DebugState>,
     /// Simulation of the schema on this computer, when running.
@@ -321,6 +326,8 @@ impl EditorApp {
             port: String::new(),
             ports: Vec::new(),
             port_scan: None,
+            net_input: None,
+            net_key_rx: None,
             debug: None,
             sim: None,
             debug_firmware: false,
@@ -491,6 +498,8 @@ impl eframe::App for EditorApp {
         self.poll_ai(&ctx);
         self.poll_console(&ctx);
         self.poll_ports();
+        self.poll_net_key();
+        self.net_window(&ctx);
         self.poll_update();
         if self.update_check
             && self.update_rx.is_none()

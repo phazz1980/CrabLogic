@@ -154,6 +154,9 @@ pub struct BoardConfig {
     /// Serial port for upload and debugging, e.g. `COM3`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<String>,
+    /// Network address of the board (`192.168.1.5` or `host:4040`) for upload over the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// Old board menu options of the sketch build (dropped on save, see `drop_sketch_settings`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
@@ -670,6 +673,36 @@ fqbn = \"x:y:z\"
         let mut zip = ZipArchive::new(File::open(&project.path).unwrap()).unwrap();
         assert!(zip.by_name(BOARDS_PDF).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn board_host_roundtrips_and_is_skipped_when_unset() {
+        let dir = std::env::temp_dir().join(format!("crab-host-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config: ProjectConfig = toml::from_str(
+            "[project]
+name = \"t\"
+[board]
+fqbn = \"x:y:z\"
+",
+        )
+        .unwrap();
+        assert_eq!(config.board.host, None);
+        assert!(!toml::to_string(&config).unwrap().contains("host"));
+        config.board.host = Some("192.168.1.50:4040".into());
+        let project = Project {
+            path: dir.join("t.crab"),
+            config,
+            logic: Logic::default(),
+            layout: Layout::default(),
+        };
+        project.save().unwrap();
+        let again = Project::load(&project.path).unwrap();
+        assert_eq!(
+            again.config.board.host.as_deref(),
+            Some("192.168.1.50:4040")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

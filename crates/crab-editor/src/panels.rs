@@ -210,6 +210,7 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
         state.bg_fill = egui::Color32::TRANSPARENT;
         state.bg_stroke = outline;
     }
+    let port_before = app.port.clone();
     egui::ComboBox::from_id_salt("port")
         .selected_text(shown)
         .width(120.0)
@@ -229,10 +230,28 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
             if app.ports.is_empty() {
                 ui.weak(crate::i18n::tr("портов не найдено"));
             }
+            ui.separator();
+            if app.net_target() {
+                let address = app.port.clone();
+                ui.selectable_value(&mut app.port, address.clone(), address);
+            }
+            if ui
+                .button(crate::i18n::tr("По сети…"))
+                .on_hover_text(crate::i18n::tr(
+                    "Залить модули по Wi-Fi или Ethernet: адрес платы",
+                ))
+                .clicked()
+            {
+                app.open_net_input();
+                ui.close();
+            }
         })
         .response
         .on_hover_text(crate::i18n::tr("Порт платы"));
     ui.visuals_mut().widgets = saved;
+    if app.port != port_before {
+        app.target_changed();
+    }
     if app.scanning_ports() {
         busy(ui);
     } else if icon(ui, true, "↻", crate::i18n::tr("Найти порты заново")) {

@@ -27,6 +27,7 @@ mod io;
 mod modbus;
 mod mqtt;
 mod net;
+mod netcmd;
 mod note_queue;
 mod notes;
 mod pcf;
@@ -918,6 +919,8 @@ impl Master {
             // Never a panic in the scan: the test crash is made by `crab-io` only.
             // Only test builds crash on purpose (in `crab-io`); a released master refuses it.
             Ok(Command::SelfTestPanic) => println!("err selftest is not in this build"),
+            // Handled by `crab-io` (USB only); here only if handed over anyway.
+            Ok(Command::NetKey(_)) => println!("err netkey only over USB"),
             // A hang of the scan on purpose: the scan watchdog must restart the board.
             #[cfg(feature = "selftest")]
             Ok(Command::SelfTestHang) => {
@@ -1208,6 +1211,9 @@ pub fn main() {
                     println!("master ready");
                     if !io::start() {
                         println!("err io thread");
+                    }
+                    if !netcmd::start() {
+                        println!("err netcmd thread");
                     }
                     master.run()
                 }

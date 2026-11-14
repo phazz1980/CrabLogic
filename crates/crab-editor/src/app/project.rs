@@ -86,7 +86,12 @@ impl EditorApp {
                     );
                 }
                 theme::save_last_project(path);
-                self.port = doc.project.config.board.port.clone().unwrap_or_default();
+                let board = &doc.project.config.board;
+                self.port = board
+                    .port
+                    .clone()
+                    .or_else(|| board.host.clone())
+                    .unwrap_or_default();
                 self.doc = Some(doc);
                 self.disk_stamp = self.project_stamp();
                 self.disk_warned = false;
@@ -242,6 +247,7 @@ impl EditorApp {
                     fqbn: "esp32:esp32:esp32".into(),
                     model: None,
                     port: None,
+                    host: None,
                     options: Default::default(),
                 },
                 uart: Vec::new(),

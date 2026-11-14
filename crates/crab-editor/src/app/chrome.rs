@@ -628,6 +628,19 @@ impl EditorApp {
             }
             if ui
                 .add_enabled(
+                    has_doc && idle,
+                    egui::Button::new(crate::i18n::tr("Записать ключ для заливки по сети")),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "По USB записывает на плату ключ из пароля проекта: после этого модули можно заливать по сети",
+                ))
+                .clicked()
+            {
+                self.write_net_key(ui.ctx());
+                ui.close();
+            }
+            if ui
+                .add_enabled(
                     has_doc,
                     egui::Button::new(crate::i18n::tr("Симуляция схемы на ПК")),
                 )

@@ -1148,6 +1148,7 @@ dependencies = [
  "crab-codegen",
  "crab-core",
  "espflash",
+ "hmac",
  "serde",
  "serialport",
  "sha2 0.10.9",

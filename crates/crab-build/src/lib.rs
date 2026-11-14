@@ -9,6 +9,7 @@ pub mod aot_xtensa;
 pub mod board_memo;
 pub mod flash;
 pub mod mcu_module;
+pub mod net_link;
 pub mod placement;
 pub mod upload_plan;
 pub mod wamrc;

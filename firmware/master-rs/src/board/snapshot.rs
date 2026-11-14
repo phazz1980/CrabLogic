@@ -246,6 +246,7 @@ pub fn answer_info() {
         Some((used, free)) => println!("nvs writes={total} hour={hour} used={used} free={free}"),
         None => println!("nvs writes={total} hour={hour}"),
     }
+    println!("{}", super::netcmd::status_line());
     println!("end");
 }
 

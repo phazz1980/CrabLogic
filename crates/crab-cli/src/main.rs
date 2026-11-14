@@ -86,14 +86,29 @@ enum Command {
         #[arg(long)]
         upload: bool,
         /// Порт платы, например COM3 (по умолчанию единственный найденный)
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with = "host")]
         port: Option<String>,
+        /// Залить по сети: адрес платы, например 192.168.1.50 или 192.168.1.50:4040 (нужен пароль проекта
+        /// и ключ на плате: crablogic netkey)
+        #[arg(long)]
+        host: Option<String>,
         /// Ошибка, если какой-то лист не удаётся ускорить (без флага — предупреждение)
         #[arg(long)]
         require_aot: bool,
         /// Разрешить остановить листы на время заливки, если новая версия не помещается рядом со старой (без флага — ошибка)
         #[arg(long)]
         allow_stop: bool,
+    },
+    /// Записать на плату по USB ключ для заливки по сети (из пароля проекта) или убрать его
+    Netkey {
+        /// Файл проекта .crab (или папка с ним)
+        project: PathBuf,
+        /// Порт платы, например COM3 (по умолчанию единственный найденный)
+        #[arg(long, short)]
+        port: Option<String>,
+        /// Убрать ключ с платы (заливка по сети перестанет работать)
+        #[arg(long)]
+        remove: bool,
     },
     /// Залить один WASM-модуль на плату с мастер-прошивкой (без сброса выходов и соседних модулей); если мастер умеет AOT, модуль компилируется в .aot
     UploadWasm {
@@ -297,6 +312,11 @@ fn run() -> ExitCode {
             force,
             cli.library.as_deref(),
         ),
+        Command::Netkey {
+            project,
+            port,
+            remove,
+        } => run_netkey(&project, port, remove),
         Command::UploadWasm {
             file,
             name,
@@ -309,6 +329,7 @@ fn run() -> ExitCode {
             watch,
             upload,
             port,
+            host,
             require_aot,
             allow_stop,
         } => run_gen_wasm(
@@ -317,7 +338,11 @@ fn run() -> ExitCode {
             sheet,
             watch,
             upload,
-            port,
+            LinkSpec {
+                port,
+                host,
+                password: String::new(),
+            },
             UploadFlags {
                 require_aot,
                 allow_stop,
@@ -591,7 +616,15 @@ fn run_upload_wasm(
         .unwrap_or_default();
     let allow = allow.unwrap_or_else(|| manifest.map(|m| m.allow).unwrap_or_default());
     let cache = file.parent().unwrap_or(Path::new("."));
-    push_module(&name, &wasm, &allow, &[], port, cache, None)
+    push_module(
+        &name,
+        &wasm,
+        &allow,
+        &[],
+        LinkSpec::serial(port),
+        cache,
+        None,
+    )
 }
 
 /// Sends one module to the master firmware over serial: as an AOT image when the master runs AOT
@@ -601,7 +634,7 @@ fn push_module(
     wasm: &[u8],
     allow: &[String],
     needs: &[String],
-    port: Option<String>,
+    link: LinkSpec,
     cache: &Path,
     aot_copy: Option<&Path>,
 ) -> ExitCode {
@@ -609,7 +642,7 @@ fn push_module(
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)
     };
-    let (mut serial, port) = match open_master_port(port) {
+    let (mut serial, port) = match open_link(link) {
         Ok(opened) => opened,
         Err(message) => return failed(message),
     };
@@ -811,6 +844,79 @@ fn run_flash_master(
     Ok(())
 }
 
+/// How to reach the board: over USB (`port`, or the only found one) or over the network (`host`).
+struct LinkSpec {
+    port: Option<String>,
+    host: Option<String>,
+    /// Project password, the source of the network key.
+    password: String,
+}
+
+impl LinkSpec {
+    fn serial(port: Option<String>) -> Self {
+        LinkSpec {
+            port,
+            host: None,
+            password: String::new(),
+        }
+    }
+}
+
+/// Opens the link to the master: TCP with the login for `host`, otherwise the serial port.
+/// Returns the link and a name for messages.
+fn open_link(spec: LinkSpec) -> Result<(Box<dyn crab_build::net_link::Link>, String), String> {
+    match spec.host {
+        Some(host) => {
+            let stream =
+                crab_build::net_link::connect(&host, &spec.password).map_err(|e| e.to_string())?;
+            Ok((Box::new(stream), host))
+        }
+        None => {
+            let (serial, port) = open_master_port(spec.port)?;
+            Ok((Box::new(serial), port))
+        }
+    }
+}
+
+/// `netkey`: writes the network key of the project password to the board over USB, or removes it.
+fn run_netkey(project_dir: &Path, port: Option<String>, remove: bool) -> ExitCode {
+    let failed = |message: String| {
+        eprintln!("ошибка: {message}");
+        ExitCode::from(EXIT_BUILD_FAILED)
+    };
+    let password = if remove {
+        None
+    } else {
+        match Project::load(project_dir) {
+            Ok(project) => Some(project.config.project.password.clone()),
+            Err(e) => {
+                eprintln!("ошибка: {e}");
+                return ExitCode::from(EXIT_LOAD_FAILED);
+            }
+        }
+    };
+    let (mut serial, _) = match open_master_port(port) {
+        Ok(opened) => opened,
+        Err(message) => return failed(message),
+    };
+    if let Err(e) =
+        crab_build::mcu_module::wait_for_master(&mut serial, std::time::Duration::from_secs(8))
+    {
+        return failed(e.to_string());
+    }
+    if let Err(e) = crab_build::net_link::set_net_key(&mut serial, password.as_deref()) {
+        return failed(e.to_string());
+    }
+    if remove {
+        println!("ключ для заливки по сети удалён с платы");
+    } else {
+        println!(
+            "ключ для заливки по сети записан на плату (порт 4040 откроется, когда модуль поднимет Wi-Fi или Ethernet)"
+        );
+    }
+    ExitCode::SUCCESS
+}
+
 fn open_master_port(
     port: Option<String>,
 ) -> Result<(Box<dyn serialport::SerialPort>, String), String> {
@@ -864,7 +970,7 @@ fn upload_sheets(
     modules: &[crab_codegen::WasmModule],
     numbers: &[u32],
     allows: &[Vec<String>],
-    port: Option<String>,
+    link: LinkSpec,
     require_aot: bool,
     allow_stop: bool,
 ) -> ExitCode {
@@ -873,7 +979,7 @@ fn upload_sheets(
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)
     };
-    let (mut serial, port) = match open_master_port(port) {
+    let (mut serial, port) = match open_link(link) {
         Ok(opened) => opened,
         Err(message) => return failed(message),
     };
@@ -1023,7 +1129,7 @@ fn run_gen_wasm(
     sheet: Option<u32>,
     watch: bool,
     upload: bool,
-    port: Option<String>,
+    mut link: LinkSpec,
     flags: UploadFlags,
 ) -> ExitCode {
     let (project, lib) = match load(project_dir, library) {
@@ -1078,12 +1184,13 @@ fn run_gen_wasm(
         );
     }
     if upload {
+        link.password = project.config.project.password.clone();
         return upload_sheets(
             &project,
             &modules,
             &numbers,
             &allows,
-            port,
+            link,
             flags.require_aot,
             flags.allow_stop,
         );
@@ -1407,6 +1514,32 @@ mod tests {
         assert!(err.starts_with(&stops.message()));
         assert!(err.contains("--allow-stop"));
         assert_eq!(stop_verdict(Some(&stops), true), Ok(Some(stops.message())));
+    }
+
+    #[test]
+    fn host_conflicts_with_port_and_netkey_parses() {
+        assert!(Cli::try_parse_from([
+            "crablogic",
+            "gen-wasm",
+            "p.crab",
+            "--upload",
+            "--host",
+            "1.2.3.4",
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "crablogic",
+            "gen-wasm",
+            "p.crab",
+            "--upload",
+            "--host",
+            "1.2.3.4",
+            "-p",
+            "COM3",
+        ])
+        .is_err());
+        let cli = Cli::try_parse_from(["crablogic", "netkey", "p.crab", "--remove"]).unwrap();
+        assert!(matches!(cli.command, Command::Netkey { remove: true, .. }));
     }
 
     #[test]

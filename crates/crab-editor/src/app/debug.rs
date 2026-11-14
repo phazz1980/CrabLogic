@@ -35,6 +35,13 @@ impl EditorApp {
 
     /// Uploads the modules that report their signals to the master firmware, then connects.
     pub fn start_debug(&mut self, ctx: &egui::Context) {
+        if self.net_target() {
+            self.info(
+                LogLevel::Error,
+                crate::i18n::tr("Отладка пока только по USB"),
+            );
+            return;
+        }
         self.debug_firmware = true;
         let port = self.port_choice();
         self.start_job(JobKind::UploadModules { port }, ctx);
@@ -42,6 +49,13 @@ impl EditorApp {
 
     /// Connects to a board that already runs debugging firmware.
     pub fn connect_debug(&mut self, port: Option<String>, ctx: &egui::Context) {
+        if port.is_none() && self.net_target() {
+            self.info(
+                LogLevel::Error,
+                crate::i18n::tr("Отладка пока только по USB"),
+            );
+            return;
+        }
         self.stop_debug();
         self.sim = None;
         self.console.release();
@@ -67,6 +81,9 @@ impl EditorApp {
 
     /// Port of the board: chosen in the toolbar, set in the project, or detected.
     pub(super) fn board_port(&self) -> Option<String> {
+        if self.net_target() {
+            return None;
+        }
         self.port_choice()
             .or_else(|| self.doc.as_ref()?.project.config.board.port.clone())
             .or_else(|| crab_build::auto_port(&self.ports).ok())

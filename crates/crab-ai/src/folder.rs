@@ -151,6 +151,16 @@ impl Context for FolderContext {
     }
 }
 
+/// The board address when `port` is a network one (`tcp:` prefix, or a dot as in `192.168.1.5`),
+/// `None` for a serial port like `COM3`.
+fn network_address(port: &str) -> Option<&str> {
+    let port = port.trim();
+    if let Some(host) = port.strip_prefix("tcp:") {
+        return Some(host.trim());
+    }
+    (port.contains('.') && !port.contains(['/', '\\'])).then_some(port)
+}
+
 /// Uploads the modules of `project` through the command line of the program (`crablogic gen-wasm
 /// --upload`, found next to this executable): it owns the whole upload (planning, AOT, replacing
 /// the modules in place). Returns the tail of its output.
@@ -173,7 +183,10 @@ fn upload_with_cli(project: &Project, port: Option<String>, debug: bool) -> Resu
         command.arg("--watch");
     }
     if let Some(port) = port.or_else(|| project.config.board.port.clone()) {
-        command.arg("--port").arg(port);
+        match network_address(&port) {
+            Some(host) => command.arg("--host").arg(host),
+            None => command.arg("--port").arg(port),
+        };
     }
     let output = command.output().map_err(|e| e.to_string())?;
     let text = format!(
@@ -190,5 +203,18 @@ fn upload_with_cli(project: &Project, port: Option<String>, debug: bool) -> Resu
         Ok(tail)
     } else {
         Err(tail)
+    }
+}
+
+#[cfg(test)]
+mod net_tests {
+    use super::network_address;
+
+    #[test]
+    fn network_ports_are_told_from_serial_ones() {
+        assert_eq!(network_address("192.168.1.5"), Some("192.168.1.5"));
+        assert_eq!(network_address("tcp:board"), Some("board"));
+        assert_eq!(network_address("COM3"), None);
+        assert_eq!(network_address("/dev/ttyUSB0"), None);
     }
 }

@@ -134,6 +134,9 @@ pub enum Command {
         pin: i32,
         code: i32,
     },
+    /// `netkey <64 hex>` stores the key of the network command server, `netkey -` removes it
+    /// (`specs/ota`). Accepted over USB only.
+    NetKey(Option<[u8; 32]>),
 }
 
 /// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
@@ -440,6 +443,12 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
             "erase" => Command::CoreErase,
             _ => return Err(ParseError::UnknownCommand),
         },
+        "netkey" => match one(&mut args)? {
+            "-" => Command::NetKey(None),
+            hex => Command::NetKey(Some(
+                crate::netauth::from_hex(hex).ok_or(ParseError::InvalidNumber)?,
+            )),
+        },
         "selftest" => match one(&mut args)? {
             "panic" => Command::SelfTestPanic,
             "hang" => Command::SelfTestHang,
@@ -571,6 +580,13 @@ impl Input {
     }
 
     /// Back to lines; what was received of the image so far is dropped.
+    /// Forgets what is buffered: a part line and an image body still expected (a network client
+    /// came or went; what the other one left must not join the next command).
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.body = None;
+    }
+
     pub fn cancel_body(&mut self) {
         self.body = None;
         self.buf.clear();
@@ -647,6 +663,12 @@ mod core_tests {
             parse_command("selftest dac 25 128"),
             Ok(Command::SelfTestDac { pin: 25, code: 128 })
         );
+        assert_eq!(parse_command("netkey -"), Ok(Command::NetKey(None)));
+        assert_eq!(
+            parse_command(&format!("netkey {}", "0f".repeat(32))),
+            Ok(Command::NetKey(Some([0x0f; 32])))
+        );
+        assert!(parse_command("netkey 0f").is_err());
         assert!(parse_command("selftest other").is_err());
     }
 

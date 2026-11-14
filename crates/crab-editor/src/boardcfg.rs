@@ -50,6 +50,8 @@ pub struct BoardDialog {
     /// User boards: their pin tables, FQBNs and presets.
     boards: Boards,
     port: String,
+    /// Network address of the board: set from the toolbar, kept as it is.
+    host: Option<String>,
     /// `[[uart]]` of the project, edited here.
     uarts: Vec<UartConfig>,
     /// Blocks on each UART: (number, block id), to show who uses a port.
@@ -84,6 +86,7 @@ impl BoardDialog {
             model: board.model.clone(),
             boards: boards.clone(),
             port: board.port.clone().unwrap_or_default(),
+            host: board.host.clone(),
         }
     }
 
@@ -105,6 +108,7 @@ impl BoardDialog {
             fqbn: fqbn.to_owned(),
             model,
             port: (!port.is_empty()).then(|| port.to_owned()),
+            host: self.host.clone(),
             options: BTreeMap::new(),
         })
     }
@@ -141,6 +145,7 @@ impl BoardDialog {
             fqbn: self.fqbn.trim().to_owned(),
             model: self.model.clone(),
             port: None,
+            host: None,
             options: BTreeMap::new(),
         };
         let chip = BoardLayout::of_board(&board, &self.boards).map(|l| l.chip());
@@ -397,6 +402,7 @@ mod tests {
             fqbn: "esp32:esp32:esp32".into(),
             model: model.map(str::to_owned),
             port: None,
+            host: None,
             options: BTreeMap::new(),
         }
     }

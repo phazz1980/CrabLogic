@@ -185,6 +185,12 @@ fn upload_master(
     })?;
     let image = flash::find_image(&dir, &board.fqbn).map_err(|e| e.to_string())?;
     let port = match port.map(str::to_owned).or_else(|| board.port.clone()) {
+        Some(port) if crab_build::net_link::looks_like_address(&port) => {
+            return Err(crate::i18n::tr(
+                "Мастер-прошивка заливается только по USB — выберите COM-порт",
+            )
+            .to_owned());
+        }
         Some(port) => port,
         None => flash::single_usb_port().map_err(|e| e.to_string())?,
     };
@@ -263,14 +269,34 @@ fn upload_modules(
     let started = std::time::Instant::now();
     let (project, modules, numbers) = build_sheets(project, lib, watch)?;
     let project = &project;
-    let port = crab_build::choose_port(port, &project.config.board).map_err(|e| e.to_string())?;
-    let mut serial = serialport::new(&port, 115_200)
-        .timeout(std::time::Duration::from_millis(200))
-        .open()
-        .map_err(|e| crate::i18n::fmt("порт {0} не открыт: {1}", &[&port, &e]))?;
-    // Release DTR/RTS so opening the port does not reset the board.
-    let _ = serial.write_data_terminal_ready(false);
-    let _ = serial.write_request_to_send(false);
+    let board = &project.config.board;
+    let explicit = port.map(str::trim).filter(|p| !p.is_empty());
+    let link = match (explicit, &board.port, &board.host) {
+        (Some(text), _, _) => crab_build::net_link::BoardLink::parse(text),
+        (None, Some(port), _) => crab_build::net_link::BoardLink::parse(port),
+        (None, None, Some(host)) => crab_build::net_link::BoardLink::Tcp(host.clone()),
+        (None, None, None) => crab_build::net_link::BoardLink::Serial(
+            crab_build::choose_port(None, board).map_err(|e| e.to_string())?,
+        ),
+    };
+    let (mut serial, port, over_net): (Box<dyn crab_build::net_link::Link>, String, bool) =
+        match link {
+            crab_build::net_link::BoardLink::Tcp(host) => {
+                let stream = crab_build::net_link::connect(&host, &project.config.project.password)
+                    .map_err(|e| e.to_string())?;
+                (Box::new(stream), host, true)
+            }
+            crab_build::net_link::BoardLink::Serial(port) => {
+                let mut serial = serialport::new(&port, 115_200)
+                    .timeout(std::time::Duration::from_millis(200))
+                    .open()
+                    .map_err(|e| crate::i18n::fmt("порт {0} не открыт: {1}", &[&port, &e]))?;
+                // Release DTR/RTS so opening the port does not reset the board.
+                let _ = serial.write_data_terminal_ready(false);
+                let _ = serial.write_request_to_send(false);
+                (Box::new(serial), port, false)
+            }
+        };
     let info = crab_build::mcu_module::wait_for_master_info(
         &mut serial,
         std::time::Duration::from_secs(8),
@@ -455,7 +481,7 @@ fn upload_modules(
             "Модули залиты на {0} за {1} с (со сборкой)",
             &[&port, &seconds(started)],
         ),
-        port: Some(port),
+        port: (!over_net).then_some(port),
         debug: watch,
     })
 }

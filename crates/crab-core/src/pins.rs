@@ -577,6 +577,7 @@ mod tests {
             fqbn: "esp32:esp32:esp32c3".into(),
             model: Some("esp32c3_supermini".into()),
             port: None,
+            host: None,
             options: Default::default(),
         };
         assert_eq!(Chip::of_board(&board), Some(Chip::Esp32C3SuperMini));

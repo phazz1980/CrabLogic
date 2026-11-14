@@ -314,6 +314,7 @@ impl Builder {
                     fqbn: chip.fqbn(),
                     model: None,
                     port: None,
+                    host: None,
                     options: BTreeMap::new(),
                 },
                 uart: Vec::new(),
