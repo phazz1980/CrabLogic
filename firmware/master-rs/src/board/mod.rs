@@ -92,6 +92,19 @@ const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,re
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
+/// Heap a loaded module must leave free (see [`Master::load`]).
+const HEAP_RESERVE: u32 = 16 * 1024;
+/// Heap of a module besides its linear memory and image copy: the WAMR module and instance, the
+/// execution environment with its stack, the host (estimate for the check before loading).
+const MODULE_OVERHEAD: u32 = 12 * 1024;
+
+/// The error of a module that does not fit with the reserve.
+fn low_memory(need: u32, free: u32) -> String {
+    format!(
+        "не хватает памяти: модулю нужно около {need} Б и {HEAP_RESERVE} Б запаса мастеру, свободно {free} Б"
+    )
+}
+
 fn free_heap() -> u32 {
     // SAFETY: no arguments, no state.
     unsafe { sys::esp_get_free_heap_size() }
@@ -278,8 +291,25 @@ impl Master {
     }
 
     /// Loads the image of an area; returns the instance and the heap it took.
+    ///
+    /// A module never takes the last of the heap: the rest of the firmware (std's thread locals,
+    /// Wi-Fi, lwIP) aborts on a failed allocation, so a load that would leave less than
+    /// [`HEAP_RESERVE`] is refused before it starts, and one that did is undone
+    /// (`specs/safety-audit`, item 9).
     fn load(&self, area: &Area) -> Result<(Module, u32), String> {
         let before = free_heap();
+        let copy = match area.meta.mode {
+            ExecutionMode::Interpreter => area.meta.len as u32,
+            ExecutionMode::AotXip => 0,
+        };
+        let need = area
+            .meta
+            .memory
+            .saturating_add(copy)
+            .saturating_add(MODULE_OVERHEAD);
+        if before < need.saturating_add(HEAP_RESERVE) {
+            return Err(low_memory(need, before));
+        }
         // SAFETY: an area is reused only after the module that runs from it is gone
         // (`put` and `del` drop the instance first).
         let bytes = unsafe { self.storage.flash().mapped(area.data_at(), area.meta.len) }
@@ -313,7 +343,12 @@ impl Master {
         let module = self
             .wamr
             .load_image(image, memory, &area.allow_list(), limits, host)?;
-        Ok((module, before.saturating_sub(free_heap())))
+        let after = free_heap();
+        if after < HEAP_RESERVE {
+            drop(module);
+            return Err(low_memory(before.saturating_sub(after), before));
+        }
+        Ok((module, before.saturating_sub(after)))
     }
 
     /// The new version did not load next to the running old one (not enough memory): the old
