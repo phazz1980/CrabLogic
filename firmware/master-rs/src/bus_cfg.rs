@@ -36,6 +36,12 @@ pub enum Request {
         ptr: i32,
         len: usize,
     },
+    /// A write queued for the background (`I2C_SEND`).
+    I2cSend {
+        addr: i32,
+        ptr: i32,
+        len: usize,
+    },
     I2cWriteRead {
         addr: i32,
         wptr: i32,
@@ -253,9 +259,9 @@ impl Claims {
                 })
             }
             GPIO_MODE | GPIO_READ | GPIO_WRITE | I2C_OPEN | I2C_WRITE | I2C_READ
-            | I2C_WRITE_READ | UART_OPEN | UART_WRITE | UART_READ | UART_AVAILABLE | SPI_OPEN
-            | SPI_TRANSFER | OW_RESET | OW_WRITE | OW_READ | OW_READ_BIT | OW_WRITE_BIT
-            | PULSE_READ => {}
+            | I2C_WRITE_READ | I2C_SEND | UART_OPEN | UART_WRITE | UART_READ | UART_AVAILABLE
+            | SPI_OPEN | SPI_TRANSFER | OW_RESET | OW_WRITE | OW_READ | OW_READ_BIT
+            | OW_WRITE_BIT | PULSE_READ => {}
             _ => return Err(ERR_ARGS),
         }
         if !self.locked {
@@ -307,6 +313,15 @@ impl Claims {
                 let len = len(c, 0)?;
                 self.addr(a)?;
                 Ok(Request::I2cWrite {
+                    addr: a,
+                    ptr: b,
+                    len,
+                })
+            }
+            I2C_SEND => {
+                let len = len(c, 0)?;
+                self.addr(a)?;
+                Ok(Request::I2cSend {
                     addr: a,
                     ptr: b,
                     len,
@@ -643,6 +658,27 @@ mod tests {
             Err(ERR_NOT_CLAIMED)
         );
         assert_eq!(c.request(C3, I2C_WRITE, 0x76, 100, 257, 0), Err(ERR_ARGS));
+        assert_eq!(
+            c.request(C3, I2C_SEND, 0x76, 100, 256, 0),
+            Ok(Request::I2cSend {
+                addr: 0x76,
+                ptr: 100,
+                len: 256
+            })
+        );
+        assert_eq!(
+            c.request(C3, I2C_SEND, 0x76, 100, 0, 0),
+            Ok(Request::I2cSend {
+                addr: 0x76,
+                ptr: 100,
+                len: 0
+            })
+        );
+        assert_eq!(c.request(C3, I2C_SEND, 0x76, 100, 257, 0), Err(ERR_ARGS));
+        assert_eq!(
+            c.request(C3, I2C_SEND, 0x77, 100, 2, 0),
+            Err(ERR_NOT_CLAIMED)
+        );
         assert_eq!(c.request(C3, I2C_READ, 0x76, 100, 0, 0), Err(ERR_ARGS));
         assert_eq!(c.request(C3, I2C_READ, 0x76, 100, -1, 0), Err(ERR_ARGS));
         assert_eq!(

@@ -58,6 +58,10 @@ pub enum DiagKind {
     MenuDisplay,
     /// The variable of a menu item is missing or of a wrong type.
     MenuItemVar,
+    /// The cycle period of the project is not 1, 2, 5 or 10 ms.
+    CyclePeriod,
+    /// The estimated step of a sheet is over 70 % of the cycle period.
+    StepOverPeriod,
 }
 
 impl DiagKind {
@@ -101,6 +105,8 @@ impl DiagKind {
         DiagKind::DisplayCyrillic,
         DiagKind::MenuDisplay,
         DiagKind::MenuItemVar,
+        DiagKind::CyclePeriod,
+        DiagKind::StepOverPeriod,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -145,6 +151,8 @@ impl DiagKind {
             DiagKind::DisplayCyrillic => "display-cyrillic",
             DiagKind::MenuDisplay => "menu-display",
             DiagKind::MenuItemVar => "menu-item-var",
+            DiagKind::CyclePeriod => "cycle-period",
+            DiagKind::StepOverPeriod => "step-over-period",
         }
     }
 }

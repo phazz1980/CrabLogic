@@ -2,8 +2,11 @@
 //! `crabmod` partition on WAMR, and the USB console takes the commands of the editor
 //! (`crab_master_rs::protocol`).
 //!
-//! One thread does everything in turn: reads the port, moves an upload one step further (a
-//! flash sector erased or a chunk written), scans the modules. Nothing is printed on its own:
+//! Two threads (`specs/fast-cycle`). The scan: a hardware timer on its core wakes it (`tick`, period
+//! from the modules' `period_ms()`), it steps the modules, publishes what the debugger reads
+//! (`snapshot`), then runs the commands handed to it and moves an upload one step further (a flash
+//! sector erased or a chunk written). The thread `crab-io` (`io`) reads the port, answers the polls
+//! of the debugger from the snapshot and writes every answer. Nothing is printed on its own:
 //! every line is an answer to a command, module errors wait in the journal (`log`).
 //! A module whose step failed stops (its outputs are safe) and starts again from its stored
 //! image after a growing pause (`restart`).
@@ -17,6 +20,8 @@ mod devices;
 mod engine;
 mod eth;
 mod flash;
+mod i2c_send;
+mod io;
 mod modbus;
 mod mqtt;
 mod net;
@@ -24,12 +29,14 @@ mod notes;
 mod pcf;
 mod pulse;
 mod retain;
+mod snapshot;
 mod sparkplug;
+mod spin;
+mod tick;
 mod uart;
 pub(crate) mod usb;
 mod web;
 
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crab_kernel::bus::TopicKind;
@@ -39,9 +46,10 @@ use crab_kernel::host::{ModuleHost, Word};
 use crab_kernel::lease::{Fault, PinUse};
 use crab_kernel::Kernel;
 use crab_master_rs::boot_guard::{self, Counter, Reset};
+use crab_master_rs::cycle::{self, Cycle};
 use crab_master_rs::protocol::{
-    format_bus_module, format_events, format_outputs, format_pin, format_topic, parse_command,
-    Command, Event, Input, ParseError, MAX_SLOTS,
+    format_bus_module, format_pin, format_topic, parse_command, Command, Event, ParseError,
+    MAX_SLOTS,
 };
 use crab_master_rs::restart::Restart;
 use crab_master_rs::storage::{crc32_update, Area, Meta, Storage, SECTOR};
@@ -52,8 +60,11 @@ use devices::BoardDevices;
 use engine::{Image, Wamr, WamrInstance};
 use flash::PartitionFlash;
 
-/// Scan period of the kernel, milliseconds.
-const QUANTUM_MS: u32 = 10;
+/// How often a growing overrun count goes to the journal, milliseconds.
+const OVERRUN_NOTE_MS: u64 = 10_000;
+/// Priority of the scan thread: above lwIP and the network tasks of the master, below Wi-Fi
+/// and `esp_timer`.
+const SCAN_PRIORITY: u8 = 20;
 /// WAMR needs room on the native stack of the thread that runs the modules.
 const RUNTIME_STACK: usize = 32 * 1024;
 /// Bytes of a `put` chunk: fits the receive buffer of the USB driver.
@@ -66,8 +77,6 @@ const OUTPUTS: usize = 128;
 const MAX_MEMORY: usize = 128 * 1024;
 /// Most steps one `tick` runs.
 const MAX_TICKS: u32 = 100_000;
-/// Lines the journal keeps.
-const JOURNAL: usize = 16;
 /// What modules may use, as `modcaps=` names it, and the CPU the AOT images must be built for.
 /// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
 /// `retain` and `retain_text` keep values in NVS (`retain.rs`); UART blocks: `uart.rs`; PCF8574 expanders: `pcf.rs`.
@@ -169,14 +178,18 @@ struct Master {
     kernel: Kernel<Module, BoardDevices>,
     storage: Storage<PartitionFlash>,
     slots: Vec<Slot>,
-    input: Input,
     upload: Option<Upload>,
-    /// Module errors and `log` lines of modules: (milliseconds since start, text).
-    journal: VecDeque<(u32, String)>,
     started: Instant,
+    /// Grows whenever modules start or go: the snapshot is rebuilt then.
+    layout: u32,
     /// Bad resets in a row before this start; at [`boot_guard::SAFE_AFTER`] the stored modules
     /// are not started (safe mode).
     bad_boots: u32,
+    /// Timing of the scan.
+    cycle: Cycle,
+    /// Overruns already reported to the journal, and when.
+    overruns_noted: u32,
+    overruns_noted_at: u64,
 }
 
 /// The boot loop counter: in RTC memory, which keeps its contents over every reset but a power-on.
@@ -207,11 +220,13 @@ impl Master {
             kernel: Kernel::new(),
             storage,
             slots: Vec::new(),
-            input: Input::new(),
             upload: None,
-            journal: VecDeque::new(),
             started: Instant::now(),
+            layout: 0,
             bad_boots: count_boot(),
+            cycle: Cycle::new(crab_kernel::abi::DEFAULT_PERIOD_MS),
+            overruns_noted: 0,
+            overruns_noted_at: 0,
         };
         let safe = boot_guard::safe(master.bad_boots);
         if safe {
@@ -240,11 +255,8 @@ impl Master {
     }
 
     fn log(&mut self, name: &str, text: &str) {
-        if self.journal.len() == JOURNAL {
-            self.journal.pop_front();
-        }
         let ms = self.started.elapsed().as_millis() as u32;
-        self.journal.push_back((ms, format!("[{name}] {text}")));
+        snapshot::log(ms, format!("[{name}] {text}"));
     }
 
     fn slot(&self, name: &str) -> Option<usize> {
@@ -366,11 +378,14 @@ impl Master {
             Some(i) => self.slots[i] = slot,
             None => self.slots.push(slot),
         }
+        self.layout = self.layout.wrapping_add(1);
         Ok(())
     }
 
     /// One step of a module with its statistics. An error stops the module until its restart,
     /// so every error goes to the journal (at most one per pause).
+    /// In IRAM with the rest of the hot path (see `engine::native`).
+    #[link_section = ".iram1.crab_step"]
     fn step(&mut self, index: usize, dt_ms: u32) -> bool {
         let Some(handle) = self.slots[index].handle else {
             return false;
@@ -427,9 +442,12 @@ impl Master {
                 pause.div_ceil(1000)
             ));
         }
-        let name = slot.name.clone();
-        for line in lines.into_iter().chain(news) {
-            self.log(&name, &line);
+        // The name is copied only when there is something to log: no heap work on a quiet step.
+        if !lines.is_empty() || !news.is_empty() {
+            let name = slot.name.clone();
+            for line in lines.into_iter().chain(news) {
+                self.log(&name, &line);
+            }
         }
         result.is_ok()
     }
@@ -513,14 +531,15 @@ impl Master {
             }
             u.erase_at += SECTOR;
             if u.erase_at == u.erase_end {
+                // The parser switches before `ready` goes out: the image may follow at once.
+                io::with_input(|i| i.expect_body(u.meta.len, CHUNK));
                 println!("ready {CHUNK}");
-                self.input.expect_body(u.meta.len, CHUNK);
                 u.last_rx = Instant::now();
             }
         } else if u.last_rx.elapsed() > UPLOAD_TIMEOUT {
             // No header was written: the sectors stay free.
             println!("err timeout");
-            self.input.cancel_body();
+            io::with_input(|i| i.cancel_body());
             return;
         }
         self.upload = Some(u);
@@ -536,14 +555,14 @@ impl Master {
                 Some(b"\0aot") => ExecutionMode::AotXip,
                 _ => {
                     println!("err not a module");
-                    self.input.cancel_body();
+                    io::with_input(|i| i.cancel_body());
                     return;
                 }
             };
         }
         if self.storage.write(u.at, u.received, data).is_err() {
             println!("err flash");
-            self.input.cancel_body();
+            io::with_input(|i| i.cancel_body());
             return;
         }
         u.crc = crc32_update(u.crc, data);
@@ -564,6 +583,7 @@ impl Master {
             println!("err {e}");
             return;
         }
+        self.layout = self.layout.wrapping_add(1);
         let begin = Instant::now();
         let result = self.start(u.at, true);
         println!("swap_us={}", begin.elapsed().as_micros());
@@ -598,6 +618,7 @@ impl Master {
             drop(self.kernel.unload(handle));
         }
         self.storage.remove(slot.at);
+        self.layout = self.layout.wrapping_add(1);
         println!("ok");
     }
 
@@ -637,30 +658,6 @@ impl Master {
             words.resize(MAX_SLOTS, Word::default());
         }
         words[index] = Word(word);
-        println!("ok");
-    }
-
-    fn outputs(&mut self, name: &str, count: usize) {
-        let Some(host) = self.host_of(name) else {
-            println!("err no such module");
-            return;
-        };
-        let raw: Vec<u32> = host.outputs.iter().map(|w| w.0).collect();
-        println!("{}", format_outputs(&raw, count));
-        println!("ok");
-    }
-
-    fn events(&mut self, name: &str) {
-        let Some(host) = self.host_of(name) else {
-            println!("err no such module");
-            return;
-        };
-        let (events, lost) = host.take_events();
-        let events: Vec<(u8, u8, u32)> = events.iter().map(|e| (e.slot, e.value, e.ms)).collect();
-        println!(
-            "{}",
-            format_events(name, devices::millis() as u32, lost, &events)
-        );
         println!("ok");
     }
 
@@ -797,98 +794,6 @@ impl Master {
         println!("ok");
     }
 
-    fn list(&self) {
-        for s in &self.slots {
-            let module = s.handle.and_then(|h| self.kernel.get(h));
-            let memory = module.map_or(0, |m| m.memory_len());
-            let out0 = module
-                .and_then(|m| m.host().outputs.first())
-                .map_or(0, |w| w.0);
-            let lost = s.handle.map_or(0, |h| self.kernel.bus().lost(h));
-            let (len, crc, stored) = self.storage.area(s.at).map_or((0, 0, "-"), |a| {
-                (a.meta.len, a.meta.crc, a.meta.mode.as_str())
-            });
-            let mode = module.map_or(stored, |m| m.mode().as_str());
-            println!(
-                "{} {} steps={} restarts={} out0={:08x} us={}/{}/{}/{} qlost={} mem={} code={} wasm={} mode={} crc={:08x}",
-                s.name,
-                if s.handle.is_some() && !s.restart.waiting() {
-                    "run"
-                } else {
-                    "stop"
-                },
-                s.steps,
-                s.restart.restarts(),
-                out0,
-                s.last_us,
-                s.max_us,
-                s.period_max_us,
-                s.sum_us,
-                lost,
-                memory,
-                s.heap.saturating_sub(memory),
-                len,
-                mode,
-                crc
-            );
-        }
-        // What this master has of the features of the C++ one: step times, modules in flash,
-        // ABI 4, output events (`ev`); `aot` is its own: it takes XIP AOT images, built for the CPU
-        // named next to it
-        // (the editor does not compile for a CPU it does not see here).
-        println!("caps=us,ev,bus");
-        println!("modcaps={MODCAPS}");
-        // The Rust master is not built per project: the editor reads this prefix as "current".
-        println!("id=rs-{}", env!("CARGO_PKG_VERSION"));
-        // Safe mode after a boot loop: the editor warns that the stored modules do not run.
-        if boot_guard::safe(self.bad_boots) {
-            println!("safe={}", self.bad_boots);
-        }
-        // SAFETY: plain queries of the heap.
-        let (largest, min) = unsafe {
-            (
-                sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT),
-                sys::esp_get_minimum_free_heap_size(),
-            )
-        };
-        println!("free={} largest={largest} min={min}", free_heap());
-        println!("end");
-    }
-
-    fn info(&self) {
-        println!("master=crab-master-rs {}", env!("CARGO_PKG_VERSION"));
-        println!(
-            "crabmod={}/{} largest={}",
-            self.storage.free(),
-            self.storage.capacity(),
-            self.storage.largest()
-        );
-        for a in self.storage.areas() {
-            let allow = if a.meta.allow.is_empty() {
-                "-"
-            } else {
-                &a.meta.allow
-            };
-            println!(
-                "{} at={} len={} gen={} mode={} mem={} allow={allow}",
-                a.meta.name,
-                a.at,
-                a.meta.len,
-                a.gen,
-                a.meta.mode.as_str(),
-                a.meta.memory
-            );
-        }
-        let (total, hour) = retain::write_counts();
-        match retain::nvs_entries() {
-            Some((used, free)) => {
-                println!("nvs writes={total} hour={hour} used={used} free={free}")
-            }
-            None => println!("nvs writes={total} hour={hour}"),
-        }
-        println!("end");
-    }
-
     fn command(&mut self, line: &str) {
         match parse_command(line) {
             Ok(Command::Put {
@@ -898,8 +803,9 @@ impl Master {
                 allow,
                 memory,
             }) => self.put(name, len, crc32, allow, memory),
-            Ok(Command::List) => self.list(),
-            Ok(Command::Info) => self.info(),
+            // Answered by `crab-io`; here only if handed over anyway.
+            Ok(Command::List) => snapshot::answer_list(),
+            Ok(Command::Info) => snapshot::answer_info(),
             Ok(Command::Tick { name, count, dt_ms }) => self.tick(&name, count, dt_ms),
             Ok(Command::Delete { name }) => self.delete(&name),
             Ok(Command::Swap { name }) => self.restart(&name),
@@ -908,12 +814,13 @@ impl Master {
                     s.max_us = 0;
                     s.period_max_us = 0;
                 }
+                self.cycle.reset_stats();
                 println!("ok");
             }
             Ok(Command::SetInput { name, index, word }) => self.set_word(&name, index, word, false),
             Ok(Command::SetParam { name, index, word }) => self.set_word(&name, index, word, true),
-            Ok(Command::Outputs { name, count }) => self.outputs(&name, count),
-            Ok(Command::Events { name }) => self.events(&name),
+            Ok(Command::Outputs { name, count }) => snapshot::answer_outputs(&name, count),
+            Ok(Command::Events { name }) => snapshot::answer_events(&name),
             Ok(Command::Force { name, index, word }) => self.force(&name, index, word),
             Ok(Command::Unforce { name, index }) => self.unforce(&name, index),
             Ok(Command::Reset { name }) => self.reset(&name),
@@ -928,12 +835,7 @@ impl Master {
             }) => self.topic(&name, state, max_len),
             Ok(Command::Queue { name, cap }) => self.queue(&name, cap),
             Ok(Command::Bus) => self.bus(),
-            Ok(Command::Log) => {
-                for (ms, text) in &self.journal {
-                    println!("{ms} {text}");
-                }
-                println!("end");
-            }
+            Ok(Command::Log) => snapshot::answer_log(),
             // The answers the editor knows from the C++ master.
             Err(
                 e @ (ParseError::BadIndexOrType
@@ -947,58 +849,221 @@ impl Master {
         }
     }
 
+    /// The period the running modules ask for (the shortest).
+    fn wanted_period(&self) -> u32 {
+        cycle::period_of(
+            self.slots
+                .iter()
+                .filter(|s| !s.paused && !s.restart.waiting())
+                .filter_map(|s| s.handle.and_then(|h| self.kernel.get(h)))
+                .map(|m| m.period_ms()),
+        )
+    }
+
+    /// Overruns go to the journal at most every [`OVERRUN_NOTE_MS`] while they grow.
+    fn note_overruns(&mut self) {
+        let over = self.cycle.overruns;
+        if over < self.overruns_noted {
+            // `rmax` cleared the count.
+            self.overruns_noted = over;
+            return;
+        }
+        let now = devices::uptime_ms();
+        if over == self.overruns_noted || now < self.overruns_noted_at + OVERRUN_NOTE_MS {
+            return;
+        }
+        let text = format!(
+            "шаг дольше периода {} мс: переполнений {} (+{})",
+            self.cycle.period_ms(),
+            over,
+            over.wrapping_sub(self.overruns_noted)
+        );
+        self.overruns_noted = over;
+        self.overruns_noted_at = now;
+        self.log("cycle", &text);
+    }
+
+    /// Everything between two steps: the commands handed over by `crab-io`, the upload, notes of
+    /// the network.
+    fn between_steps(&mut self) {
+        for event in io::take_for_scan() {
+            match event {
+                Event::Line(line) => self.command(&line),
+                Event::Chunk(data) => self.chunk(&data),
+            }
+        }
+        self.upload_step();
+        for text in net::take_notes() {
+            self.log("net", &text);
+        }
+        for text in eth::take_notes() {
+            self.log("eth", &text);
+        }
+        for text in mqtt::take_notes() {
+            self.log("mqtt", &text);
+        }
+        for (source, text) in notes::take() {
+            self.log(source, &text);
+        }
+        self.note_overruns();
+    }
+
+    /// Publishes what the debugger reads; skipped (one step later) when `crab-io` holds the
+    /// snapshot just now: the scan never waits for it. Nothing is allocated unless modules started
+    /// or went since the last time.
+    #[link_section = ".iram1.crab_publish"]
+    fn publish(&mut self) {
+        let Some(mut snap) = snapshot::SNAP.try_lock() else {
+            return;
+        };
+        if snap.layout != self.layout {
+            self.rebuild(&mut snap);
+        }
+        for (view, s) in snap.modules.iter_mut().zip(&self.slots) {
+            let module = s.handle.and_then(|h| self.kernel.get_mut(h));
+            let mut st = snapshot::Stats {
+                run: s.handle.is_some() && !s.restart.waiting(),
+                steps: s.steps,
+                restarts: s.restart.restarts(),
+                last_us: s.last_us,
+                max_us: s.max_us,
+                period_max_us: s.period_max_us,
+                sum_us: s.sum_us,
+                heap: s.heap,
+                ..Default::default()
+            };
+            if let Some(m) = module {
+                st.mem = m.memory_len();
+                let host = m.host_mut();
+                view.outputs.clear();
+                view.outputs.extend(host.outputs.iter().map(|w| w.0));
+                let lost = host.move_events(&mut view.events, snapshot::EVENTS);
+                view.lost = view.lost.saturating_add(lost);
+            }
+            st.qlost = s.handle.map_or(0, |h| self.kernel.bus().lost(h));
+            view.stats = st;
+        }
+        match &mut snap.cycle {
+            Some(c) => c.clone_from(&self.cycle),
+            None => snap.cycle = Some(self.cycle.clone()),
+        }
+    }
+
+    /// The parts of the snapshot that change only when modules start or go.
+    fn rebuild(&self, snap: &mut snapshot::Snapshot) {
+        snap.modules = self
+            .slots
+            .iter()
+            .map(|s| {
+                let module = s.handle.and_then(|h| self.kernel.get(h));
+                let (len, crc, stored) = self.storage.area(s.at).map_or((0, 0, "-"), |a| {
+                    (a.meta.len, a.meta.crc, a.meta.mode.as_str())
+                });
+                let mode = module.map_or(stored, |m| m.mode().as_str());
+                snapshot::ModuleView::new(s.name.clone(), module.is_some(), len, crc, mode)
+            })
+            .collect();
+        snap.areas = self
+            .storage
+            .areas()
+            .iter()
+            .map(|a| snapshot::AreaView {
+                name: a.meta.name.clone(),
+                at: a.at,
+                len: a.meta.len,
+                gen: a.gen,
+                mode: a.meta.mode.as_str(),
+                memory: a.meta.memory,
+                allow: a.meta.allow.clone(),
+            })
+            .collect();
+        snap.storage = (
+            self.storage.free(),
+            self.storage.capacity(),
+            self.storage.largest(),
+        );
+        snap.bad_boots = self.bad_boots;
+        snap.layout = self.layout;
+    }
+
     fn run(&mut self) -> ! {
-        let mut buf = [0u8; CHUNK];
-        let mut last_scan = Instant::now();
+        let (mut ticker, error) = tick::Ticker::new(self.cycle.period_ms());
+        if let Some(e) = error {
+            self.log("cycle", &format!("{e}; период по тикам FreeRTOS"));
+        }
         loop {
-            // Waiting for input is also the pause between scans.
-            let since = last_scan.elapsed().as_millis() as u32;
-            let n = usb::read(&mut buf, QUANTUM_MS.saturating_sub(since).max(1));
-            if n > 0 {
-                self.input.push(&buf[..n]);
-                while let Some(event) = self.input.next_event() {
-                    match event {
-                        Event::Line(line) => self.command(&line),
-                        Event::Chunk(data) => self.chunk(&data),
-                    }
-                }
+            ticker.wait();
+            let dt = self.cycle.begin(tick::now_us());
+            self.scan(dt);
+            let overran = self.cycle.end(tick::now_us());
+            self.publish();
+            if overran {
+                // As a PLC: a step that ran over waits for the next mark of the grid, the marks
+                // passed during it are dropped. The wait also lets the idle task of the core run.
+                ticker.skip();
             }
-            self.upload_step();
-            for text in net::take_notes() {
-                self.log("net", &text);
-            }
-            for text in eth::take_notes() {
-                self.log("eth", &text);
-            }
-            for text in mqtt::take_notes() {
-                self.log("mqtt", &text);
-            }
-            for (source, text) in notes::take() {
-                self.log(source, &text);
-            }
-            let dt = last_scan.elapsed().as_millis() as u32;
-            if dt >= QUANTUM_MS {
-                last_scan += Duration::from_millis(dt as u64);
-                self.scan(dt);
+            let busy = tick::now_us();
+            self.between_steps();
+            self.cycle
+                .between(tick::now_us().saturating_sub(busy).min(u32::MAX as u64) as u32);
+            let want = self.wanted_period();
+            if want != self.cycle.period_ms() {
+                self.cycle.set_period(want);
+                ticker.set_period(want);
             }
         }
     }
+}
+
+/// Starts a background thread of the master (network, Modbus, expanders, the port, I²C writes).
+/// On the dual-core ESP32 it runs on core 0: between steps a thread on the scan core would run its
+/// code from flash there and push the code of the sheets out of that core's cache (a step with
+/// Wi-Fi and MQTT on was 2.5× longer). `name` ends with a NUL.
+pub(crate) fn spawn_background<F>(name: &'static [u8], stack: usize, f: F) -> bool
+where
+    F: FnOnce() + Send + 'static,
+{
+    #[cfg(target_arch = "xtensa")]
+    let saved = {
+        use esp_idf_svc::hal::{cpu::Core, task::thread::ThreadSpawnConfiguration};
+        let saved = ThreadSpawnConfiguration::get();
+        let conf = ThreadSpawnConfiguration {
+            name: Some(name),
+            pin_to_core: Some(Core::Core0),
+            ..Default::default()
+        };
+        let _ = conf.set();
+        saved
+    };
+    let label = core::str::from_utf8(name.strip_suffix(b"\0").unwrap_or(name)).unwrap_or("crab");
+    let spawned = std::thread::Builder::new()
+        .name(label.into())
+        .stack_size(stack)
+        .spawn(f);
+    #[cfg(target_arch = "xtensa")]
+    {
+        // Back to what the calling thread had (none: the defaults).
+        let _ = saved.unwrap_or_default().set();
+    }
+    spawned.is_ok()
 }
 
 pub fn main() {
     sys::link_patches();
     // On the dual-core ESP32 the sheets run on the APP core, away from Wi-Fi, lwIP and the
     // Ethernet driver on core 0 (a bench showed a 3.6× longer step with Wi-Fi and MQTT on).
-    #[cfg(target_arch = "xtensa")]
+    // The scan runs at a high priority on both chips (`specs/fast-cycle`).
     {
-        use esp_idf_svc::hal::{cpu::Core, task::thread::ThreadSpawnConfiguration};
+        use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
         let conf = ThreadSpawnConfiguration {
             name: Some(b"crab-runtime\0"),
-            pin_to_core: Some(Core::Core1),
+            #[cfg(target_arch = "xtensa")]
+            pin_to_core: Some(esp_idf_svc::hal::cpu::Core::Core1),
+            priority: SCAN_PRIORITY,
             ..Default::default()
         };
         if let Err(e) = conf.set() {
-            println!("warn runtime core: {e}");
+            println!("warn runtime thread: {e}");
         }
     }
     let runtime = std::thread::Builder::new()
@@ -1008,6 +1073,9 @@ pub fn main() {
             match started {
                 Ok(mut master) => {
                     println!("master ready");
+                    if !io::start() {
+                        println!("err io thread");
+                    }
                     master.run()
                 }
                 Err(e) => println!("err {e}"),

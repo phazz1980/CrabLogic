@@ -1133,7 +1133,6 @@
  "Заливка мастер-прошивки": "Uploading master firmware",
  "Заливка мастер-прошивки на {0}...": "Uploading master firmware to {0}...",
  "Мастер-прошивка собрана": "Master firmware built",
- "Мастер-прошивка залита на {0}": "Master firmware uploaded to {0}",
  "Свернуть окно": "Restore window",
  "Перенести из проекта...": "Transfer from project...",
  "Взять регистры Modbus, описанные блоками другого проекта": "Take Modbus registers described by blocks of another project",
@@ -1258,5 +1257,19 @@
  "Модуль и пример лежат в папке блока и едут вместе с ним в наборе .crabblocks и в проекте.": "The module and the example are in the block folder and travel with it in a .crabblocks pack and in the project.",
  "Описание в порядке": "The description is fine",
  "модуль-и-пример": "module-and-example",
- "нет block.wasm: блок на C++ не заработает": "no block.wasm: a C++ block will not work"
+ "нет block.wasm: блок на C++ не заработает": "no block.wasm: a C++ block will not work",
+ "Период цикла": "Cycle period",
+ "Как часто плата выполняет листы. 1–2 мс — для быстрых процессов; если шаг листа не успевает, проверка схемы предупредит": "How often the board runs the sheets. 1–2 ms is for fast processes; if a sheet step does not fit, the schema check will warn you",
+ "{0} мс": "{0} ms",
+ "Период цикла (цель)": "Cycle period (target)",
+ "Пауза между шагами, макс": "Pause between steps, max",
+ "Самая долгая пауза между запусками шагов листов с последнего сброса": "The longest pause between sheet step starts since the last reset",
+ "Шагов с сброса": "Steps since reset",
+ "Переполнения цикла": "Cycle overruns",
+ "Шаг не уложился в период: увеличьте период цикла в настройках проекта": "A step did not fit in the period: increase the cycle period in the project settings",
+ "Опоздание > 50 / > 100 мкс": "Late > 50 / > 100 µs",
+ "Сколько шагов начались позже срока больше чем на 50 и на 100 мкс": "How many steps started later than scheduled by more than 50 and 100 µs",
+ "Мастер-прошивка залита на {0} за {1} с": "Master firmware uploaded to {0} in {1} s",
+ "Модуль «{0}» залит за {1} с": "Module «{0}» uploaded in {1} s",
+ "Модули залиты на {0} за {1} с (со сборкой)": "Modules uploaded to {0} in {1} s (build included)"
 }

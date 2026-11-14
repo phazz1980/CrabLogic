@@ -267,3 +267,9 @@ fn export_prototypes() {
         .unwrap();
     }
 }
+
+#[test]
+fn manifest_reads_period_ms() {
+    assert_eq!(Manifest::parse("").unwrap().period_ms, 10);
+    assert_eq!(Manifest::parse("period_ms = 2\n").unwrap().period_ms, 2);
+}

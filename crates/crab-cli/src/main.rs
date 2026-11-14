@@ -603,6 +603,7 @@ fn push_module(
     if let Some(warning) = &image.warning {
         eprintln!("предупреждение: {warning}");
     }
+    let started = std::time::Instant::now();
     let uploaded = if image.aot {
         println!(
             "Модуль «{name}»: AOT {} байт (WASM {} байт) -> {port}...",
@@ -627,8 +628,15 @@ fn push_module(
     match uploaded {
         Ok(done) => {
             match done.swap_us {
-                Some(us) => println!("Модуль «{name}» залит и запущен (замена {} мс)", us / 1000),
-                None => println!("Модуль «{name}» залит и запущен"),
+                Some(us) => println!(
+                    "Модуль «{name}» залит и запущен за {:.1} с (замена {} мс)",
+                    started.elapsed().as_secs_f32(),
+                    us / 1000
+                ),
+                None => println!(
+                    "Модуль «{name}» залит и запущен за {:.1} с",
+                    started.elapsed().as_secs_f32()
+                ),
             }
             ExitCode::SUCCESS
         }
@@ -742,7 +750,14 @@ fn run_flash_master(
         Some(port) => port,
         None => flash::single_usb_port().map_err(|e| e.to_string())?,
     };
-    flash::flash_master(&image, &port, &mut |line| println!("{line}")).map_err(|e| e.to_string())
+    let started = std::time::Instant::now();
+    flash::flash_master(&image, &port, &mut |line| println!("{line}"))
+        .map_err(|e| e.to_string())?;
+    println!(
+        "Мастер-прошивка записана на {port} за {:.1} с",
+        started.elapsed().as_secs_f32()
+    );
+    Ok(())
 }
 
 fn open_master_port(
@@ -900,6 +915,7 @@ fn upload_sheets(
             }
             println!("Модуль «{name}» остановлен для замены на месте");
         }
+        let started = std::time::Instant::now();
         let uploaded = if image.aot {
             println!(
                 "Модуль «{name}»: AOT {} байт (WASM {} байт) -> {port}...",
@@ -924,8 +940,15 @@ fn upload_sheets(
         };
         match uploaded {
             Ok(done) => match done.swap_us {
-                Some(us) => println!("Модуль «{name}» залит и запущен (замена {} мс)", us / 1000),
-                None => println!("Модуль «{name}» залит и запущен"),
+                Some(us) => println!(
+                    "Модуль «{name}» залит и запущен за {:.1} с (замена {} мс)",
+                    started.elapsed().as_secs_f32(),
+                    us / 1000
+                ),
+                None => println!(
+                    "Модуль «{name}» залит и запущен за {:.1} с",
+                    started.elapsed().as_secs_f32()
+                ),
             },
             Err(e) => return failed(e.to_string()),
         }

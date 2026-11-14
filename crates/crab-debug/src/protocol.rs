@@ -108,6 +108,46 @@ pub struct Stats {
     pub background: Option<BackgroundStats>,
     /// Heap and stacks of the master firmware (its `stats` answer); none for USB debugging.
     pub memory: Option<MasterMemory>,
+    /// Cycle timing of the master (`cycle` line of `list`); none for an older master.
+    pub cycle: Option<CycleStats>,
+}
+
+/// `cycle period=<µs> steps=<n> gap=<µs> over=<n> late50=<n> late100=<n>` line of the master.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CycleStats {
+    /// Target period between step starts, µs.
+    pub period_us: u32,
+    pub steps: u32,
+    /// Longest pause between two step starts, µs.
+    pub gap_us: u32,
+    /// Steps that did not finish before the next start.
+    pub over: u32,
+    /// Steps started more than 50 / 100 µs late.
+    pub late50: u32,
+    pub late100: u32,
+}
+
+impl CycleStats {
+    /// Reads the part of the line after `cycle `; unknown words are ignored.
+    pub fn parse(rest: &str) -> Self {
+        let mut c = CycleStats::default();
+        for word in rest.split_whitespace() {
+            let Some((key, value)) = word.split_once('=') else {
+                continue;
+            };
+            let v = value.parse().unwrap_or(0);
+            match key {
+                "period" => c.period_us = v,
+                "steps" => c.steps = v,
+                "gap" => c.gap_us = v,
+                "over" => c.over = v,
+                "late50" => c.late50 = v,
+                "late100" => c.late100 = v,
+                _ => {}
+            }
+        }
+        c
+    }
 }
 
 /// Flash (NVS) wear figures of the master: `nvs writes=<total> hour=<last hour> used=<n> free=<n>`.
@@ -228,6 +268,7 @@ impl Stats {
             sheets,
             background,
             memory: None,
+            cycle: None,
         })
     }
 }
@@ -352,6 +393,21 @@ fn find_sync(buf: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cycle_line_parses_and_ignores_unknown_words() {
+        let c = super::CycleStats::parse(
+            "period=1000 steps=12 gap=1090 over=1 late50=4 late100=2 x=9 junk",
+        );
+        assert_eq!(
+            (c.period_us, c.steps, c.gap_us, c.over, c.late50, c.late100),
+            (1000, 12, 1090, 1, 4, 2)
+        );
+        assert_eq!(
+            super::CycleStats::parse("period=bad"),
+            super::CycleStats::default()
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -113,14 +113,11 @@ pub fn write(key: i32, value: i32) -> i32 {
 }
 
 fn start_task() {
-    let spawned = std::thread::Builder::new()
-        .name("pcf".into())
-        .stack_size(4096)
-        .spawn(|| loop {
-            poll_all();
-            std::thread::sleep(POLL);
-        });
-    if spawned.is_err() {
+    let spawned = super::spawn_background(b"pcf\0", 4096, || loop {
+        poll_all();
+        std::thread::sleep(POLL);
+    });
+    if !spawned {
         super::notes::push("pcf", "задача опроса расширителей не запущена".into());
     }
 }

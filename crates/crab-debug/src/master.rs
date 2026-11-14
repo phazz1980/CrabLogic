@@ -69,6 +69,8 @@ struct Aux {
     largest: u32,
     min_free: u32,
     stacks: Vec<(String, u32)>,
+    /// `cycle` line of the running `list` answer.
+    cycle: Option<crate::protocol::CycleStats>,
     /// Per module: steps and summed step time at the previous report.
     prev: BTreeMap<String, (u32, u32)>,
     prev_at: Option<Instant>,
@@ -319,6 +321,11 @@ fn handle_line(
         }
         return false;
     }
+    // `list` answer: `cycle period=<µs> steps=<n> gap=<µs> over=<n> late50=<n> late100=<n>`.
+    if let Some(rest) = text.strip_prefix("cycle ") {
+        aux.cycle = Some(crate::protocol::CycleStats::parse(rest));
+        return false;
+    }
     // `list` answer: `stack=<task>:<bytes never used>,...`.
     if let Some(rest) = text.strip_prefix("stack=") {
         aux.stacks = rest
@@ -517,6 +524,7 @@ fn make_stats(aux: &mut Aux, modules: &[ModuleMap]) -> Option<Stats> {
     let mut stats = Stats {
         free_heap: aux.free_heap,
         memory,
+        cycle: aux.cycle.take(),
         ..Stats::default()
     };
     for m in &mods {
@@ -1046,9 +1054,21 @@ mod tests {
         feed(&[
             &format!("sheet1 run steps=100 restarts=0 out0=0 us=300/900/12000/30000 crc={crc}"),
             "free=123456 largest=100000",
+            "cycle period=1000 steps=500 gap=1180 over=2 late50=7 late100=3 future=1",
             "end",
         ]);
         let first = live.lock().unwrap().stats.clone().unwrap();
+        assert_eq!(
+            first.cycle,
+            Some(crate::protocol::CycleStats {
+                period_us: 1000,
+                steps: 500,
+                gap_us: 1180,
+                over: 2,
+                late50: 7,
+                late100: 3,
+            })
+        );
         assert_eq!(first.last_us, 300);
         assert_eq!(first.max_us, 900);
         assert_eq!(first.period_max_us, 12000);

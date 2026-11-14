@@ -66,14 +66,11 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32, mem: &mut Mem<'_>) -> i32 {
 }
 
 fn start_task() {
-    let spawned = std::thread::Builder::new()
-        .name("web".into())
-        .stack_size(6144)
-        .spawn(|| loop {
-            tick();
-            std::thread::sleep(TICK);
-        });
-    if spawned.is_err() {
+    let spawned = super::spawn_background(b"web\0", 6144, || loop {
+        tick();
+        std::thread::sleep(TICK);
+    });
+    if !spawned {
         super::notes::push("web", "задача страницы не запущена".into());
     }
 }

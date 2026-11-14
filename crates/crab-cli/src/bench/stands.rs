@@ -104,6 +104,8 @@ pub enum Family {
     Net,
     /// The board is a Modbus TCP slave over Wi-Fi (20 registers fed by a float chain); the PC polls it.
     ModbusTcp,
+    /// The logic sheet of 100 blocks at a 1 ms period with Wi-Fi, MQTT and a Modbus TCP slave.
+    Cycle,
     /// Copies of a small sheet until the board takes no more.
     Sheets,
     /// Module restart and board reset timing (the logic sheet of 100 blocks).
@@ -126,6 +128,7 @@ impl Family {
             Self::Uart => "uart",
             Self::Net => "net",
             Self::ModbusTcp => "modbus_tcp",
+            Self::Cycle => "cycle",
             Self::Sheets => "sheets",
             Self::Restart => "restart",
         }
@@ -166,7 +169,9 @@ pub struct Stand {
 
 impl Stand {
     fn new(family: Family, n: usize, mode: Mode) -> Self {
-        let id = if family.has_size() {
+        let id = if family == Family::Cycle {
+            format!("cycle_1ms_{}", mode.name())
+        } else if family.has_size() {
             format!("{}_{n}_{}", family.name(), mode.name())
         } else {
             format!("{}_{}", family.name(), mode.name())
@@ -186,6 +191,10 @@ pub const SIZES: [usize; 3] = [10, 100, 500];
 pub const CALLS: usize = 8;
 /// Holding registers of the Modbus stand.
 pub const MODBUS_REGISTERS: usize = 20;
+/// Logic blocks of the `cycle_1ms` stand.
+pub const CYCLE_BLOCKS: usize = 100;
+/// Cycle period of the `cycle_1ms` stand, ms.
+pub const CYCLE_PERIOD_MS: u32 = 1;
 /// Most sheets the memory stand tries.
 pub const MAX_SHEETS: usize = 12;
 
@@ -212,6 +221,7 @@ pub fn standard_stands() -> Vec<Stand> {
     }
     stands.push(Stand::new(Family::Net, 100, Mode::Aot));
     stands.push(Stand::new(Family::ModbusTcp, 100, Mode::Aot));
+    stands.push(Stand::new(Family::Cycle, CYCLE_BLOCKS, Mode::Aot));
     stands.push(Stand::new(Family::Sheets, 0, Mode::Aot));
     stands.push(Stand::new(Family::Restart, 100, Mode::Aot));
     stands
@@ -254,6 +264,16 @@ pub fn build_project(
                 .and_then(Secrets::wifi)
                 .ok_or("нет настроек Wi-Fi в bench/secrets.toml")?;
             b.modbus_tcp(&wifi, stand.n);
+        }
+        Family::Cycle => {
+            let net = secrets
+                .and_then(Secrets::net)
+                .ok_or("нет настроек Wi-Fi и MQTT в bench/secrets.toml")?;
+            b.project.config.run.period_ms = CYCLE_PERIOD_MS;
+            b.logic_sheet(1, stand.n, true);
+            let source = b.adc_float();
+            b.net(&net, &source);
+            b.modbus_slave(&source);
         }
         Family::Sheets => b.logic_sheet(1, 10, false),
         family => calls = b.calls(family, stand.n.min(pins.gpio.len()), &pins),
@@ -298,6 +318,7 @@ impl Builder {
                 },
                 uart: Vec::new(),
                 retain: Default::default(),
+                run: Default::default(),
             },
             logic: Logic::default(),
             layout: Layout::default(),
@@ -550,6 +571,17 @@ impl Builder {
                 ("password", ParamValue::Text(wifi.password.clone())),
             ],
         );
+        let floats = MODBUS_REGISTERS / 2;
+        self.modbus_slave_with(|k| format!("f{}.out", ((k + 1) * n / floats).saturating_sub(1)));
+    }
+
+    /// The slave with every register pair fed from one float output (Wi-Fi is added elsewhere).
+    fn modbus_slave(&mut self, source: &str) {
+        self.modbus_slave_with(|_| source.to_owned());
+    }
+
+    /// The slave block and one `modbus_write` per register pair, fed from `tap(k)`.
+    fn modbus_slave_with(&mut self, tap: impl Fn(usize) -> String) {
         self.add(
             "slave",
             "modbus_tcp_slave",
@@ -560,8 +592,7 @@ impl Builder {
                 ("discrete", ParamValue::Int(0)),
             ],
         );
-        let floats = MODBUS_REGISTERS / 2;
-        for k in 0..floats {
+        for k in 0..MODBUS_REGISTERS / 2 {
             let id = format!("reg{k}");
             self.add(
                 &id,
@@ -572,8 +603,7 @@ impl Builder {
                     ("reg", ParamValue::Int(2 * k as i64)),
                 ],
             );
-            let tap = ((k + 1) * n / floats).saturating_sub(1);
-            self.link(&format!("f{tap}.out"), &format!("{id}.in_f"));
+            self.link(&tap(k), &format!("{id}.in_f"));
         }
     }
 

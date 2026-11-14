@@ -55,10 +55,25 @@ struct Slot {
     subscribed: bool,
 }
 
+/// A queued message: fixed buffers, so a publish of the step allocates nothing (the queue reaches
+/// its `QUEUE_LEN` once and keeps that room).
 struct Publication {
-    topic: String,
-    payload: Vec<u8>,
+    topic: [u8; MAX_TOPIC],
+    topic_len: u8,
+    payload: [u8; MAX_PAYLOAD],
+    payload_len: u8,
     retain: bool,
+}
+
+impl Publication {
+    /// The topic was checked as UTF-8 when queued.
+    fn topic(&self) -> &str {
+        core::str::from_utf8(&self.topic[..usize::from(self.topic_len)]).unwrap_or("")
+    }
+
+    fn payload(&self) -> &[u8] {
+        &self.payload[..usize::from(self.payload_len)]
+    }
 }
 
 struct Mqtt {
@@ -92,6 +107,8 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 /// Board uptime (ms) of the last call of ops 11..=16.
 static LAST_CALL_MS: AtomicU32 = AtomicU32::new(0);
 static CONNECTED: AtomicBool = AtomicBool::new(false);
+/// Messages received per subscription slot (a copy of `Slot::count` for the steps).
+static COUNTS: [AtomicU32; MAX_SLOTS as usize] = [const { AtomicU32::new(0) }; MAX_SLOTS as usize];
 static ERROR: AtomicI32 = AtomicI32::new(0);
 
 /// Messages for the master journal (see `net::take_notes`).
@@ -151,10 +168,11 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32, mem: &mut Mem<'_>) -> i32 {
         13 => publish(a, b, c, d, true, mem),
         14 => subscribe(a, b, mem),
         15 => slot_text(a, b, c, mem),
-        16 => {
-            let m = lock();
-            m.slots.get(a as usize).map_or(0, |s| s.count as i32)
-        }
+        // Read every step by every subscription: an atomic, not the lock (about 5 µs).
+        16 => usize::try_from(a)
+            .ok()
+            .and_then(|i| COUNTS.get(i))
+            .map_or(0, |c| c.load(Ordering::Acquire) as i32),
         _ => 0,
     }
 }
@@ -182,28 +200,24 @@ fn start_thread() {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let spawned = std::thread::Builder::new()
-        .name("crab-mqtt".into())
-        .stack_size(MQTT_STACK)
-        .spawn(worker);
-    if let Err(e) = spawned {
-        note!("cannot start the MQTT thread: {e}");
+    if !super::spawn_background(b"crab-mqtt\0", MQTT_STACK, worker) {
+        note!("cannot start the MQTT thread");
         STARTED.store(false, Ordering::Release);
     }
 }
 
 fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
-    let Some(bytes) = mem.read(ptr, len, MAX_SETTING) else {
+    let Some(bytes) = mem.slice(ptr, (len.max(0) as usize).min(MAX_SETTING)) else {
         return 0;
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
     let mut m = lock();
     if let Some(field) = usize::try_from(code - 1)
         .ok()
         .and_then(|i| m.text.get_mut(i))
     {
-        if *field != text {
-            *field = text;
+        // Settings from variables come every step: a new string only when the text changed.
+        if field.as_bytes() != bytes {
+            *field = String::from_utf8_lossy(bytes).into_owned();
         }
     }
     0
@@ -230,12 +244,15 @@ fn set_publish_error(code: i32) {
 
 fn publish(tp: i32, tl: i32, pp: i32, pl: i32, retain: bool, mem: &Mem<'_>) -> i32 {
     let (Some(topic), Some(payload)) = (
-        mem.read(tp, tl, MAX_TOPIC + 1),
-        mem.read(pp, pl, MAX_PAYLOAD),
+        mem.slice(tp, (tl.max(0) as usize).min(MAX_TOPIC + 1)),
+        mem.slice(pp, (pl.max(0) as usize).min(MAX_PAYLOAD)),
     ) else {
         return 0;
     };
-    if topic.is_empty() || topic.len() > MAX_TOPIC || topic.iter().any(|&b| b == b'+' || b == b'#')
+    if topic.is_empty()
+        || topic.len() > MAX_TOPIC
+        || topic.iter().any(|&b| b == b'+' || b == b'#')
+        || core::str::from_utf8(topic).is_err()
     {
         set_publish_error(error::BAD_TOPIC);
         return 0;
@@ -249,11 +266,16 @@ fn publish(tp: i32, tl: i32, pp: i32, pl: i32, retain: bool, mem: &Mem<'_>) -> i
         if m.queue.len() >= QUEUE_LEN {
             return 0;
         }
-        m.queue.push_back(Publication {
-            topic: String::from_utf8_lossy(&topic).into_owned(),
-            payload,
+        let mut p = Publication {
+            topic: [0; MAX_TOPIC],
+            topic_len: topic.len() as u8,
+            payload: [0; MAX_PAYLOAD],
+            payload_len: payload.len() as u8,
             retain,
-        });
+        };
+        p.topic[..topic.len()].copy_from_slice(topic);
+        p.payload[..payload.len()].copy_from_slice(payload);
+        m.queue.push_back(p);
     }
     // A topic or link error is over once a message goes through.
     let _ = ERROR.compare_exchange(error::BAD_TOPIC, 0, Ordering::AcqRel, Ordering::Relaxed);
@@ -305,18 +327,16 @@ fn subscribe(fp: i32, fl: i32, mem: &Mem<'_>) -> i32 {
 }
 
 fn slot_text(slot: i32, ptr: i32, cap: i32, mem: &mut Mem<'_>) -> i32 {
-    let text = {
-        let m = lock();
-        let Some(s) = m.slots.get(slot as usize) else {
-            return 0;
-        };
-        let n = s.text.len().min(cap.max(0) as usize);
-        s.text[..n].to_vec()
+    // Copied straight from the slot under the lock: nothing is allocated.
+    let m = lock();
+    let Some(s) = m.slots.get(slot as usize) else {
+        return 0;
     };
-    if text.is_empty() || !mem.write(ptr, &text) {
+    let n = s.text.len().min(cap.max(0) as usize);
+    if n == 0 || !mem.write(ptr, &s.text[..n]) {
         return 0;
     }
-    text.len() as i32
+    n as i32
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -361,10 +381,19 @@ fn on_data(topic: &[u8], data: &[u8]) {
     };
     let data = &data[..data.len().min(MAX_PAYLOAD)];
     let mut m = lock();
-    for s in m.slots.iter_mut().filter(|s| matches(&s.filter, topic)) {
+    for (i, s) in m
+        .slots
+        .iter_mut()
+        .enumerate()
+        .filter(|(_, s)| matches(&s.filter, topic))
+    {
         s.text.clear();
         s.text.extend_from_slice(data);
         s.count = s.count.wrapping_add(1);
+        // After the text: a step that sees the new count finds the new text.
+        if let Some(c) = COUNTS.get(i) {
+            c.store(s.count, Ordering::Release);
+        }
     }
 }
 
@@ -623,7 +652,7 @@ fn serve(live: &mut Live, told: &mut Told, retry_at: &mut Instant) {
         };
         if let Err(e) = live
             .client
-            .enqueue(&p.topic, QoS::AtMostOnce, p.retain, &p.payload)
+            .enqueue(p.topic(), QoS::AtMostOnce, p.retain, p.payload())
         {
             lock().queue.push_front(p);
             told.failure(format!("publish failed: {e}"));
@@ -725,5 +754,6 @@ fn worker() {
             }
             sparkplug::poll(&mut l.client, connected);
         }
+        sparkplug::mirror();
     }
 }

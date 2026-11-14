@@ -15,7 +15,7 @@ pub mod transport;
 pub use image::{ImageLayout, Kind, Slot};
 pub use master::{MasterSession, ModuleMap};
 pub use monitor::Monitor;
-pub use protocol::{BackgroundStats, SheetStats, Stats};
+pub use protocol::{BackgroundStats, CycleStats, SheetStats, Stats};
 pub use pull::{read_project, PullError, Pulled};
 pub use session::{Command, Live, Session};
 pub use table::{DebugTable, Entry, Source, TextEntry, Value};

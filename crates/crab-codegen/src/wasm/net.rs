@@ -79,6 +79,32 @@ impl Emitter<'_, '_> {
         Ok(true)
     }
 
+    /// The address on the stack (first octet in the lowest byte, 0: none) into the text output
+    /// `out`, only when it changed: the text is not rebuilt on every step.
+    fn ip_text_on_change(&mut self, out: Buf) {
+        let last = self.state_i();
+        let ip = self.tmp_i();
+        self.op(I::LocalSet(ip));
+        self.op(I::LocalGet(ip));
+        self.op(I::GlobalGet(last));
+        self.op(I::I32Ne);
+        self.op(I::If(BlockType::Empty));
+        self.op(I::LocalGet(ip));
+        self.op(I::GlobalSet(last));
+        self.op(I::LocalGet(ip));
+        self.op(I::If(BlockType::Empty));
+        self.text_call(
+            11,
+            [out.ptr(), out.cap(), A::L(ip), A::C(0), A::C(0), A::C(0)],
+        );
+        self.op(I::GlobalSet(out.len));
+        self.op(I::Else);
+        self.c_i(0);
+        self.op(I::GlobalSet(out.len));
+        self.op(I::End);
+        self.op(I::End);
+    }
+
     fn wifi_block(&mut self, inst: &Instance) -> Result<(), WasmError> {
         self.string_outputs_ok(inst)?;
         // The web page and the firmware upload of the block come with the web blocks.
@@ -172,19 +198,7 @@ impl Emitter<'_, '_> {
         }
         if let Some(out) = self.out_buf(inst, "address") {
             self.net_call(3, 4, A::C(0), A::C(0));
-            let ip = self.tmp_i();
-            self.op(I::LocalSet(ip));
-            self.op(I::LocalGet(ip));
-            self.op(I::If(BlockType::Empty));
-            self.text_call(
-                11,
-                [out.ptr(), out.cap(), A::L(ip), A::C(0), A::C(0), A::C(0)],
-            );
-            self.op(I::GlobalSet(out.len));
-            self.op(I::Else);
-            self.c_i(0);
-            self.op(I::GlobalSet(out.len));
-            self.op(I::End);
+            self.ip_text_on_change(out);
         }
         Ok(())
     }
@@ -259,19 +273,7 @@ impl Emitter<'_, '_> {
         }
         if let Some(out) = self.out_buf(inst, "address") {
             self.net_call(8, 1, A::C(0), A::C(0));
-            let ip = self.tmp_i();
-            self.op(I::LocalSet(ip));
-            self.op(I::LocalGet(ip));
-            self.op(I::If(BlockType::Empty));
-            self.text_call(
-                11,
-                [out.ptr(), out.cap(), A::L(ip), A::C(0), A::C(0), A::C(0)],
-            );
-            self.op(I::GlobalSet(out.len));
-            self.op(I::Else);
-            self.c_i(0);
-            self.op(I::GlobalSet(out.len));
-            self.op(I::End);
+            self.ip_text_on_change(out);
         }
         Ok(())
     }

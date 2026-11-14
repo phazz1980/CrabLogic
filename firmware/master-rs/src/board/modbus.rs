@@ -1,12 +1,16 @@
 //! Modbus of the project (`modbus(op, a, b, c, d)`): the protocol is `crate::modbus` (tested on the
 //! PC); here are its ports. A role committed by a module opens its UART (RTU) or socket (TCP); a task
 //! of the master polls every role every few milliseconds, modules only read and write the tables.
+//!
+//! A module step locks only the tables ([`STATE`]). The ports ([`PORTS`]) belong to the task: it
+//! reads and writes sockets and UARTs without holding the tables, through a [`Staged`] transport,
+//! so a step never waits for the network (a TCP connect may take up to [`CONNECT_TIMEOUT`]).
 
+use super::spin::Spin;
 use crab_master_rs::modbus::{ModbusHost, Role, RoleSettings, Transport};
 use esp_idf_svc::sys;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(2);
@@ -20,44 +24,104 @@ const DEFAULT_PINS: [(i32, i32); 2] = [(-1, -1), (18, 19)];
 #[cfg(not(target_arch = "riscv32"))]
 const DEFAULT_PINS: [(i32, i32); 3] = [(-1, -1), (26, 27), (16, 17)];
 
-/// The protocol state and the open ports of every role.
+/// The protocol state: what a module step touches.
 struct State {
     host: ModbusHost,
+    /// Roles committed by modules, waiting for the task to open their ports.
+    new_roles: Vec<RoleSettings>,
+    task: bool,
+}
+
+/// The open ports of every role: only the task touches them.
+#[derive(Default)]
+struct Ports {
     rtu_master: Option<Uart>,
     rtu_slave: Option<Uart>,
     tcp_master: Option<TcpClient>,
     tcp_slave: Option<TcpServer>,
-    task: bool,
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// A ceiling lock (`spin`): the step takes it in well under a microsecond, the task runs above the
+/// scan priority while it holds it (the protocol only, never the port).
+static STATE: Spin<Option<State>> = Spin::new(None);
 
-/// `modbus(op, a, b, c, d)`: the import of modules.
+/// `modbus(op, a, b, c, d)`: the import of modules. Never waits for a port.
 pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32) -> i32 {
-    let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = STATE.lock_scan();
     let state = guard.get_or_insert_with(|| State {
         host: ModbusHost::new(),
-        rtu_master: None,
-        rtu_slave: None,
-        tcp_master: None,
-        tcp_slave: None,
+        new_roles: Vec::new(),
         task: false,
     });
     let result = state.host.call(op, a, b, c, d);
-    for role in state.host.take_new_roles() {
-        open(state, role);
-    }
+    state.new_roles.extend(state.host.take_new_roles());
     if !state.task && !state.host.roles().is_empty() {
         state.task = start_task();
     }
     result
 }
 
+/// One step of a transport: what came is read before the protocol runs, what it does is done after,
+/// both without the lock of the tables.
+#[derive(Default)]
+struct Staged {
+    inbox: Vec<u8>,
+    connected: bool,
+    ops: Vec<Op>,
+}
+
+enum Op {
+    Send(Vec<u8>),
+    Connect,
+    Close,
+}
+
+impl Transport for Staged {
+    fn send(&mut self, bytes: &[u8]) {
+        self.ops.push(Op::Send(bytes.to_vec()));
+    }
+    fn receive(&mut self, buf: &mut Vec<u8>) {
+        buf.append(&mut self.inbox);
+    }
+    fn is_connected(&mut self) -> bool {
+        self.connected
+    }
+    fn connect(&mut self) {
+        self.ops.push(Op::Connect);
+    }
+    fn close(&mut self) {
+        self.connected = false;
+        self.ops.push(Op::Close);
+    }
+}
+
+/// Polls one role: the port is read, the protocol runs under the lock of the tables, then the
+/// port does what the protocol asked.
+fn poll_port<T: Transport>(port: &mut T, poll: impl FnOnce(&mut ModbusHost, &mut Staged)) {
+    let mut staged = Staged {
+        connected: port.is_connected(),
+        ..Default::default()
+    };
+    port.receive(&mut staged.inbox);
+    {
+        let mut guard = STATE.lock_ceiling();
+        let Some(state) = guard.as_mut() else { return };
+        poll(&mut state.host, &mut staged);
+    }
+    for op in staged.ops {
+        match op {
+            Op::Send(bytes) => port.send(&bytes),
+            Op::Connect => port.connect(),
+            Op::Close => port.close(),
+        }
+    }
+}
+
 fn note(text: String) {
     super::notes::push("modbus", text);
 }
 
-fn open(state: &mut State, role: RoleSettings) {
+fn open(state: &mut Ports, role: RoleSettings) {
     match (role.role, role.uart, role.tcp) {
         (Role::RtuMaster | Role::RtuSlave, Some(u), _) => {
             let Some(port) = Uart::open(u.uart, u.speed, u.parity, u.rx, u.tx, u.de) else {
@@ -83,37 +147,43 @@ fn open(state: &mut State, role: RoleSettings) {
 }
 
 fn start_task() -> bool {
-    let spawned = std::thread::Builder::new()
-        .name("modbus".into())
-        .stack_size(6144)
-        .spawn(|| {
-            let started = Instant::now();
-            loop {
-                poll_all(started.elapsed().as_millis() as u64);
-                std::thread::sleep(POLL);
-            }
-        });
-    if spawned.is_err() {
+    let spawned = super::spawn_background(b"modbus\0", 6144, || {
+        let started = Instant::now();
+        let mut ports = Ports::default();
+        loop {
+            poll_all(&mut ports, started.elapsed().as_millis() as u64);
+            std::thread::sleep(POLL);
+        }
+    });
+    if !spawned {
         note("задача опроса не запущена".into());
     }
-    spawned.is_ok()
+    spawned
 }
 
-fn poll_all(now_ms: u64) {
-    let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(s) = guard.as_mut() else { return };
-    if let Some(t) = &mut s.rtu_master {
-        s.host.poll_rtu_master(now_ms, t);
+fn poll_all(ports: &mut Ports, now_ms: u64) {
+    let new_roles = {
+        let mut guard = STATE.lock_ceiling();
+        guard
+            .as_mut()
+            .map(|s| core::mem::take(&mut s.new_roles))
+            .unwrap_or_default()
+    };
+    for role in new_roles {
+        open(ports, role);
     }
-    if let Some(t) = &mut s.rtu_slave {
-        s.host.poll_rtu_slave(now_ms, t);
+    if let Some(t) = &mut ports.rtu_master {
+        poll_port(t, |h, s| h.poll_rtu_master(now_ms, s));
     }
-    if let Some(t) = &mut s.tcp_master {
-        s.host.poll_tcp_master(now_ms, t);
+    if let Some(t) = &mut ports.rtu_slave {
+        poll_port(t, |h, s| h.poll_rtu_slave(now_ms, s));
     }
-    if let Some(t) = &mut s.tcp_slave {
+    if let Some(t) = &mut ports.tcp_master {
+        poll_port(t, |h, s| h.poll_tcp_master(now_ms, s));
+    }
+    if let Some(t) = &mut ports.tcp_slave {
         t.accept();
-        s.host.poll_tcp_slave(now_ms, t);
+        poll_port(t, |h, s| h.poll_tcp_slave(now_ms, s));
     }
 }
 

@@ -92,6 +92,7 @@ const BUS_IMPORTS: &[(&str, usize, Shim)] = &[
     ("i2c_open", 3, Shim::Bus(20, &[P(0), P(1), P(2)])),
     ("i2c_write", 3, Shim::Bus(21, &[P(0), Ptr(1), P(2)])),
     ("i2c_read", 3, Shim::Bus(22, &[P(0), Ptr(1), P(2)])),
+    ("i2c_send", 3, Shim::Bus(24, &[P(0), Ptr(1), P(2)])),
     (
         "i2c_write_read",
         5,

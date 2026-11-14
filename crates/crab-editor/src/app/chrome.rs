@@ -350,6 +350,30 @@ impl EditorApp {
         }
     }
 
+    /// "Cycle period": how often the board runs the sheets (`[run]` of the project).
+    pub(super) fn run_menu(&mut self, ui: &mut egui::Ui) {
+        let Some(doc) = &self.doc else { return };
+        let cur = doc.project.config.run.period_ms;
+        let lib = self.lib.clone();
+        let mut new = cur;
+        ui.menu_button(crate::i18n::tr("Период цикла"), |ui| {
+            for ms in crab_core::PERIODS_MS {
+                ui.radio_value(&mut new, ms, crate::i18n::fmt("{0} мс", &[&ms]));
+            }
+            ui.weak(crate::i18n::tr(
+                "Как часто плата выполняет листы. 1–2 мс — для быстрых процессов; если шаг листа не успевает, проверка схемы предупредит",
+            ));
+        });
+        if new != cur {
+            if let Some(doc) = &mut self.doc {
+                let _ = doc.edit(&lib, Some("run_period".into()), |p| {
+                    p.config.run.period_ms = new;
+                    Ok::<(), String>(())
+                });
+            }
+        }
+    }
+
     /// The editor menus; shown inside the burger button of the title bar.
     pub(super) fn menus(&mut self, ui: &mut egui::Ui) {
         ui.menu_button(crate::i18n::tr("Файл"), |ui| {
@@ -568,6 +592,7 @@ impl EditorApp {
             }
             ui.add_enabled_ui(has_doc, |ui| self.board_copy_menu(ui));
             ui.add_enabled_ui(has_doc, |ui| self.retain_menu(ui));
+            ui.add_enabled_ui(has_doc, |ui| self.run_menu(ui));
             ui.separator();
             if ui
                 .add_enabled(

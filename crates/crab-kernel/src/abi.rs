@@ -3,7 +3,8 @@
 //! Values are 32 bit: `bool` and `int` travel as `i32`, `float` as `f32` (see `specs/numeric-model`).
 //! Exports of a module: `abi_version() -> i32` (must be 5), `step(dt_ms: i32)`; optional
 //! `init()`, `alloc(len: i32) -> i32` (where the host puts message bytes) and
-//! `on_message(topic_ptr, topic_len, ptr, len)`.
+//! `on_message(topic_ptr, topic_len, ptr, len)`, `period_ms() -> i32` (scan period the project
+//! asks for: 1, 2, 5 or 10; none or another value — 10, `specs/fast-cycle`).
 //!
 //! ABI 4 adds `crab.yield() -> i32`: a module counts its work (one unit per `step` and per loop
 //! pass) and calls it when the count runs out; the host may suspend the module there until its
@@ -24,6 +25,19 @@ pub const ABI_VERSION: i32 = 5;
 
 /// The module name all imports come from.
 pub const MODULE: &str = "crab";
+
+/// Scan period of a module without the optional `period_ms() -> i32` export, milliseconds.
+pub const DEFAULT_PERIOD_MS: u32 = 10;
+/// Periods a module may ask for (`specs/fast-cycle`).
+pub const PERIODS_MS: [u32; 4] = [1, 2, 5, 10];
+
+/// The period a module's `period_ms()` result stands for: one of [`PERIODS_MS`], otherwise the default.
+pub fn period_of(asked: i32) -> u32 {
+    match u32::try_from(asked) {
+        Ok(p) if PERIODS_MS.contains(&p) => p,
+        _ => DEFAULT_PERIOD_MS,
+    }
+}
 
 /// A value type of the ABI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +174,13 @@ pub mod bus_op {
     pub const I2C_READ: i32 = 22;
     /// `I2C_WRITE_READ(addr, wptr, wlen | (rlen << 16), rptr)`.
     pub const I2C_WRITE_READ: i32 = 23;
+    /// `I2C_SEND(addr, ptr, len)`: a write the master queues and sends in the background, so the
+    /// step does not wait for the bus (displays). Returns `len` (1..=256) when queued; 0 when the previous
+    /// send of this module is still on its way (nothing queued, try again on a later step); a
+    /// negative code when the previous send failed (reported once, this one is not queued) or the
+    /// arguments are wrong. One send per module is on its way at a time, sends go out in order.
+    /// `len` 0 only asks: 1 when the previous send went out, 0 while on its way, its error once.
+    pub const I2C_SEND: i32 = 24;
     /// `UART_OPEN(port, tx, rx, baud)`, 8N1.
     pub const UART_OPEN: i32 = 30;
     /// `UART_WRITE(port, ptr, len)`.

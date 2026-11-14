@@ -275,6 +275,38 @@ fn old_abi_is_refused_with_rebuild_hint() {
     );
 }
 
+/// The optional `period_ms()` export: 1, 2, 5, 10 are taken, anything else and no export mean 10.
+#[test]
+fn period_comes_from_the_module_export() {
+    let module = |export: &str| {
+        wat::parse_str(format!(
+            r#"(module
+  (func (export "abi_version") (result i32) i32.const 5)
+  {export}
+  (func (export "step") (param i32)))"#
+        ))
+        .unwrap()
+    };
+    let period = |export: &str| {
+        load_wasm(&module(export), &StubHal::default())
+            .unwrap()
+            .period_ms()
+    };
+    assert_eq!(period(""), abi::DEFAULT_PERIOD_MS);
+    for p in abi::PERIODS_MS {
+        assert_eq!(
+            period(&format!(
+                r#"(func (export "period_ms") (result i32) i32.const {p})"#
+            )),
+            p
+        );
+    }
+    assert_eq!(
+        period(r#"(func (export "period_ms") (result i32) i32.const 3)"#),
+        abi::DEFAULT_PERIOD_MS
+    );
+}
+
 const PIN_A: &str = "(call $gw (i32.const 2) (i32.const 1))";
 
 #[test]

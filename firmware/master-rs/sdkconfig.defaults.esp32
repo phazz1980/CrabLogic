@@ -16,3 +16,8 @@ CONFIG_ETH_PHY_INTERFACE_RMII=y
 # UART0 is both the console and the protocol channel of the master: only warnings and errors
 # of ESP-IDF go there (info lines of Wi-Fi or GPIO would slow the steps and mix with the answers).
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# Network tasks of ESP-IDF on core 0, away from the sheets on core 1 (a task running between steps
+# on core 1 pushes the code of the sheets out of that core's flash cache).
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_0=y

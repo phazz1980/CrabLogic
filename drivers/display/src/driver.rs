@@ -33,8 +33,21 @@ pub trait Io {
     fn input_text(&self, i: usize, buf: &mut [u8]) -> usize;
     fn output_i(&mut self, i: usize, v: i32);
     fn output_f(&mut self, i: usize, v: f32);
-    /// I²C write to the display; true when the display accepted all bytes.
-    fn write(&mut self, data: &[u8]) -> bool;
+    /// I²C write the master sends in the background: the step never waits for the bus. An empty
+    /// `data` only asks about the previous write: `Queued` when it went out, `Later` while on its
+    /// way, `Failed` when it failed.
+    fn send(&mut self, data: &[u8]) -> Sent;
+}
+
+/// What became of a background write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    /// Queued.
+    Queued,
+    /// The previous one is still on its way: nothing queued, try again on a later step.
+    Later,
+    /// The previous one (or this) failed.
+    Failed,
 }
 
 /// Raw bits of input cell `i`: `f32` bits when `float`, an `i32` otherwise.
@@ -106,6 +119,9 @@ pub struct Driver<'a> {
     ready: bool,
     wait_ms: i32,
     phase: u8,
+    /// A start-up write is on its way; its pause (`after_ms`) starts once it went out.
+    pending: bool,
+    after_ms: i32,
     pub ok: bool,
     /// Character grid of the LCD frame or the menu.
     grid: Grid,
@@ -133,6 +149,8 @@ impl<'a> Driver<'a> {
             ready: false,
             wait_ms: 0,
             phase: 0,
+            pending: false,
+            after_ms: 0,
             ok: false,
             grid: Grid::new(),
         }
@@ -246,20 +264,24 @@ impl<'a> Driver<'a> {
     // ---------------------------------------------------------------- OLED
 
     fn step_oled(&mut self, io: &mut impl Io, cfg: &ConfigView, dt_ms: i32, showing_menu: bool) {
-        if !self.link_wait(dt_ms) {
+        if !self.link_wait(dt_ms) || !self.sent_out(io) {
             return;
         }
         if !self.ready {
             let mut buf = [0u8; 32];
             let n = oled::init_commands(self.kind, &mut buf);
-            if !io.write(buf.part(n)) {
-                self.fail();
-                return;
+            match io.send(buf.part(n)) {
+                Sent::Queued => {
+                    self.pending = true;
+                    self.after_ms = 0;
+                    self.ready = true;
+                    self.ok = true;
+                    self.page_ok = 0;
+                }
+                Sent::Later => {}
+                Sent::Failed => self.fail(),
             }
-            self.ready = true;
-            self.ok = true;
-            self.page_ok = 0;
-            return; // the first frame goes out on the next step
+            return; // the first frame goes out on a later step
         }
         if showing_menu {
             if let Some(m) = cfg.menu {
@@ -331,15 +353,17 @@ impl<'a> Driver<'a> {
             }
             let mut buf = [0u8; 7 + PAGE_BYTES];
             let n = oled::page_transfer(self.kind, p, self.fb.page(p), &mut buf);
-            if io.write(buf.part(n)) {
-                if let Some(dst) = self.sent.get_mut(lo..hi) {
-                    copy(dst, self.fb.buf.span(lo, hi));
+            match io.send(buf.part(n)) {
+                Sent::Queued => {
+                    if let Some(dst) = self.sent.get_mut(lo..hi) {
+                        copy(dst, self.fb.buf.span(lo, hi));
+                    }
+                    self.page_ok |= 1 << p;
+                    self.next_page = (p + 1) % pages;
+                    self.ok = true;
                 }
-                self.page_ok |= 1 << p;
-                self.next_page = (p + 1) % pages;
-                self.ok = true;
-            } else {
-                self.fail();
+                Sent::Later => {}
+                Sent::Failed => self.fail(),
             }
             return;
         }
@@ -348,7 +372,7 @@ impl<'a> Driver<'a> {
     // ----------------------------------------------------------------- LCD
 
     fn step_lcd(&mut self, io: &mut impl Io, cfg: &ConfigView, dt_ms: i32, showing_menu: bool) {
-        if !self.link_wait(dt_ms) {
+        if !self.link_wait(dt_ms) || !self.sent_out(io) {
             return;
         }
         let bl = io.input_i(1) > 0;
@@ -372,11 +396,13 @@ impl<'a> Driver<'a> {
         self.lcd.map_grid(&grid);
         let mut buf = [0u8; lcd::MAX_TRANSFER];
         if let Some((act, n)) = self.lcd.next(&mut buf) {
-            if io.write(buf.part(n)) {
-                self.lcd.commit(act);
-                self.ok = true;
-            } else {
-                self.fail();
+            match io.send(buf.part(n)) {
+                Sent::Queued => {
+                    self.lcd.commit(act);
+                    self.ok = true;
+                }
+                Sent::Later => {}
+                Sent::Failed => self.fail(),
             }
         }
     }
@@ -393,8 +419,9 @@ impl<'a> Driver<'a> {
         }
     }
 
-    /// The HD44780 power-up sequence in 4-bit mode, one transfer per step with the required waits.
-    /// Returns false when a transfer failed.
+    /// The HD44780 power-up sequence in 4-bit mode, one transfer per step with the required waits
+    /// (counted from the moment the master reports the transfer sent). Returns false when a
+    /// transfer failed.
     fn lcd_init(&mut self, io: &mut impl Io, bl: bool) -> bool {
         let mut nib = [0u8; 2];
         let mut cmds = [0u8; 16];
@@ -422,11 +449,16 @@ impl<'a> Driver<'a> {
                 (cmds.part(n), 5)
             }
         };
-        if !io.write(data) {
-            self.fail();
-            return false;
+        match io.send(data) {
+            Sent::Queued => {}
+            Sent::Later => return true, // the same phase on a later step
+            Sent::Failed => {
+                self.fail();
+                return false;
+            }
         }
-        self.wait_ms = wait;
+        self.pending = true;
+        self.after_ms = wait;
         if self.phase >= 5 {
             self.ready = true;
             self.ok = true;
@@ -451,8 +483,28 @@ impl<'a> Driver<'a> {
         true
     }
 
+    /// False while a start-up write is on its way (or failed); when it went out, its pause starts.
+    fn sent_out(&mut self, io: &mut impl Io) -> bool {
+        if !self.pending {
+            return true;
+        }
+        match io.send(&[]) {
+            Sent::Later => false,
+            Sent::Failed => {
+                self.fail();
+                false
+            }
+            Sent::Queued => {
+                self.pending = false;
+                self.wait_ms = self.after_ms;
+                self.after_ms <= 0
+            }
+        }
+    }
+
     /// A transfer failed: report, and start over after a pause.
     fn fail(&mut self) {
+        self.pending = false;
         self.ok = false;
         self.ready = false;
         self.phase = 0;

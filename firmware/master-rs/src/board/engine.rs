@@ -182,6 +182,7 @@ impl Wamr {
             env: core::ptr::null_mut(),
             step: core::ptr::null_mut(),
             mode,
+            period_ms: abi::DEFAULT_PERIOD_MS as u8,
             _image: ram.take(),
         };
 
@@ -223,6 +224,11 @@ impl Wamr {
         m.step = m
             .lookup(c"step")
             .ok_or_else(|| "в модуле нет функции step(dt_ms: i32)".to_owned())?;
+        if let Some(period) = m.lookup(c"period_ms") {
+            m.call(period, 0, &mut argv)
+                .map_err(|e| format!("period_ms не выполнена: {e}"))?;
+            m.period_ms = abi::period_of(argv[0] as i32) as u8;
+        }
         if let Some(init) = m.lookup(c"init") {
             m.call(init, 0, &mut argv)?;
         }
@@ -269,6 +275,10 @@ struct Ctx<H> {
 }
 
 /// Every import of the ABI enters here (a raw native: arguments and the result are 64-bit slots).
+// The hot path of a step lives in IRAM (`.iram1.*`): from flash it missed the cache and its
+// time depended on the code layout of each build (bench 13.11.2026: the step took up to twice as
+// long, `specs/fast-cycle`). IRAM is short on the ESP32: only the code every step runs.
+#[link_section = ".iram1.crab_native"]
 unsafe extern "C" fn native(env: Env, args: *mut u64) {
     let id = wasm_runtime_get_function_attachment(env) as usize;
     let head = wasm_runtime_get_user_data(env) as *mut Head;
@@ -277,6 +287,7 @@ unsafe extern "C" fn native(env: Env, args: *mut u64) {
     }
 }
 
+#[link_section = ".iram1.crab_dispatch"]
 unsafe fn dispatch<H: Host>(head: *mut Head, import_id: usize, inst: Inst, args: *mut u64) {
     let ctx = &mut *(head as *mut Ctx<H>);
     let Some(import) = IMPORTS.get(import_id) else {
@@ -348,6 +359,8 @@ pub struct WamrInstance<H> {
     env: Env,
     step: Func,
     mode: ExecutionMode,
+    /// What `period_ms()` asked for (see [`abi::period_of`]), at most 10.
+    period_ms: u8,
     /// The bytecode the interpreter runs.
     _image: Option<Vec<u8>>,
 }
@@ -385,6 +398,7 @@ impl<H> WamrInstance<H> {
     }
 
     /// Calls a function; `argv` holds the arguments and then the result.
+    #[link_section = ".iram1.crab_call"]
     fn call(&mut self, func: Func, argc: u32, argv: &mut [u32; 4]) -> Result<(), String> {
         self.ctx.yields_left = self.ctx.yields_per_call;
         // SAFETY: called on the thread that created the instance; `argv` fits the signature.
@@ -441,6 +455,7 @@ impl<H> Instance<H> for WamrInstance<H> {
         &mut self.ctx.host
     }
 
+    #[link_section = ".iram1.crab_call_step"]
     fn call_step(&mut self, dt_ms: u32) -> Result<Run, String> {
         let mut argv = [dt_ms, 0, 0, 0];
         self.call(self.step, 1, &mut argv)?;
@@ -453,6 +468,10 @@ impl<H> Instance<H> for WamrInstance<H> {
 
     fn suspended(&self) -> bool {
         false
+    }
+
+    fn period_ms(&self) -> u32 {
+        self.period_ms as u32
     }
 
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {

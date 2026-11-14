@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -133,6 +133,13 @@ static NET: Mutex<Net> = Mutex::new(Net {
     },
 });
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// The radio request of the modules (`Wanted::mode`): written every step, so an atomic, not the
+/// lock (a lock costs about 5 µs on the ESP32, an atomic well under 1 µs).
+static WANTED_MODE: AtomicI32 = AtomicI32::new(0);
+/// The snapshot as the steps read it: bit 0 client ready, bit 1 access point ready, bits 8..15
+/// status, bits 16..23 error.
+static SNAP_FLAGS: AtomicU32 = AtomicU32::new(0);
+static SNAP_IP: AtomicU32 = AtomicU32::new(0);
 /// Board uptime (ms) of the last radio request.
 static MODE_AT_MS: AtomicU32 = AtomicU32::new(0);
 /// Board uptime in seconds of the last NTP synchronisation plus one; 0 while there was none.
@@ -206,10 +213,9 @@ fn set_number(code: i32, value: i32) -> i32 {
 }
 
 fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
-    let Some(bytes) = mem.read(ptr, len, MAX_TEXT) else {
+    let Some(bytes) = mem.slice(ptr, (len.max(0) as usize).min(MAX_TEXT)) else {
         return 0;
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
     let mut net = lock();
     let w = &mut net.wanted;
     let field = match code {
@@ -223,8 +229,9 @@ fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
         8 => &mut w.ntp_server,
         _ => return 0,
     };
-    if *field != text {
-        *field = text;
+    // Settings from variables come every step: a new string only when the text changed.
+    if field.as_bytes() != bytes {
+        *field = String::from_utf8_lossy(bytes).into_owned();
     }
     1
 }
@@ -232,12 +239,7 @@ fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
 fn set_mode(mode: i32) -> i32 {
     let mode = mode.clamp(0, 3);
     MODE_AT_MS.store(uptime_ms() as u32, Ordering::Release);
-    {
-        let mut net = lock();
-        if net.wanted.mode != mode {
-            net.wanted.mode = mode;
-        }
-    }
+    WANTED_MODE.store(mode, Ordering::Release);
     if mode != 0 {
         ensure_thread();
     }
@@ -246,12 +248,8 @@ fn set_mode(mode: i32) -> i32 {
 
 fn ensure_thread() {
     if !STARTED.swap(true, Ordering::AcqRel) {
-        let spawned = std::thread::Builder::new()
-            .name("crab-net".into())
-            .stack_size(NET_STACK)
-            .spawn(worker);
-        if let Err(e) = spawned {
-            note!("cannot start the network thread: {e}");
+        if !super::spawn_background(b"crab-net\0", NET_STACK, worker) {
+            note!("cannot start the network thread");
             STARTED.store(false, Ordering::Release);
         }
     }
@@ -272,23 +270,22 @@ pub(super) fn sysloop() -> Result<EspSystemEventLoop, EspError> {
 
 /// The client or the access point has an address: a service on top (MQTT) may open sockets.
 pub fn link_ready() -> bool {
-    let s = lock().snap;
-    s.client_ready || s.ap_ready
+    SNAP_FLAGS.load(Ordering::Acquire) & 3 != 0
 }
 
 /// Address of the Wi-Fi client (first octet in the lowest byte), 0 without one.
 pub fn wifi_ip() -> u32 {
-    lock().snap.ip
+    SNAP_IP.load(Ordering::Acquire)
 }
 
 fn read_wifi(field: i32) -> i32 {
-    let s = lock().snap;
+    let flags = SNAP_FLAGS.load(Ordering::Acquire);
     match field {
-        0 => s.client_ready as i32,
-        1 => s.ap_ready as i32,
-        2 => s.status,
-        3 => s.error,
-        4 => s.ip as i32,
+        0 => (flags & 1) as i32,
+        1 => (flags >> 1 & 1) as i32,
+        2 => (flags >> 8 & 0xFF) as i32,
+        3 => (flags >> 16 & 0xFF) as i32,
+        4 => SNAP_IP.load(Ordering::Acquire) as i32,
         _ => 0,
     }
 }
@@ -378,7 +375,15 @@ fn civil(t: i64) -> (i32, i32, i32, i32, i32, i32, i32) {
 // ---------------------------------------------------------------------------------------------
 
 fn set_snapshot(f: impl FnOnce(&mut Snapshot)) {
-    f(&mut lock().snap);
+    let mut net = lock();
+    f(&mut net.snap);
+    let s = net.snap;
+    let flags = u32::from(s.client_ready)
+        | u32::from(s.ap_ready) << 1
+        | (s.status as u32 & 0xFF) << 8
+        | (s.error as u32 & 0xFF) << 16;
+    SNAP_IP.store(s.ip, Ordering::Release);
+    SNAP_FLAGS.store(flags, Ordering::Release);
 }
 
 fn ip_to_u32(ip: Ipv4Addr) -> u32 {
@@ -790,7 +795,8 @@ fn worker() {
     let mut last_status = (-1, -1);
     let mut last_sync = 0;
     loop {
-        let wanted = lock().wanted.clone();
+        let mut wanted = lock().wanted.clone();
+        wanted.mode = WANTED_MODE.load(Ordering::Acquire);
         let idle = (uptime_ms() as u32).wrapping_sub(MODE_AT_MS.load(Ordering::Acquire)) > LEASE_MS;
         if wanted.mode == 0 || !wanted.wifi_set || idle {
             w.stop();

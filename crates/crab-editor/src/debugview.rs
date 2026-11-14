@@ -711,6 +711,41 @@ pub fn diagnostics_window(
                         ui.monospace(s.bus_lost.to_string());
                         ui.end_row();
                     }
+                    if let Some(c) = &s.cycle {
+                        ui.label(crate::i18n::tr("Период цикла (цель)"));
+                        ui.monospace(us(c.period_us));
+                        ui.end_row();
+                        ui.label(crate::i18n::tr("Пауза между шагами, макс"))
+                            .on_hover_text(crate::i18n::tr(
+                            "Самая долгая пауза между запусками шагов листов с последнего сброса",
+                        ));
+                        ui.monospace(us(c.gap_us));
+                        ui.end_row();
+                        ui.label(crate::i18n::tr("Шагов с сброса"));
+                        ui.monospace(c.steps.to_string());
+                        ui.end_row();
+                        ui.label(crate::i18n::tr("Переполнения цикла"))
+                            .on_hover_text(crate::i18n::tr(
+                            "Шаг не уложился в период: увеличьте период цикла в настройках проекта",
+                        ));
+                        let over = c.over.to_string();
+                        if c.over > 0 {
+                            ui.label(
+                                egui::RichText::new(over)
+                                    .monospace()
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        } else {
+                            ui.monospace(over);
+                        }
+                        ui.end_row();
+                        ui.label(crate::i18n::tr("Опоздание > 50 / > 100 мкс"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Сколько шагов начались позже срока больше чем на 50 и на 100 мкс",
+                            ));
+                        ui.monospace(format!("{} / {}", c.late50, c.late100));
+                        ui.end_row();
+                    }
                     if s.free_heap > 0 {
                         ui.label(crate::i18n::tr("Свободная память"));
                         ui.monospace(crate::i18n::fmt("{0} КБ", &[&(s.free_heap / 1024)]));

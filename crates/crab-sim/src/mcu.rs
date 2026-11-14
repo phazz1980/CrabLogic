@@ -42,6 +42,13 @@ pub struct Manifest {
     /// How many event messages may wait for the module; 0 means the default.
     #[serde(default)]
     pub queue: usize,
+    /// Cycle period of the sheets, ms (10 when absent).
+    #[serde(default = "default_period_ms")]
+    pub period_ms: u32,
+}
+
+fn default_period_ms() -> u32 {
+    10
 }
 
 fn default_abi() -> i32 {
@@ -375,7 +382,8 @@ impl Devices for StubIo {
 }
 
 impl StubIo {
-    /// `crab.bus` on the PC: claims and the lock succeed, an I²C read gives `i2c_in`, the rest
+    /// `crab.bus` on the PC: claims and the lock succeed, an I²C read gives `i2c_in`, a queued
+    /// write (`I2C_SEND`, 24) goes out at once like a plain one (21), the rest
     /// fails with "resource not claimed" (-1). Every call is kept in `bus_calls`.
     fn bus(&mut self, call: [i32; 5], mem: &mut Mem<'_>) -> i32 {
         self.bus_calls.push(call);
@@ -402,10 +410,13 @@ impl StubIo {
                 }
             }
             20 if !self.displays.is_empty() => 0,
-            21 if self
-                .displays
-                .iter()
-                .any(|d| i32::from(d.address) == call[1]) =>
+            // An empty queued write asks whether the previous one went out: on the PC it did.
+            24 if call[3] == 0 => 1,
+            21 | 24
+                if self
+                    .displays
+                    .iter()
+                    .any(|d| i32::from(d.address) == call[1]) =>
             {
                 let Some(bytes) = mem.read(call[2], call[3], 4096) else {
                     return -4;
@@ -419,7 +430,7 @@ impl StubIo {
                 }
                 bytes.len() as i32
             }
-            21 if !self.i2c_regs.is_empty() => call[3],
+            21 | 24 if !self.i2c_regs.is_empty() => call[3],
             23 if !self.i2c_regs.is_empty() => {
                 let Some(reg) = mem.read(call[2], 1, 1) else {
                     return -4;

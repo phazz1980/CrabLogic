@@ -70,6 +70,8 @@ pub struct WasmiInstance<H: 'static> {
     fuel: u64,
     /// The `step` that yielded, waiting to be resumed.
     pending: Option<TypedResumableCallHostTrap<()>>,
+    /// What `period_ms()` asked for (see [`abi::period_of`]).
+    period_ms: u32,
 }
 
 fn val_type(t: Ty) -> ValType {
@@ -204,12 +206,20 @@ impl engine::Engine for Wasmi {
         let step = instance
             .get_typed_func::<i32, ()>(&store, "step")
             .map_err(|_| "в модуле нет функции step(dt_ms: i32)".to_owned())?;
+        let period_ms = match instance.get_typed_func::<(), i32>(&store, "period_ms") {
+            Ok(f) => abi::period_of(
+                f.call(&mut store, ())
+                    .map_err(|e| format!("period_ms не выполнена: {e}"))?,
+            ),
+            Err(_) => abi::DEFAULT_PERIOD_MS,
+        };
         let mut m = WasmiInstance {
             store,
             instance,
             step,
             fuel: limits.fuel_per_call,
             pending: None,
+            period_ms,
         };
         if let Ok(init) = m.instance.get_typed_func::<(), ()>(&m.store, "init") {
             m.refuel()?;
@@ -312,5 +322,9 @@ impl<H: 'static> engine::Instance<H> for WasmiInstance<H> {
                 (topic_ptr, topic.len() as i32, data_ptr, data.len() as i32),
             )
             .map_err(|e| describe(&e))
+    }
+
+    fn period_ms(&self) -> u32 {
+        self.period_ms
     }
 }

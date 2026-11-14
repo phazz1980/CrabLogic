@@ -380,3 +380,118 @@ fn only_modbus_picks_the_modbus_stand() {
         .collect();
     assert_eq!(ids, ["modbus_tcp_100_aot"]);
 }
+
+fn cycle_stand() -> Stand {
+    standard_stands()
+        .into_iter()
+        .find(|s| s.family == Family::Cycle)
+        .unwrap()
+}
+
+#[test]
+fn cycle_stand_runs_at_one_ms_with_net_and_modbus() {
+    let stand = cycle_stand();
+    assert_eq!(stand.id, "cycle_1ms_aot");
+    let error = build_project(&stand, Chip::Esp32, None).err().unwrap();
+    assert!(error.contains("secrets.toml"));
+    let secrets = Secrets::parse(FAKE).unwrap();
+    let built = build_project(&stand, Chip::Esp32, Some(&secrets)).unwrap();
+    assert_eq!(built.project.config.run.period_ms, 1);
+    let blocks = &built.project.logic.blocks;
+    let gates = blocks
+        .iter()
+        .filter(|b| matches!(b.kind.as_str(), "and" | "or" | "xor" | "not"))
+        .count();
+    assert_eq!(gates, 100);
+    for kind in ["wifi", "mqtt", "mqtt_publish", "modbus_tcp_slave"] {
+        assert_eq!(
+            blocks.iter().filter(|b| b.kind == kind).count(),
+            1,
+            "{kind}"
+        );
+    }
+    // One sheet only.
+    assert!(built.project.layout.blocks.values().all(|p| p.sheet == 1));
+    let report = crab_codegen::check_project(&built.project, &library());
+    assert!(report.errors().next().is_none());
+}
+
+#[test]
+fn only_cycle_picks_the_cycle_stand_by_id_and_family() {
+    for token in ["cycle_1ms", "cycle"] {
+        let ids: Vec<String> = select_stands(&[token.to_owned()])
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["cycle_1ms_aot"], "{token}");
+    }
+}
+
+#[test]
+fn cycle_line_is_parsed_and_judged_by_criterion_two() {
+    let answer = parse_list([
+        "free=100000 largest=60000 min=90000",
+        "cycle period=1000 steps=10000 gap=1090 over=0 late50=50 late100=5 later=1",
+    ]);
+    let c = answer.cycle.unwrap();
+    assert_eq!(
+        (c.period_us, c.steps, c.gap_us, c.over, c.late50, c.late100),
+        (1000, 10_000, 1090, 0, 50, 5)
+    );
+    assert_eq!(answer.free, Some(100_000));
+    assert!(parse_list(["free=1"]).cycle.is_none());
+    let mut r = report::CycleResult {
+        period_us: 1000,
+        steps: 10_000,
+        gap_us: 1090,
+        over: 0,
+        late50: 50,
+        late100: 5,
+        between_us: 0,
+    };
+    assert_eq!(r.on_time_50_percent(), Some(99.5));
+    assert!(r.passes());
+    r.late50 = 200;
+    assert!(!r.passes());
+    r.late50 = 50;
+    r.gap_us = 1200;
+    assert!(!r.passes());
+}
+
+#[test]
+fn cycle_report_has_the_table_and_round_trips() {
+    let mut s = StandResult {
+        id: "cycle_1ms_aot".into(),
+        family: "cycle".into(),
+        status: "ok".into(),
+        mean_us: Some(80.0),
+        max_us: Some(150),
+        cycle: Some(report::CycleResult {
+            period_us: 1000,
+            steps: 1000,
+            gap_us: 1080,
+            over: 0,
+            late50: 3,
+            late100: 1,
+            between_us: 0,
+        }),
+        ..StandResult::default()
+    };
+    let r = BenchReport {
+        stands: vec![s.clone()],
+        ..BenchReport::default()
+    };
+    let md = r.to_markdown();
+    assert!(md.contains("Быстрый цикл") && md.contains("99.70 %") && md.contains("выполнен"));
+    let back = BenchReport::from_toml(&r.to_toml().unwrap()).unwrap();
+    assert_eq!(back, r);
+    s.cycle.as_mut().unwrap().late50 = 100;
+    let worse = BenchReport {
+        stands: vec![s],
+        ..BenchReport::default()
+    };
+    let diffs = report::compare(&r, &worse);
+    assert!(diffs
+        .iter()
+        .any(|d| d.metric.starts_with("цикл: опоздавших") && d.worse));
+}

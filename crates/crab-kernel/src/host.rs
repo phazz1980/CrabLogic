@@ -5,7 +5,7 @@
 //! the board (or the PC stub) implements.
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::format;
+
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -83,6 +83,12 @@ impl<'a> Mem<'a> {
         let start = usize::try_from(ptr).ok()?;
         let end = start.checked_add(len)?;
         (end <= self.data.as_ref()?.len()).then_some(start..end)
+    }
+
+    /// The bytes at `ptr..ptr + len`, borrowed (nothing copied); `None` if outside the memory.
+    pub fn slice(&self, ptr: i32, len: usize) -> Option<&[u8]> {
+        let r = self.range(ptr, len)?;
+        Some(&self.data.as_ref()?[r])
     }
 
     /// Reads at most `max` bytes; `None` if the range is outside the memory.
@@ -219,6 +225,21 @@ impl<D: Devices> ModuleHost<D> {
             self.events.drain(..).collect(),
             core::mem::take(&mut self.lost),
         )
+    }
+
+    /// Moves the 0/1 output events into `out` (oldest first) while it holds less than `cap`; the
+    /// rest count as lost. Returns the events lost so far (here and before). Allocates nothing
+    /// when `out` already has room: the master calls it every scan (`specs/fast-cycle`).
+    pub fn move_events(&mut self, out: &mut VecDeque<OutputEvent>, cap: usize) -> u32 {
+        let mut lost = core::mem::take(&mut self.lost);
+        while let Some(e) = self.events.pop_front() {
+            if out.len() < cap {
+                out.push_back(e);
+            } else {
+                lost = lost.saturating_add(1);
+            }
+        }
+        lost
     }
 
     /// `output_i`: the value the module must use (forced or its own), recording the change.
@@ -510,14 +531,17 @@ pub fn text_op(m: &mut [u8], args: [i32; 7]) -> i32 {
             }
         }
         _ => {
-            let t = format!(
-                "{}.{}.{}.{}",
-                a & 255,
-                (a >> 8) & 255,
-                (a >> 16) & 255,
-                (a >> 24) & 255
-            );
-            put(m, 0, t.as_bytes())
+            // "a.b.c.d" on the stack: no `format!`, no heap (about 30 µs less on the ESP32).
+            let mut t = [0u8; 15];
+            let mut n = 0;
+            for (k, octet) in a.to_le_bytes().into_iter().enumerate() {
+                if k > 0 {
+                    t[n] = b'.';
+                    n += 1;
+                }
+                n += crate::numfmt::int(i32::from(octet), &mut t[n..]);
+            }
+            put(m, 0, &t[..n])
         }
     }
 }
@@ -672,6 +696,33 @@ mod tests {
         assert_eq!(events.len(), MAX_EVENTS);
         assert_eq!(lost, 5);
         assert_eq!(h.take_events().1, 0);
+    }
+
+    #[test]
+    fn events_move_into_a_bounded_buffer() {
+        let mut h = host(1);
+        for k in 0..6 {
+            out_i(&mut h, 0, (k + 1) & 1);
+        }
+        let mut out = VecDeque::with_capacity(4);
+        assert_eq!(h.move_events(&mut out, 4), 2);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].value, 1);
+        assert_eq!(h.move_events(&mut out, 4), 0);
+        assert_eq!(h.take_events().0.len(), 0);
+    }
+
+    #[test]
+    fn ip_text_without_heap() {
+        let mut m = [0u8; 64];
+        // 192.168.0.69, first octet in the lowest byte.
+        let ip = i32::from_le_bytes([192, 168, 0, 69]);
+        assert_eq!(text_op(&mut m, [11, 4, 32, ip, 0, 0, 0]), 12);
+        assert_eq!(&m[4..16], b"192.168.0.69");
+        assert_eq!(text_op(&mut m, [11, 4, 32, -1, 0, 0, 0]), 15);
+        assert_eq!(&m[4..19], b"255.255.255.255");
+        // Cut at the capacity.
+        assert_eq!(text_op(&mut m, [11, 4, 5, ip, 0, 0, 0]), 5);
     }
 
     /// Runs text op 6 on `text`, returns (ok, number).

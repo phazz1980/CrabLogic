@@ -6,6 +6,7 @@ pub mod blockfile;
 pub mod boardfile;
 pub mod boards;
 pub mod check;
+pub mod cost;
 pub mod devices;
 pub mod edit;
 pub mod error;
@@ -45,7 +46,10 @@ pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
 pub use logic::{SheetExecution, SheetSpeed};
 pub use pins::PinFunction;
-pub use project::{hash_hex, BoardConfig, Project, ProjectConfig, ProjectInfo, RetainConfig};
+pub use project::{
+    hash_hex, BoardConfig, Project, ProjectConfig, ProjectInfo, RetainConfig, RunConfig,
+    DEFAULT_PERIOD_MS, PERIODS_MS,
+};
 pub use uart::{UartAccess, UartConfig, UartUse};
 pub use value::ParamValue;
 pub use vars::{Var, VarType};

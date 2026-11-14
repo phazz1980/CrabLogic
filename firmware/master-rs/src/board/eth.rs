@@ -207,12 +207,8 @@ fn start() {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let spawned = std::thread::Builder::new()
-        .name("crab-eth".into())
-        .stack_size(ETH_STACK)
-        .spawn(worker);
-    if let Err(e) = spawned {
-        note!("cannot start the Ethernet thread: {e}");
+    if !super::spawn_background(b"crab-eth\0", ETH_STACK, worker) {
+        note!("cannot start the Ethernet thread");
         STARTED.store(false, Ordering::Release);
     }
 }

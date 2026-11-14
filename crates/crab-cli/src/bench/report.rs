@@ -93,6 +93,55 @@ pub struct StandResult {
     pub module_mem: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub module_code: Option<u32>,
+    /// Timing of the cycle thread (`cycle_1ms` stand).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle: Option<CycleResult>,
+}
+
+/// Longest allowed pause between two step starts at the 1 ms period (spec criterion 2), µs.
+pub const CYCLE_GAP_LIMIT_US: u32 = 1100;
+/// Share of steps started at most 50 µs late that criterion 2 asks for, percent.
+pub const CYCLE_ON_TIME_PERCENT: f64 = 99.0;
+
+/// The `cycle` line of the master at the end of the window.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CycleResult {
+    /// Target period, µs.
+    pub period_us: u32,
+    pub steps: u32,
+    /// Longest pause between two step starts, µs.
+    pub gap_us: u32,
+    /// Steps that did not finish before the next start.
+    pub over: u32,
+    /// Steps started more than 50 / 100 µs late.
+    pub late50: u32,
+    pub late100: u32,
+    /// Longest work of the master between two steps (commands, upload), µs.
+    #[serde(default)]
+    pub between_us: u32,
+}
+
+impl CycleResult {
+    /// Percent of steps started at most 50 µs late; `None` without steps.
+    pub fn on_time_50_percent(&self) -> Option<f64> {
+        (self.steps > 0)
+            .then(|| 100.0 * (1.0 - f64::from(self.late50.min(self.steps)) / f64::from(self.steps)))
+    }
+
+    /// Percent of steps started at most 100 µs late.
+    pub fn on_time_100_percent(&self) -> Option<f64> {
+        (self.steps > 0).then(|| {
+            100.0 * (1.0 - f64::from(self.late100.min(self.steps)) / f64::from(self.steps))
+        })
+    }
+
+    /// Criterion 2 of `specs/fast-cycle`: max gap <= 1100 µs and >= 99 % of steps within 50 µs.
+    pub fn passes(&self) -> bool {
+        self.gap_us <= CYCLE_GAP_LIMIT_US
+            && self
+                .on_time_50_percent()
+                .is_some_and(|p| p >= CYCLE_ON_TIME_PERCENT)
+    }
 }
 
 impl StandResult {
@@ -271,6 +320,7 @@ impl BenchReport {
         self.calls_table(&mut o);
         self.net_table(&mut o);
         self.modbus_table(&mut o);
+        self.cycle_table(&mut o);
         self.memory_table(&mut o);
         self.times_table(&mut o);
         if !self.notes.is_empty() {
@@ -431,6 +481,65 @@ impl BenchReport {
             int(p.spread_us)
         );
         let _ = writeln!(o);
+    }
+
+    fn cycle_table(&self, o: &mut String) {
+        let Some(stand) = self.stands.iter().find(|s| s.family == "cycle") else {
+            return;
+        };
+        let title = "## Быстрый цикл (лист из 100 блоков, период 1 мс, Wi-Fi, MQTT и опрос Modbus)";
+        let (true, Some(c)) = (stand.is_ok(), &stand.cycle) else {
+            let _ = writeln!(
+                o,
+                "{title}
+
+Не замерено: {}
+",
+                stand
+                    .reason
+                    .as_deref()
+                    .unwrap_or("нет строки cycle в ответе мастера")
+            );
+            return;
+        };
+        let pct = |v: Option<f64>| v.map_or_else(|| "—".into(), |v| format!("{v:.2} %"));
+        let _ = writeln!(
+            o,
+            "{title}
+"
+        );
+        let _ = writeln!(o, "| Показатель | Значение |");
+        let _ = writeln!(o, "|---|---:|");
+        let _ = writeln!(o, "| Период (цель), мкс | {} |", c.period_us);
+        let _ = writeln!(o, "| Шагов в окне | {} |", c.steps);
+        let _ = writeln!(o, "| Пауза между шагами (макс.), мкс | {} |", c.gap_us);
+        let _ = writeln!(o, "| Переполнения | {} |", c.over);
+        let _ = writeln!(o, "| Опоздание > 50 мкс, шагов | {} |", c.late50);
+        let _ = writeln!(o, "| Опоздание > 100 мкс, шагов | {} |", c.late100);
+        let _ = writeln!(
+            o,
+            "| Работа мастера между шагами (макс.), мкс | {} |",
+            c.between_us
+        );
+        let _ = writeln!(o, "| В срок (≤ 50 мкс) | {} |", pct(c.on_time_50_percent()));
+        let _ = writeln!(
+            o,
+            "| В срок (≤ 100 мкс) | {} |",
+            pct(c.on_time_100_percent())
+        );
+        let _ = writeln!(
+            o,
+            "| Шаг листа, средний / максимум, мкс | {} / {} |",
+            f1(stand.mean_us),
+            int(stand.max_us)
+        );
+        let _ = writeln!(
+            o,
+            "
+Критерий 2 (пауза ≤ {CYCLE_GAP_LIMIT_US} мкс и не менее {CYCLE_ON_TIME_PERCENT:.0} % шагов              с опозданием ≤ 50 мкс): **{}**.
+",
+            if c.passes() { "выполнен" } else { "не выполнен" }
+        );
     }
 
     fn memory_table(&self, o: &mut String) {
@@ -616,6 +725,34 @@ pub fn compare(a: &BenchReport, b: &BenchReport) -> Vec<Diff> {
                     after,
                     bigger_is_better,
                 ));
+            }
+        }
+    }
+    // Fast cycle: pause between step starts, overruns, share of late steps.
+    for sa in a.stands.iter().filter(|s| s.is_ok()) {
+        let Some(sb) = b.stands.iter().find(|s| s.id == sa.id && s.is_ok()) else {
+            continue;
+        };
+        let (Some(ca), Some(cb)) = (&sa.cycle, &sb.cycle) else {
+            continue;
+        };
+        let late = |c: &CycleResult| c.on_time_50_percent().map(|p| 100.0 - p);
+        let picks: [(&'static str, Option<f64>, Option<f64>); 3] = [
+            (
+                "цикл: пауза макс., мкс",
+                Some(f64::from(ca.gap_us)),
+                Some(f64::from(cb.gap_us)),
+            ),
+            (
+                "цикл: переполнения",
+                Some(f64::from(ca.over)),
+                Some(f64::from(cb.over)),
+            ),
+            ("цикл: опоздавших > 50 мкс, %", late(ca), late(cb)),
+        ];
+        for (metric, before, after) in picks {
+            if let (Some(before), Some(after)) = (before, after) {
+                diffs.extend(make_diff(&sa.id, metric, before, after, false));
             }
         }
     }

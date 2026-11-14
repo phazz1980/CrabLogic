@@ -1,6 +1,6 @@
 //! Host tests: rendering to the framebuffer / LCD cells, the menu, and frame pacing.
 
-use crate::driver::{Driver, Io};
+use crate::driver::{Driver, Io, Sent};
 use crate::fb::Fb;
 use crate::font::glyph;
 use crate::lcd::MAX_TRANSFER;
@@ -27,6 +27,8 @@ struct Mock {
     texts: Vec<(usize, String)>,
     writes: Vec<Vec<u8>>,
     fail: bool,
+    /// Background sends answer "later" (the previous one still on its way).
+    busy: bool,
 }
 
 impl Mock {
@@ -66,12 +68,17 @@ impl Io for Mock {
     fn output_f(&mut self, i: usize, v: f32) {
         self.put(i, v.to_bits());
     }
-    fn write(&mut self, data: &[u8]) -> bool {
-        if self.fail {
-            return false;
+    fn send(&mut self, data: &[u8]) -> Sent {
+        if self.busy {
+            return Sent::Later;
         }
-        self.writes.push(data.to_vec());
-        true
+        if self.fail {
+            return Sent::Failed;
+        }
+        if !data.is_empty() {
+            self.writes.push(data.to_vec());
+        }
+        Sent::Queued
     }
 }
 
@@ -294,6 +301,35 @@ fn lcd_one_transfer_per_step() {
 }
 
 #[test]
+fn lcd_start_up_pause_counts_from_the_write_going_out() {
+    let blob = cfg(DisplayKind::Lcd1602, vec![text("A", 0, 0)], None);
+    let mut d = Driver::new();
+    assert!(d.init(&blob, 2, 1));
+    let mut io = Mock::new(2, 1);
+    io.inputs = vec![1, 1];
+    let mut n = 0;
+    while io.writes.is_empty() {
+        d.step(&mut io, 1);
+        n += 1;
+        assert!(n < 100);
+    }
+    // The first nibble is on its way for 20 ms: nothing else goes out meanwhile ...
+    io.busy = true;
+    for _ in 0..20 {
+        d.step(&mut io, 1);
+    }
+    assert_eq!(io.writes.len(), 1);
+    // ... and its 5 ms pause starts only once it went out.
+    io.busy = false;
+    for _ in 0..5 {
+        d.step(&mut io, 1);
+    }
+    assert_eq!(io.writes.len(), 1);
+    d.step(&mut io, 1);
+    assert_eq!(io.writes.len(), 2);
+}
+
+#[test]
 fn oled_frame_pacing_one_page_per_step() {
     let blob = cfg(
         DisplayKind::Sh1106_128x64,
@@ -323,6 +359,20 @@ fn oled_frame_pacing_one_page_per_step() {
     }
     assert_eq!(io.writes.len(), 10);
     assert_eq!(io.writes[9][1], 0xB0);
+    // While the previous page is on its way nothing is sent and nothing is lost.
+    io.busy = true;
+    io.inputs[1] = vf(41.0);
+    for _ in 0..5 {
+        d.step(&mut io, 10);
+    }
+    assert_eq!(io.writes.len(), 10);
+    assert_eq!(io.outputs[0], 1);
+    io.busy = false;
+    d.step(&mut io, 10);
+    assert_eq!(io.writes.len(), 11);
+    assert_eq!(io.writes[10][1], 0xB0);
+    d.step(&mut io, 10);
+    assert_eq!(io.writes.len(), 11);
     // A bus failure is reported and the display is initialised again later.
     io.fail = true;
     io.inputs[1] = vf(43.0);
@@ -333,7 +383,7 @@ fn oled_frame_pacing_one_page_per_step() {
         d.step(&mut io, 10);
     }
     assert_eq!(io.outputs[0], 1);
-    assert_eq!(io.writes.len(), 10 + 9);
+    assert_eq!(io.writes.len(), 11 + 9);
 }
 
 // ------------------------------------------------------------------ string widget

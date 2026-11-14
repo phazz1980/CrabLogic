@@ -64,6 +64,36 @@ pub struct ProjectConfig {
     /// Flash wear protection of retained variables (`[retain]`).
     #[serde(default, skip_serializing_if = "RetainConfig::is_default")]
     pub retain: RetainConfig,
+    /// Cycle period of the sheets (`[run]`).
+    #[serde(default, skip_serializing_if = "RunConfig::is_default")]
+    pub run: RunConfig,
+}
+
+/// Cycle period values the master accepts, in milliseconds.
+pub const PERIODS_MS: [u32; 4] = [1, 2, 5, 10];
+/// Default cycle period, in milliseconds.
+pub const DEFAULT_PERIOD_MS: u32 = 10;
+
+/// How the sheets run on the board (`[run]` of `project.toml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunConfig {
+    /// Period between starts of sheet steps, ms: one of [`PERIODS_MS`].
+    pub period_ms: u32,
+}
+
+impl Default for RunConfig {
+    fn default() -> Self {
+        Self {
+            period_ms: DEFAULT_PERIOD_MS,
+        }
+    }
+}
+
+impl RunConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Default timing of saving retained variables to flash.
@@ -141,6 +171,11 @@ pub struct Project {
 }
 
 impl Project {
+    /// Cycle period of the sheets in milliseconds (`[run] period_ms`, 10 by default).
+    pub fn period_ms(&self) -> u32 {
+        self.config.run.period_ms
+    }
+
     /// Effective flash-saving timing of a retained variable in milliseconds:
     /// (settle, period). Period 0 means no limit.
     pub fn retain_timing(&self, var: &crate::vars::Var) -> (u32, u32) {
@@ -588,6 +623,36 @@ wifi_mode = 2
         let off = &logic.blocks[1].params;
         assert_eq!(off.get("wifi_mode"), Some(&crate::ParamValue::Int(2)));
         assert!(!off.contains_key("use_mode"));
+    }
+
+    #[test]
+    fn run_period_is_saved_only_when_not_default() {
+        let dir = std::env::temp_dir().join(format!("crab-run-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = "[project]
+name = \"t\"
+[board]
+fqbn = \"x:y:z\"
+";
+        let mut config: ProjectConfig = toml::from_str(src).unwrap();
+        assert_eq!(config.run.period_ms, 10);
+        assert_eq!(
+            toml::to_string(&config).unwrap(),
+            toml::to_string(&toml::from_str::<ProjectConfig>(src).unwrap()).unwrap()
+        );
+        assert!(!toml::to_string(&config).unwrap().contains("[run]"));
+        config.run.period_ms = 2;
+        let project = Project {
+            path: dir.join("t.crab"),
+            config,
+            logic: Logic::default(),
+            layout: Layout::default(),
+        };
+        assert!(toml::to_string(&project.config).unwrap().contains("[run]"));
+        project.save().unwrap();
+        let again = Project::load(&project.path).unwrap();
+        assert_eq!(again.period_ms(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

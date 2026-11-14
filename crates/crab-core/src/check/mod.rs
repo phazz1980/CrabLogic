@@ -15,6 +15,7 @@ use crate::{Layout, Library, Link, Logic, ParamValue, PortRef, Project};
 
 mod blocks;
 mod boards;
+mod cycle;
 mod display;
 mod flow;
 mod graph;
@@ -27,6 +28,7 @@ mod wifi_tests;
 
 pub use self::blocks::*;
 use self::boards::*;
+use self::cycle::check_cycle;
 pub use self::display::{screen_size, LCD_CYRILLIC_LIMIT};
 pub use self::flow::*;
 use self::graph::*;
@@ -102,5 +104,6 @@ pub fn check_project(project: &Project, lib: &Library) -> Report {
         check_board_expanders(project, lib, layout, &mut report);
     }
     check_lan8720(project, layout.as_ref().map(BoardLayout::chip), &mut report);
+    check_cycle(project, &mut report);
     report
 }

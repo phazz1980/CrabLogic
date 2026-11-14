@@ -1,7 +1,7 @@
 //! WASM entry points: `init`, `step`, and the imports of the master. Built with
 //! `--features oled` (library/oled) or `--features lcd` (library/lcd), see drivers\build.ps1.
 
-use crate::driver::{Driver, Io};
+use crate::driver::{Driver, Io, Sent};
 use crab_ui_format::DisplayKind;
 
 #[link(wasm_import_module = "crab")]
@@ -18,7 +18,7 @@ extern "C" {
 #[link(wasm_import_module = "bus")]
 extern "C" {
     fn i2c_open(sda: i32, scl: i32, hz: i32) -> i32;
-    fn i2c_write(addr: i32, ptr: *const u8, len: i32) -> i32;
+    fn i2c_send(addr: i32, ptr: *const u8, len: i32) -> i32;
 }
 
 // Parameter numbers follow block.toml: model, address, sda, scl.
@@ -57,8 +57,19 @@ impl Io for Master {
     fn output_f(&mut self, i: usize, v: f32) {
         unsafe { output_f(i as i32, v) }
     }
-    fn write(&mut self, data: &[u8]) -> bool {
-        unsafe { i2c_write(ADDR, data.as_ptr(), data.len() as i32) == data.len() as i32 }
+    fn send(&mut self, data: &[u8]) -> Sent {
+        // A write answers its length when queued; an empty one (a question) answers 1 when the
+        // previous write went out. Both answer 0 while it is on its way, a negative code on failure.
+        let done = if data.is_empty() {
+            1
+        } else {
+            data.len() as i32
+        };
+        match unsafe { i2c_send(ADDR, data.as_ptr(), data.len() as i32) } {
+            0 => Sent::Later,
+            n if n == done => Sent::Queued,
+            _ => Sent::Failed,
+        }
     }
 }
 

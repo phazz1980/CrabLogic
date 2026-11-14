@@ -6,6 +6,7 @@
 //! ones by alias. The thread `crab-mqtt` calls [`poll`]; a module step never waits for the broker.
 //! The protobuf bytes come from `crab-sparkplug`.
 
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use crab_kernel::host::Mem;
@@ -190,21 +191,19 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, mem: &mut Mem<'_>) -> i32 {
     match op {
         30 => setup(a, b, c, mem),
         31 => declare(a, b, c, mem),
+        // Every step, per metric: atomics, not the lock (about 5 µs on the ESP32). The worker
+        // takes the values in `poll` and publishes the state in `mirror`.
         32 => {
-            let mut sp = lock();
-            if let Some(m) = usize::try_from(a).ok().and_then(|i| sp.metrics.get_mut(i)) {
-                m.bits = b;
+            if let Some(v) = usize::try_from(a).ok().and_then(|i| BITS.get(i)) {
+                v.store(b, Ordering::Release);
             }
             0
         }
-        33 => {
-            let sp = lock();
-            match a {
-                0 => i32::from(sp.online),
-                1 => sp.births as i32,
-                _ => 0,
-            }
-        }
+        33 => match a {
+            0 => i32::from(ONLINE.load(Ordering::Acquire)),
+            1 => BIRTHS.load(Ordering::Acquire) as i32,
+            _ => 0,
+        },
         _ => 0,
     }
 }
@@ -221,18 +220,21 @@ fn name_of(bytes: &[u8]) -> String {
 fn setup(code: i32, b: i32, c: i32, mem: &Mem<'_>) -> i32 {
     match code {
         1 | 2 => {
-            let Some(bytes) = mem.read(b, c, MAX_NAME) else {
+            let Some(bytes) = mem.slice(b, (c.max(0) as usize).min(MAX_NAME)) else {
                 return 0;
             };
-            let text = name_of(&bytes);
             let mut sp = lock();
             let field = if code == 1 {
                 &mut sp.group
             } else {
                 &mut sp.node
             };
-            if *field != text {
-                *field = text;
+            // Names from variables come every step: a new string only when the text changed.
+            if field.as_bytes() != bytes {
+                let text = name_of(bytes);
+                if *field != text {
+                    *field = text;
+                }
             }
         }
         4 => lock().enable = b != 0,
@@ -275,6 +277,19 @@ fn declare(ptr: i32, len: i32, kind: i32, mem: &Mem<'_>) -> i32 {
 // ---------------------------------------------------------------------------------------------
 // The session
 // ---------------------------------------------------------------------------------------------
+
+/// Values of the metrics as the steps write them (op 32).
+static BITS: [AtomicI32; MAX_METRICS] = [const { AtomicI32::new(0) }; MAX_METRICS];
+/// `online` and `births` for the steps (op 33), copied by `mirror`.
+static ONLINE: AtomicBool = AtomicBool::new(false);
+static BIRTHS: AtomicU32 = AtomicU32::new(0);
+
+/// Publishes the state the steps read; the MQTT worker calls it every tick.
+pub(super) fn mirror() {
+    let sp = lock();
+    ONLINE.store(sp.online, Ordering::Release);
+    BIRTHS.store(sp.births, Ordering::Release);
+}
 
 /// The will of the client: NDEATH with the current `bdSeq`. `None` while the node is not set up or
 /// not enabled. The broker gets it with CONNECT only, so it is part of the client settings.
@@ -335,6 +350,9 @@ pub(super) fn poll(client: &mut EspMqttClient<'static>, connected: bool) {
         }
     }
     let ts = net::unix_ms();
+    for (m, v) in sp.metrics.iter_mut().zip(&BITS) {
+        m.bits = v.load(Ordering::Acquire);
+    }
     // Values read before publishing: a change during the publish goes into the next message.
     let snapshot: Vec<i32> = sp.metrics.iter().map(|m| m.bits).collect();
     let generation = sp.generation;

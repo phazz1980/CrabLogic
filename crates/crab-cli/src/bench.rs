@@ -18,8 +18,10 @@ use crab_build::mcu_module::{self as mm, MasterInfo};
 use crab_codegen::{Program, WasmModule};
 use crab_core::{Library, Project};
 
-use listing::{ListAnswer, ModuleLine};
-use report::{BenchReport, Meta, ModbusResult, RestartTimes, SheetsFit, StandResult, StepFigures};
+use listing::{CycleLine, ListAnswer, ModuleLine};
+use report::{
+    BenchReport, CycleResult, Meta, ModbusResult, RestartTimes, SheetsFit, StandResult, StepFigures,
+};
 use secrets::Secrets;
 use stands::{Chip, Family, Mode, Stand};
 
@@ -190,6 +192,15 @@ fn run_inner(args: BenchArgs, library: Option<&Path>) -> Result<(), String> {
                 note_skipped(&mut report, &result);
                 report.stands.push(result);
                 report.modbus = modbus;
+            }
+            Family::Cycle => {
+                let result = run_cycle(&mut ctx, stand);
+                println!("    {}", summary(&result));
+                if let Some(c) = &result.cycle {
+                    println!("    {}", cycle_summary(c));
+                }
+                note_skipped(&mut report, &result);
+                report.stands.push(result);
             }
             _ => {
                 let result = run_stand(&mut ctx, stand);
@@ -452,7 +463,10 @@ fn run_stand(ctx: &mut Ctx, stand: &Stand) -> StandResult {
         }
         Err(Outcome::Failed(reason)) => return fail(reason),
     };
-    let warm = if matches!(stand.family, Family::Net | Family::ModbusTcp) {
+    let warm = if matches!(
+        stand.family,
+        Family::Net | Family::ModbusTcp | Family::Cycle
+    ) {
         // Wi-Fi joins (and MQTT connects) first.
         ctx.timing.warm * 2
     } else {
@@ -498,6 +512,8 @@ struct Figures {
     min_free: Option<u32>,
     module_mem: Option<u32>,
     module_code: Option<u32>,
+    /// `cycle` line of the last reading.
+    cycle: Option<CycleLine>,
 }
 
 impl Figures {
@@ -514,6 +530,15 @@ impl Figures {
         r.min_free = self.min_free;
         r.module_mem = self.module_mem;
         r.module_code = self.module_code;
+        r.cycle = self.cycle.map(|c| CycleResult {
+            period_us: c.period_us,
+            steps: c.steps,
+            gap_us: c.gap_us,
+            over: c.over,
+            late50: c.late50,
+            late100: c.late100,
+            between_us: c.between_us,
+        });
     }
 }
 
@@ -573,6 +598,7 @@ fn figures_of(readings: &[(Instant, ListAnswer)], name: &str) -> Result<Figures,
         min_free: end.min_free,
         module_mem: last.mem,
         module_code: last.code,
+        cycle: end.cycle.clone(),
     })
 }
 
@@ -630,6 +656,77 @@ fn wait_wifi_address(
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+fn cycle_summary(c: &CycleResult) -> String {
+    let pct = c
+        .on_time_50_percent()
+        .map_or("—".to_owned(), |p| format!("{p:.2} %"));
+    format!(
+        "Цикл: период {} мкс, шагов {}, пауза макс. {} мкс, переполнений {}, опоздание >50 мкс: {} \
+         (в срок {pct}), >100 мкс: {}, работа между шагами макс. {} мкс; критерий 2: {}",
+        c.period_us,
+        c.steps,
+        c.gap_us,
+        c.over,
+        c.late50,
+        c.late100,
+        c.between_us,
+        if c.passes() { "выполнен" } else { "не выполнен" }
+    )
+}
+
+/// The `cycle_1ms` stand: the sheet runs with Wi-Fi and MQTT, the PC polls the Modbus slave, and
+/// the cycle line of the master is read at the end of the window. The figures of the result are
+/// the ones taken while the PC polls.
+fn run_cycle(ctx: &mut Ctx, stand: &Stand) -> StandResult {
+    let mut result = run_stand(ctx, stand);
+    if !result.is_ok() {
+        return result;
+    }
+    let (id, family, mode) = (stand.id.as_str(), stand.family.name(), stand.mode.name());
+    let skip = |reason: &str| StandResult::skipped(id, family, stand.n, mode, reason.to_owned());
+    let name = match listing::query_list(&mut ctx.serial) {
+        Ok(list) => list.modules.first().map(|m| m.name.clone()),
+        Err(_) => None,
+    };
+    let Some(name) = name else {
+        return skip("модуль пропал после замера");
+    };
+    let host = match ctx.modbus_host {
+        Some(host) => host,
+        None => match wait_wifi_address(&mut ctx.serial, WIFI_WAIT) {
+            Some(ip) => std::net::IpAddr::V4(ip),
+            None => {
+                return skip("плата не подключилась к Wi-Fi за 30 с (нет адреса в журнале мастера); можно указать --modbus-host")
+            }
+        },
+    };
+    let addr = std::net::SocketAddr::new(host, 502);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let poller = {
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || modbus::poll(addr, modbus::REQUESTS, &stop))
+    };
+    // `measure` sends `rmax` after a short warm-up, then reads `list` while the polling goes on.
+    let polled = measure(ctx, &name, Duration::from_millis(500));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = poller.join();
+    match polled {
+        Ok(figures) => {
+            figures.fill(&mut result);
+            if result.cycle.is_none() {
+                result.status = "failed".into();
+                result.reason =
+                    Some("в ответе list нет строки cycle: нужен мастер с быстрым циклом".into());
+            }
+        }
+        Err(reason) => {
+            result.status = "failed".into();
+            result.reason = Some(reason);
+        }
+    }
+    result
 }
 
 /// The step figures of the stand, then the same measured while the PC polls the board.

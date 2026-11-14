@@ -66,4 +66,9 @@ pub trait Instance<H> {
     /// Puts `topic` and `data` into the module memory (`alloc`) and calls `on_message`; a
     /// `crab.yield` there does not suspend it.
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String>;
+
+    /// Scan period the module asks for (`period_ms()` export, `specs/fast-cycle`), milliseconds.
+    fn period_ms(&self) -> u32 {
+        crate::abi::DEFAULT_PERIOD_MS
+    }
 }

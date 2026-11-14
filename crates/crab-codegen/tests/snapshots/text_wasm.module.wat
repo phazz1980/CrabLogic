@@ -50,6 +50,7 @@
   (export "abi_version" (func 9))
   (export "step" (func 10))
   (export "init" (func 11))
+  (export "period_ms" (func 13))
   (func (;9;) (type 4) (result i32)
     i32.const 5
   )
@@ -528,6 +529,9 @@
     local.get 4
     local.get 5
     i32.add
+  )
+  (func (;13;) (type 4) (result i32)
+    i32.const 10
   )
   (data (;0;) (i32.const 336) "on")
   (data (;1;) (i32.const 340) "T=")

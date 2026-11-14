@@ -177,6 +177,7 @@ fn upload_master(
     out: &mut dyn FnMut(LogLevel, &str),
 ) -> Result<Done, String> {
     use crab_build::flash;
+    let started = std::time::Instant::now();
     let board = &project.config.board;
     let dir = flash::firmware_dir().ok_or_else(|| {
         crate::i18n::tr("Не найдена папка firmware с образами мастера рядом с программой")
@@ -194,7 +195,10 @@ fn upload_master(
     flash::flash_master(&image, &port, &mut |l| out(LogLevel::Info, l))
         .map_err(|e| e.to_string())?;
     Ok(Done {
-        message: crate::i18n::fmt("Мастер-прошивка залита на {0}", &[&port]),
+        message: crate::i18n::fmt(
+            "Мастер-прошивка залита на {0} за {1} с",
+            &[&port, &seconds(started)],
+        ),
         port: Some(port),
         debug: false,
     })
@@ -256,6 +260,7 @@ fn upload_modules(
     out: &mut dyn FnMut(LogLevel, &str),
     ask: &mut dyn FnMut(UploadQuestion) -> bool,
 ) -> Result<Done, String> {
+    let started = std::time::Instant::now();
     let (project, modules, numbers) = build_sheets(project, lib, watch)?;
     let project = &project;
     let port = crab_build::choose_port(port, &project.config.board).map_err(|e| e.to_string())?;
@@ -406,8 +411,16 @@ fn upload_modules(
                 ),
             );
         }
+        let module_started = std::time::Instant::now();
         crab_build::mcu_module::upload_image(&mut serial, &module.name, &image.bytes, mem, &allow)
             .map_err(|e| e.to_string())?;
+        out(
+            LogLevel::Info,
+            &crate::i18n::fmt(
+                "Модуль «{0}» залит за {1} с",
+                &[&module.name, &seconds(module_started)],
+            ),
+        );
     }
     // Remember the board for the check panel; a failure here never fails the upload.
     if info.takes_aot() {
@@ -438,13 +451,21 @@ fn upload_modules(
         }
     }
     Ok(Done {
-        message: crate::i18n::fmt("Модули залиты на {0}", &[&port]),
+        message: crate::i18n::fmt(
+            "Модули залиты на {0} за {1} с (со сборкой)",
+            &[&port, &seconds(started)],
+        ),
         port: Some(port),
         debug: watch,
     })
 }
 
 /// Warning about a master in safe mode after `bad` resets in a row by a watchdog or a panic.
+/// Seconds since `started`, one decimal: for the messages of an upload.
+fn seconds(started: std::time::Instant) -> String {
+    format!("{:.1}", started.elapsed().as_secs_f32())
+}
+
 pub fn safe_mode_message(bad: u32) -> String {
     crate::i18n::tr(
         "Мастер в безопасном режиме: после {0} сбоев подряд сохранённые модули не запущены. Залейте исправленные листы или сбросьте плату кнопкой",

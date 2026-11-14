@@ -469,3 +469,33 @@ type = \"int\"
     }
     let _ = std::fs::remove_dir_all(&lib_dir);
 }
+
+/// `period_ms` of the project goes into `module.toml` and into the `period_ms` export, always.
+#[test]
+fn module_carries_the_cycle_period() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert!(
+        built.manifest.contains("period_ms = 10\n"),
+        "{}",
+        built.manifest
+    );
+    project.config.run.period_ms = 2;
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert!(
+        built.manifest.contains("period_ms = 2\n"),
+        "{}",
+        built.manifest
+    );
+    let text = wasmprinter::print_bytes(&built.wasm).unwrap();
+    assert!(text.contains("(export \"period_ms\""), "{text}");
+    assert!(text.contains("i32.const 2"), "{text}");
+}

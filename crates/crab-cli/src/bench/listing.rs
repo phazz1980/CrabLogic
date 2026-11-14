@@ -27,6 +27,23 @@ pub struct ModuleLine {
     pub mode: Option<String>,
 }
 
+/// `cycle period=<µs> steps=<n> gap=<µs> over=<n> late50=<n> late100=<n>`: timing of the cycle
+/// thread since the start or since `rmax`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CycleLine {
+    pub period_us: u32,
+    pub steps: u32,
+    /// Longest pause between two step starts.
+    pub gap_us: u32,
+    /// Steps that did not finish before the next start.
+    pub over: u32,
+    /// Steps started more than 50 / 100 µs late.
+    pub late50: u32,
+    pub late100: u32,
+    /// Longest work of the master between two steps, µs.
+    pub between_us: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListAnswer {
     pub modules: Vec<ModuleLine>,
@@ -36,6 +53,8 @@ pub struct ListAnswer {
     pub min_free: Option<u32>,
     /// `id=` of the master (`rs-0.4.1`).
     pub id: Option<String>,
+    /// The `cycle` line; none for an older master.
+    pub cycle: Option<CycleLine>,
 }
 
 impl ListAnswer {
@@ -52,6 +71,25 @@ pub fn parse_list<'a>(lines: impl IntoIterator<Item = &'a str>) -> ListAnswer {
         let line = line.trim();
         if let Some(id) = line.strip_prefix("id=") {
             answer.id = Some(id.trim().to_owned());
+        } else if let Some(rest) = line.strip_prefix("cycle ") {
+            let mut c = CycleLine::default();
+            for word in rest.split_whitespace() {
+                let Some((key, value)) = word.split_once('=') else {
+                    continue;
+                };
+                let v = value.parse().unwrap_or(0);
+                match key {
+                    "period" => c.period_us = v,
+                    "steps" => c.steps = v,
+                    "gap" => c.gap_us = v,
+                    "over" => c.over = v,
+                    "late50" => c.late50 = v,
+                    "late100" => c.late100 = v,
+                    "between" => c.between_us = v,
+                    _ => {}
+                }
+            }
+            answer.cycle = Some(c);
         } else if line.starts_with("free=") {
             for word in line.split_whitespace() {
                 let num = |v: &str| v.parse::<u32>().ok();

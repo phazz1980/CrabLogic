@@ -81,6 +81,8 @@ pub struct Bus {
     spi: bool,
     /// Bit per pin set up for 1-Wire by this module.
     ow: u64,
+    /// Its slot in the queue of background writes (`I2C_SEND`), taken on the first send.
+    send_slot: Option<usize>,
 }
 
 fn ticks(ms: u32) -> u32 {
@@ -137,6 +139,22 @@ impl Bus {
                 } else {
                     io_error(err)
                 }
+            }
+            Request::I2cSend { addr, ptr, len } => {
+                if !self.i2c {
+                    return ERR_NOT_CLAIMED;
+                }
+                let Some(data) = mem.slice(ptr, len) else {
+                    return ERR_ARGS;
+                };
+                let slot = match self.send_slot {
+                    Some(slot) => slot,
+                    None => match super::i2c_send::claim() {
+                        Ok(slot) => *self.send_slot.insert(slot),
+                        Err(code) => return code,
+                    },
+                };
+                super::i2c_send::send(slot, addr as u8, data)
             }
             Request::I2cRead { addr, ptr, len } => {
                 if !self.i2c || mem.read(ptr, len as i32, len).is_none() {
@@ -525,7 +543,12 @@ impl Drop for Bus {
                 };
             }
         }
+        if let Some(slot) = self.send_slot {
+            super::i2c_send::release(slot);
+        }
         if self.i2c {
+            // A write of the thread `crab-i2c` holds this lock: the controller is not deleted
+            // under it.
             let mut shared = I2C.lock().unwrap_or_else(|e| e.into_inner());
             shared.users = shared.users.saturating_sub(1);
             if shared.users == 0 {
@@ -580,6 +603,31 @@ pub fn system_i2c(sda: i32, scl: i32) -> bool {
     shared.users += 1;
     JOINED.store(true, std::sync::atomic::Ordering::Relaxed);
     true
+}
+
+/// One queued write of the thread `crab-i2c`: 0 or a `crab.bus` code. Holds the controller lock,
+/// so the last module cannot delete the driver in the middle.
+pub fn queued_i2c_write(addr: u8, data: &[u8]) -> i32 {
+    let shared = I2C.lock().unwrap_or_else(|e| e.into_inner());
+    if shared.pins.is_none() {
+        return ERR_BUS;
+    }
+    // SAFETY: the driver is installed (pins set) and stays while the lock is held; `data`
+    // outlives the call.
+    let err = unsafe {
+        sys::i2c_master_write_to_device(
+            I2C_PORT,
+            addr,
+            data.as_ptr(),
+            data.len(),
+            ticks(I2C_TIMEOUT_MS),
+        )
+    };
+    if err == 0 {
+        0
+    } else {
+        io_error(err)
+    }
 }
 
 /// Writes `data` to the device at `addr` on the system bus; `true` if it answered.

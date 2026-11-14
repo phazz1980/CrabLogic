@@ -1046,6 +1046,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
     /// all other defined functions) and every call goes through it: wamrc turns a call of an import
     /// into a bulky argument-packing sequence at each call site, a call of a wrapper into a plain one.
     fn encode(&self, aot: bool) -> (Vec<u8>, String, Vec<String>) {
+        let period_ms = self.program.project.period_ms();
         let mut types = TypeSection::new();
         types.ty().function([ValType::I32], [ValType::I32]); // 0: tag_get_i, gpio_read, adc_read
         types.ty().function([ValType::I32], [ValType::F32]); // 1: tag_get_f
@@ -1114,7 +1115,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         // import `k` comes after it.
         let groups = group_count(self.cuts.len());
         let append_fn = first + 3 + self.cuts.len() as u32 + groups as u32;
-        let wrap_base = append_fn + u32::from(self.uses_append);
+        // `period_ms` comes right after the append function.
+        let period_fn = append_fn + u32::from(self.uses_append);
+        let wrap_base = period_fn + 1;
         // Blocks with their own `block.wasm` come last: per use, its shims, then its functions.
         let mut cursor = wrap_base + if aot { import_types.len() as u32 } else { 0 };
         let mut type_cursor = FIXED_TYPES;
@@ -1178,6 +1181,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if self.uses_append {
             funcs.function(11);
         }
+        funcs.function(4); // period_ms
         if aot {
             for &ty in &import_types {
                 funcs.function(ty);
@@ -1252,6 +1256,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         exports.export("abi_version", ExportKind::Func, first);
         exports.export("step", ExportKind::Func, first + 1);
         exports.export("init", ExportKind::Func, first + 2);
+        exports.export("period_ms", ExportKind::Func, period_fn);
 
         let mut abi = Function::new([]);
         abi.instruction(&I::I32Const(ABI_VERSION))
@@ -1441,6 +1446,11 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if self.uses_append {
             code.function(&append_function());
         }
+        let mut period = Function::new([]);
+        period
+            .instruction(&I::I32Const(period_ms as i32))
+            .instruction(&I::End);
+        code.function(&period);
         if aot {
             for (k, &ty) in import_types.iter().enumerate() {
                 let nparams = match ty {
@@ -1514,7 +1524,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         });
 
         let mut manifest = format!(
-            "name = \"{}\"\nabi = {ABI_VERSION}\nallow = [{}]\n",
+            "name = \"{}\"\nabi = {ABI_VERSION}\nperiod_ms = {period_ms}\nallow = [{}]\n",
             self.module.name,
             allow.join(", ")
         );

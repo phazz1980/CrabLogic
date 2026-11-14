@@ -1145,7 +1145,6 @@
  "Заливка мастер-прошивки": "Cargando el firmware maestro",
  "Заливка мастер-прошивки на {0}...": "Cargando el firmware maestro en {0}...",
  "Мастер-прошивка собрана": "Firmware maestro compilado",
- "Мастер-прошивка залита на {0}": "Firmware maestro cargado en {0}",
  "Перенести из проекта...": "Transferir desde un proyecto...",
  "Взять регистры Modbus, описанные блоками другого проекта": "Tomar los registros Modbus descritos por bloques de otro proyecto",
  "Перенести теги из проекта": "Transferir etiquetas desde un proyecto",
@@ -1258,5 +1257,19 @@
  "Модуль и пример лежат в папке блока и едут вместе с ним в наборе .crabblocks и в проекте.": "El módulo y el ejemplo están en la carpeta del bloque y viajan con él en el paquete .crabblocks y en el proyecto.",
  "Описание в порядке": "La descripción está bien",
  "модуль-и-пример": "módulo-y-ejemplo",
- "нет block.wasm: блок на C++ не заработает": "no hay block.wasm: un bloque en C++ no funcionará"
+ "нет block.wasm: блок на C++ не заработает": "no hay block.wasm: un bloque en C++ no funcionará",
+ "Период цикла": "Período de ciclo",
+ "Как часто плата выполняет листы. 1–2 мс — для быстрых процессов; если шаг листа не успевает, проверка схемы предупредит": "Con qué frecuencia la placa ejecuta las hojas. 1–2 ms es para procesos rápidos; si un paso de hoja no cabe, la comprobación del esquema avisará",
+ "{0} мс": "{0} ms",
+ "Период цикла (цель)": "Período de ciclo (objetivo)",
+ "Пауза между шагами, макс": "Pausa entre pasos, máx.",
+ "Самая долгая пауза между запусками шагов листов с последнего сброса": "La pausa más larga entre inicios de pasos de hoja desde el último reinicio",
+ "Шагов с сброса": "Pasos desde el reinicio",
+ "Переполнения цикла": "Desbordes del ciclo",
+ "Шаг не уложился в период: увеличьте период цикла в настройках проекта": "Un paso no cupo en el período: aumente el período de ciclo en los ajustes del proyecto",
+ "Опоздание > 50 / > 100 мкс": "Retraso > 50 / > 100 µs",
+ "Сколько шагов начались позже срока больше чем на 50 и на 100 мкс": "Cuántos pasos empezaron con más de 50 y 100 µs de retraso",
+ "Мастер-прошивка залита на {0} за {1} с": "Firmware maestro cargado en {0} en {1} s",
+ "Модуль «{0}» залит за {1} с": "Módulo «{0}» cargado en {1} s",
+ "Модули залиты на {0} за {1} с (со сборкой)": "Módulos cargados en {0} en {1} s (con compilación)"
 }

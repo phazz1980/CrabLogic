@@ -246,6 +246,7 @@ impl EditorApp {
                 },
                 uart: Vec::new(),
                 retain: Default::default(),
+                run: Default::default(),
             },
             logic: Default::default(),
             layout: Default::default(),

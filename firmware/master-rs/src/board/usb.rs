@@ -4,8 +4,8 @@
 //! USB-UART bridge (CP2102/CH340) brings to USB.
 
 use esp_idf_svc::sys;
-#[cfg(not(target_arch = "riscv32"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Bytes the driver keeps until the master reads them; a `put` chunk must fit.
 const RX_BUFFER: u32 = 4096;
@@ -59,23 +59,62 @@ static UART_READY: AtomicBool = AtomicBool::new(false);
 /// driver. Its TX ring buffer stores every write as an item with a header, and the stdout of
 /// ESP-IDF writes byte by byte, so a 2 KB buffer held about 70 characters and a `list` answer
 /// waited for the 115200 baud line (the scan stood still up to ~35 ms).
-#[cfg(not(target_arch = "riscv32"))]
+/// One line of the master's answer. Once the thread `crab-io` runs, the line goes to [`OUT`] and
+/// that thread writes it to the driver, so the scan never waits for the port (a full TX buffer
+/// waits for the 115200 baud line). Before it (start, errors of `init`) the line is written at once.
 pub fn write_line(text: &str) {
-    if !UART_READY.load(Ordering::Acquire) {
-        std::println!("{text}");
-        return;
+    if QUEUED.load(Ordering::Acquire) {
+        let mut out = OUT.lock().unwrap_or_else(|e| e.into_inner());
+        if out.len() + text.len() + 2 <= OUT_MAX {
+            out.extend_from_slice(text.as_bytes());
+            out.extend_from_slice(NEWLINE);
+            return;
+        }
     }
     let mut line = Vec::with_capacity(text.len() + 2);
     line.extend_from_slice(text.as_bytes());
-    line.extend_from_slice(b"\r\n");
-    // SAFETY: the driver is installed; the bytes live through the call (they are copied).
-    unsafe { sys::uart_write_bytes(0, line.as_ptr().cast(), line.len()) };
+    line.extend_from_slice(NEWLINE);
+    write_raw(&line);
 }
 
-/// One line of the master's answer: the USB Serial/JTAG console of the C3 keeps up as it is.
+/// Bytes of answers waiting for the port; beyond it a line is written at once by its writer.
+const OUT_MAX: usize = 16 * 1024;
+static OUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+/// Answers go through [`OUT`].
+static QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// From now on the answers wait in the queue for [`take_answers`].
+pub fn queue_answers(on: bool) {
+    QUEUED.store(on, Ordering::Release);
+}
+
+/// Moves the queued answers into `buf` (swapped, nothing copied).
+pub fn take_answers(buf: &mut Vec<u8>) {
+    let mut out = OUT.lock().unwrap_or_else(|e| e.into_inner());
+    core::mem::swap(&mut *out, buf);
+}
+
+#[cfg(not(target_arch = "riscv32"))]
+const NEWLINE: &[u8] = b"\r\n";
 #[cfg(target_arch = "riscv32")]
-pub fn write_line(text: &str) {
-    std::println!("{text}");
+const NEWLINE: &[u8] = b"\n";
+
+#[cfg(not(target_arch = "riscv32"))]
+pub fn write_raw(bytes: &[u8]) {
+    if !UART_READY.load(Ordering::Acquire) {
+        std::print!("{}", String::from_utf8_lossy(bytes));
+        return;
+    }
+    // SAFETY: the driver is installed; the bytes live through the call (they are copied).
+    unsafe { sys::uart_write_bytes(0, bytes.as_ptr().cast(), bytes.len()) };
+}
+
+#[cfg(target_arch = "riscv32")]
+pub fn write_raw(bytes: &[u8]) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(bytes);
+    let _ = out.flush();
 }
 
 /// Reads what has come, waiting up to `wait_ms` for the first byte.
