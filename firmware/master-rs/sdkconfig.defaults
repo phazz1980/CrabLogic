@@ -31,3 +31,8 @@ CONFIG_ESP_COREDUMP_CHECK_BOOT=y
 # flash, so the PCNT driver ISR and the GPIO calls they make live in IRAM.
 CONFIG_PCNT_ISR_IRAM_SAFE=y
 CONFIG_GPIO_CTRL_FUNC_IN_IRAM=y
+# The Wi-Fi receive path out of IRAM (about 17 KB): the step's call path of the master lives there
+# instead (`ModuleHost::call`, `BoardDevices::call`, pins), so its speed does not depend on how a
+# build lays code out in the flash cache. Wi-Fi receives a little slower; MQTT and Modbus do not
+# notice.
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n

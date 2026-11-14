@@ -1,8 +1,8 @@
 //! Analog inputs (`adc_read`) and PWM outputs (`pwm_write`), as the C++ master does them with
 //! `analogRead` and `analogWrite`: 12-bit readings at the widest range, PWM of 8 bits at 1 kHz.
 
+use super::spin::Spin;
 use esp_idf_svc::sys;
-use std::sync::Mutex;
 
 /// Duty bits of the PWM (`pwm_write` takes 0..=255).
 const PWM_BITS: u32 = 8;
@@ -13,7 +13,7 @@ const PWM_CHANNELS: usize = 6;
 #[cfg(not(target_arch = "riscv32"))]
 const PWM_CHANNELS: usize = 8;
 
-/// An ADC unit opened once; the handle is only used under the mutex.
+/// An ADC unit opened once; the handle is only used under the lock.
 struct Unit(sys::adc_oneshot_unit_handle_t);
 // SAFETY: the handle is a pointer to a driver object; every use is under `ADC`.
 unsafe impl Send for Unit {}
@@ -24,7 +24,9 @@ struct Adc {
     channels: [u32; 2],
 }
 
-static ADC: Mutex<Adc> = Mutex::new(Adc {
+/// Only the scan thread (module ops, `Hal` hooks, commands) touches the ADC, the continuous reader and
+/// the PWM table: "ceiling" locks that are never contended.
+static ADC: Spin<Adc> = Spin::new(Adc {
     units: [None, None],
     channels: [0, 0],
 });
@@ -74,7 +76,7 @@ mod cont {
         buf: [u8; DRAIN_BYTES],
     }
 
-    // SAFETY: the handle is a pointer to a driver object; every use is under the `CONT` mutex.
+    // SAFETY: the handle is a pointer to a driver object; every use is under the `CONT` lock.
     unsafe impl Send for Cont {}
 
     impl Cont {
@@ -218,7 +220,7 @@ mod cont {
     }
 }
 
-static CONT: Mutex<cont::Cont> = Mutex::new(cont::Cont::new());
+static CONT: Spin<cont::Cont> = Spin::new(cont::Cont::new());
 
 /// Raw 12-bit reading of `pin`, 0 for a pin without ADC or a failed reading (ADC2 while Wi-Fi
 /// runs on the ESP32), as `analogRead` answers. ADC1 pins are read through the continuous (DMA)
@@ -236,7 +238,7 @@ pub fn adc_read(pin: u8) -> i32 {
         return 0;
     }
     if index == 0 {
-        let mut cont = CONT.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cont = CONT.lock_scan();
         if let Some(value) = cont.read(channel as u8) {
             return value;
         }
@@ -246,7 +248,7 @@ pub fn adc_read(pin: u8) -> i32 {
 }
 
 fn oneshot_read(index: usize, unit: sys::adc_unit_t, channel: sys::adc_channel_t) -> i32 {
-    let mut adc = ADC.lock().unwrap_or_else(|e| e.into_inner());
+    let mut adc = ADC.lock_scan();
     if adc.units[index].is_none() {
         let cfg = sys::adc_oneshot_unit_init_cfg_t {
             unit_id: unit,
@@ -288,7 +290,7 @@ struct Pwm {
     pins: [Option<u8>; PWM_CHANNELS],
 }
 
-static PWM: Mutex<Pwm> = Mutex::new(Pwm {
+static PWM: Spin<Pwm> = Spin::new(Pwm {
     timer: false,
     pins: [None; PWM_CHANNELS],
 });
@@ -298,7 +300,7 @@ const MODE: sys::ledc_mode_t = sys::ledc_mode_t_LEDC_LOW_SPEED_MODE;
 /// Sets the PWM of `pin` to `value` of 255 (255 is fully on, as `analogWrite`). The first write
 /// takes a free LEDC channel; when none is left, the write is ignored.
 pub fn pwm_write(pin: u8, value: i32) {
-    let mut pwm = PWM.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pwm = PWM.lock_scan();
     if !pwm.timer {
         let cfg = sys::ledc_timer_config_t {
             speed_mode: MODE,
@@ -351,17 +353,13 @@ pub fn pwm_write(pin: u8, value: i32) {
 /// output (as the C++ master). Returns whether the pin had a channel.
 pub fn pwm_safe(pin: u8, high: bool) -> bool {
     if high {
-        let has = PWM
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pins
-            .contains(&Some(pin));
+        let has = PWM.lock_scan().pins.contains(&Some(pin));
         if has {
             pwm_write(pin, 255);
         }
         return has;
     }
-    let mut pwm = PWM.lock().unwrap_or_else(|e| e.into_inner());
+    let mut pwm = PWM.lock_scan();
     let Some(channel) = pwm.pins.iter().position(|p| *p == Some(pin)) else {
         return false;
     };

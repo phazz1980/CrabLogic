@@ -286,6 +286,9 @@ fn slot(slots: &[Word], i: i32) -> Word {
 }
 
 impl<D: Devices> Host for ModuleHost<D> {
+    // On the board in IRAM with the rest of the step: from flash its speed depended on how the
+    // build happened to lay out code in the small flash cache (2x on the ESP32).
+    #[cfg_attr(target_os = "espidf", link_section = ".iram1.crab_host_call")]
     fn call(&mut self, import: usize, args: &[Val], mut mem: Mem<'_>) -> Option<Val> {
         let a = |i: usize| args.get(i).map_or(0, |v| v.i());
         let f = |i: usize| args.get(i).map_or(0.0, |v| v.f());
@@ -400,6 +403,7 @@ fn math(op: i32, a: f32, b: f32) -> f32 {
 }
 
 /// `text(op, out, cap, a, alen, b, blen)`: the string operations of the master (`textOp`).
+#[cfg_attr(target_os = "espidf", link_section = ".iram1.crab_text_op")]
 pub fn text_op(m: &mut [u8], args: [i32; 7]) -> i32 {
     let [op, out, cap, a, alen, b, blen] = args;
     let size = m.len();

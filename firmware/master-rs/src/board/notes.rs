@@ -1,25 +1,20 @@
 //! Messages of the master's own services (PCF8574, Modbus, the web page) for the journal: queued
 //! from any task, written by the main loop with their source as the tag.
 
-use std::collections::VecDeque;
-use std::sync::Mutex;
+use super::note_queue::{dropped_text, NoteQueue};
 
-const MAX_NOTES: usize = 16;
+static NOTES: NoteQueue<(&'static str, String)> = NoteQueue::new();
 
-static NOTES: Mutex<VecDeque<(&'static str, String)>> = Mutex::new(VecDeque::new());
-
+/// From any task: a task at the scan priority never waits for the queue (see `NoteQueue`).
 pub fn push(source: &'static str, text: String) {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    if q.len() == MAX_NOTES {
-        q.pop_front();
-    }
-    q.push_back((source, text));
+    NOTES.push_any((source, text));
 }
 
+/// For the scan, between steps: never waits.
 pub fn take() -> Vec<(&'static str, String)> {
-    NOTES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .drain(..)
-        .collect()
+    let (mut lines, dropped) = NOTES.take_try();
+    if dropped > 0 {
+        lines.push(("journal", dropped_text(dropped)));
+    }
+    lines
 }

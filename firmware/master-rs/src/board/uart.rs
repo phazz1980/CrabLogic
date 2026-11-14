@@ -9,10 +9,10 @@
 //! fitted; op 4 speed now; op 5 set speed `a`; op 6 write text (pointer `a`, length `b`), 1 if it
 //! fitted; op 7 new frame format as text ("8E1"), 1 if it is a format.
 
+use super::spin::Spin;
 use crab_kernel::host::Mem;
 use esp_idf_svc::sys;
 use std::io::Write;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[cfg(target_arch = "riscv32")]
@@ -34,7 +34,8 @@ struct Port {
     on: bool,
 }
 
-static UART: Mutex<[Port; PORTS]> = Mutex::new(
+/// Only the scan thread (module ops) touches the ports: a "ceiling" lock that is never contended.
+static UART: Spin<[Port; PORTS]> = Spin::new(
     [const {
         Port {
             codes: [0; 16],
@@ -158,7 +159,7 @@ pub fn call(op: i32, port: i32, a: i32, b: i32, mem: &mut Mem<'_>) -> i32 {
     let Some(n) = usize::try_from(port).ok().filter(|&n| n > 0 && n < PORTS) else {
         return if op == 1 { -1 } else { 0 };
     };
-    let mut ports = UART.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ports = UART.lock_scan();
     let p = &mut ports[n];
     let id = n as sys::uart_port_t;
     if op == 0 {

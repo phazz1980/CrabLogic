@@ -5,7 +5,6 @@
 //! waits for the network. The thread `crab-net` owns the driver, compares the wanted settings with
 //! what it applied and keeps the snapshot up to date. It starts on the first radio request.
 
-use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -26,6 +25,8 @@ use esp_idf_svc::wifi::{
 };
 
 use super::devices::uptime_ms;
+use super::note_queue::{dropped_text, NoteQueue};
+use super::spin::Spin;
 
 /// Stack of `crab-net`: the Wi-Fi driver is initialised on it.
 const NET_STACK: usize = 8192;
@@ -86,6 +87,24 @@ struct Wanted {
 }
 
 impl Wanted {
+    /// `self = other` without a new allocation while the texts fit (the thread copies every tick).
+    fn copy_from(&mut self, o: &Wanted) {
+        self.mode = o.mode;
+        self.wifi_set = o.wifi_set;
+        self.ssid.clone_from(&o.ssid);
+        self.password.clone_from(&o.password);
+        self.dhcp = o.dhcp;
+        self.ip.clone_from(&o.ip);
+        self.gateway.clone_from(&o.gateway);
+        self.subnet.clone_from(&o.subnet);
+        self.ap_ssid.clone_from(&o.ap_ssid);
+        self.ap_password.clone_from(&o.ap_password);
+        self.ntp_set = o.ntp_set;
+        self.ntp_eth = o.ntp_eth;
+        self.ntp_server.clone_from(&o.ntp_server);
+        self.ntp_period_ms = o.ntp_period_ms;
+    }
+
     const fn new() -> Self {
         Self {
             mode: 0,
@@ -117,20 +136,18 @@ struct Snapshot {
     ip: u32,
 }
 
-struct Net {
-    wanted: Wanted,
-    snap: Snapshot,
-}
-
-static NET: Mutex<Net> = Mutex::new(Net {
-    wanted: Wanted::new(),
-    snap: Snapshot {
-        client_ready: false,
-        ap_ready: false,
-        status: 0,
-        error: 0,
-        ip: 0,
-    },
+/// What modules asked for: written by the scan (`set_number`, `set_text`), copied by the thread
+/// every tick. A "ceiling" lock (`board/spin.rs`): the thread's section is a field-by-field copy
+/// (`clone_from`: it allocates only when a text grew), no blocking call.
+static WANTED: Spin<Wanted> = Spin::new(Wanted::new());
+/// What the thread last published; only the thread `crab-net` touches it (the steps read the atomics
+/// below), so the lock is never contended.
+static SNAP: Spin<Snapshot> = Spin::new(Snapshot {
+    client_ready: false,
+    ap_ready: false,
+    status: 0,
+    error: 0,
+    ip: 0,
 });
 static STARTED: AtomicBool = AtomicBool::new(false);
 /// The radio request of the modules (`Wanted::mode`): written every step, so an atomic, not the
@@ -149,30 +166,21 @@ static LAST_REASON: AtomicU32 = AtomicU32::new(0);
 
 /// Messages for the master journal: the master prints nothing on its own (every line on USB is an
 /// answer to a command), so the network thread queues them and the runtime moves them to `log`.
-static NOTES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-/// Notes kept while nobody takes them.
-const MAX_NOTES: usize = 16;
+static NOTES: NoteQueue<String> = NoteQueue::new();
 
+/// A note from the network thread (waits for the queue).
 macro_rules! note {
-    ($($arg:tt)*) => { push_note(format!($($arg)*)) };
+    ($($arg:tt)*) => { NOTES.push_wait(format!($($arg)*)) };
 }
 
-fn push_note(text: String) {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    if q.len() == MAX_NOTES {
-        q.pop_front();
-    }
-    q.push_back(text);
-}
-
-/// Takes the queued network messages (for the journal).
+/// Takes the queued network messages (for the journal); the scan calls it between steps and never
+/// waits (a busy queue gives nothing this time).
 pub fn take_notes() -> Vec<String> {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    q.drain(..).collect()
-}
-
-fn lock() -> std::sync::MutexGuard<'static, Net> {
-    NET.lock().unwrap_or_else(|e| e.into_inner())
+    let (mut lines, dropped) = NOTES.take_try();
+    if dropped > 0 {
+        lines.push(dropped_text(dropped));
+    }
+    lines
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -194,8 +202,7 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, mem: &mut Mem<'_>) -> i32 {
 
 fn set_number(code: i32, value: i32) -> i32 {
     {
-        let mut net = lock();
-        let w = &mut net.wanted;
+        let mut w = WANTED.lock_scan();
         match code {
             1 => w.dhcp = value != 0,
             2 => w.ntp_period_ms = value.max(0) as u32,
@@ -216,8 +223,7 @@ fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
     let Some(bytes) = mem.slice(ptr, (len.max(0) as usize).min(MAX_TEXT)) else {
         return 0;
     };
-    let mut net = lock();
-    let w = &mut net.wanted;
+    let mut w = WANTED.lock_scan();
     let field = match code {
         1 => &mut w.ssid,
         2 => &mut w.password,
@@ -249,7 +255,8 @@ fn set_mode(mode: i32) -> i32 {
 fn ensure_thread() {
     if !STARTED.swap(true, Ordering::AcqRel) {
         if !super::spawn_background(b"crab-net\0", NET_STACK, worker) {
-            note!("cannot start the network thread");
+            // The scan side: the note is dropped (and counted) when the queue is busy.
+            NOTES.push_try("cannot start the network thread".to_string());
             STARTED.store(false, Ordering::Release);
         }
     }
@@ -375,9 +382,9 @@ fn civil(t: i64) -> (i32, i32, i32, i32, i32, i32, i32) {
 // ---------------------------------------------------------------------------------------------
 
 fn set_snapshot(f: impl FnOnce(&mut Snapshot)) {
-    let mut net = lock();
-    f(&mut net.snap);
-    let s = net.snap;
+    let mut snap = SNAP.lock_wait();
+    f(&mut snap);
+    let s = *snap;
     let flags = u32::from(s.client_ready)
         | u32::from(s.ap_ready) << 1
         | (s.status as u32 & 0xFF) << 8
@@ -794,8 +801,10 @@ fn worker() {
     note!("wifi driver ready");
     let mut last_status = (-1, -1);
     let mut last_sync = 0;
+    let mut wanted = Wanted::new();
     loop {
-        let mut wanted = lock().wanted.clone();
+        // The copy reuses the thread's strings; the lock is held for the copy only.
+        wanted.copy_from(&WANTED.lock_ceiling());
         wanted.mode = WANTED_MODE.load(Ordering::Acquire);
         let idle = (uptime_ms() as u32).wrapping_sub(MODE_AT_MS.load(Ordering::Acquire)) > LEASE_MS;
         if wanted.mode == 0 || !wanted.wifi_set || idle {
@@ -810,7 +819,7 @@ fn worker() {
             let has_ssid = w.applied.as_ref().is_some_and(|r| !r.ssid.is_empty());
             w.watch(&mut last_status, wanted.mode & 1 != 0, has_ssid);
         }
-        let ready = lock().snap.client_ready;
+        let ready = SNAP.lock_wait().client_ready;
         w.watch_ntp(&wanted, ready);
         let sync = SYNCED_AT_S.load(Ordering::Acquire);
         if sync != last_sync {

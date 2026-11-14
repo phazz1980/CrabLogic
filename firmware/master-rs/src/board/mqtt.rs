@@ -8,8 +8,7 @@
 //! will (see `start_client`).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crab_kernel::host::Mem;
@@ -20,7 +19,9 @@ use esp_idf_svc::sys::{self, EspError};
 use super::devices::uptime_ms;
 use super::eth;
 use super::net::{self, LEASE_MS};
+use super::note_queue::{dropped_text, NoteQueue};
 use super::sparkplug;
+use super::spin::Spin;
 
 /// Stack of `crab-mqtt`.
 const MQTT_STACK: usize = 8192;
@@ -34,6 +35,8 @@ const RETRY_PAUSE: Duration = Duration::from_secs(5);
 const MAX_SETTING: usize = 64;
 const MAX_TOPIC: usize = 127;
 const MAX_PAYLOAD: usize = 128;
+/// How long the worker sleeps at most between two rounds, FreeRTOS ticks (`TICK`).
+const WAIT_TICKS: u32 = TICK.as_millis() as u32 * sys::configTICK_RATE_HZ / 1000;
 const QUEUE_LEN: usize = 4;
 const MAX_SLOTS: i32 = 16;
 
@@ -91,7 +94,10 @@ struct Mqtt {
     queue: VecDeque<Publication>,
 }
 
-static MQTT: Mutex<Mqtt> = Mutex::new(Mqtt {
+/// Shared by the scan (settings, publications, filters, the last message of a filter), the worker
+/// `crab-mqtt` and the esp-mqtt task (`on_data`). A "ceiling" lock (`board/spin.rs`): every section
+/// of the other two is a copy or a compare of a few bytes; the client calls are outside it.
+static MQTT: Spin<Mqtt> = Spin::new(Mqtt {
     text: [String::new(), String::new(), String::new(), String::new()],
     port: 1883,
     keep_alive: 60,
@@ -101,8 +107,8 @@ static MQTT: Mutex<Mqtt> = Mutex::new(Mqtt {
     slots: Vec::new(),
     queue: VecDeque::new(),
 });
-/// Wakes the thread when something is queued.
-static WAKE: Condvar = Condvar::new();
+/// The FreeRTOS task of the worker: the scan wakes it with a task notification (it never blocks).
+static TASK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 static STARTED: AtomicBool = AtomicBool::new(false);
 /// Board uptime (ms) of the last call of ops 11..=16.
 static LAST_CALL_MS: AtomicU32 = AtomicU32::new(0);
@@ -112,24 +118,33 @@ static COUNTS: [AtomicU32; MAX_SLOTS as usize] = [const { AtomicU32::new(0) }; M
 static ERROR: AtomicI32 = AtomicI32::new(0);
 
 /// Messages for the master journal (see `net::take_notes`).
-static NOTES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-const MAX_NOTES: usize = 16;
+static NOTES: NoteQueue<String> = NoteQueue::new();
 
+/// A note from the worker or the esp-mqtt task (waits for the queue).
 macro_rules! note {
-    ($($arg:tt)*) => { push_note(format!($($arg)*)) };
+    ($($arg:tt)*) => { NOTES.push_wait(format!($($arg)*)) };
 }
 
-fn push_note(text: String) {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    if q.len() == MAX_NOTES {
-        q.pop_front();
-    }
-    q.push_back(text);
-}
-
-/// A line for the journal from the Sparkplug node.
+/// A line for the journal from the Sparkplug node (the worker).
 pub(super) fn note(text: String) {
-    push_note(text);
+    NOTES.push_wait(text);
+}
+
+/// Wakes the worker: something is queued.
+fn wake() {
+    let task = TASK.load(Ordering::Acquire);
+    if !task.is_null() {
+        // SAFETY: the task of the worker never ends once started.
+        unsafe {
+            sys::xTaskGenericNotify(
+                task.cast(),
+                0,
+                1,
+                sys::eNotifyAction_eSetBits,
+                core::ptr::null_mut(),
+            )
+        };
+    }
 }
 
 /// A module is still there: keeps the client alive (ops that are not 11..=16 call it themselves).
@@ -137,14 +152,14 @@ pub(super) fn touch() {
     LAST_CALL_MS.store(uptime_ms() as u32, Ordering::Release);
 }
 
-/// Takes the queued MQTT messages (for the journal).
+/// Takes the queued MQTT messages (for the journal); the scan calls it between steps and never
+/// waits (a busy queue gives nothing this time).
 pub fn take_notes() -> Vec<String> {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    q.drain(..).collect()
-}
-
-fn lock() -> MutexGuard<'static, Mqtt> {
-    MQTT.lock().unwrap_or_else(|e| e.into_inner())
+    let (mut lines, dropped) = NOTES.take_try();
+    if dropped > 0 {
+        lines.push(dropped_text(dropped));
+    }
+    lines
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -179,7 +194,7 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32, mem: &mut Mem<'_>) -> i32 {
 
 fn set_number(code: i32, value: i32) -> i32 {
     {
-        let mut m = lock();
+        let mut m = MQTT.lock_scan();
         match code {
             1 => m.port = value,
             2 => m.keep_alive = value,
@@ -201,7 +216,8 @@ fn start_thread() {
         return;
     }
     if !super::spawn_background(b"crab-mqtt\0", MQTT_STACK, worker) {
-        note!("cannot start the MQTT thread");
+        // The scan side: the note is dropped (and counted) when the queue is busy.
+        NOTES.push_try("cannot start the MQTT thread".to_string());
         STARTED.store(false, Ordering::Release);
     }
 }
@@ -210,7 +226,7 @@ fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
     let Some(bytes) = mem.slice(ptr, (len.max(0) as usize).min(MAX_SETTING)) else {
         return 0;
     };
-    let mut m = lock();
+    let mut m = MQTT.lock_scan();
     if let Some(field) = usize::try_from(code - 1)
         .ok()
         .and_then(|i| m.text.get_mut(i))
@@ -262,7 +278,7 @@ fn publish(tp: i32, tl: i32, pp: i32, pl: i32, retain: bool, mem: &Mem<'_>) -> i
         return 0;
     }
     {
-        let mut m = lock();
+        let mut m = MQTT.lock_scan();
         if m.queue.len() >= QUEUE_LEN {
             return 0;
         }
@@ -280,7 +296,7 @@ fn publish(tp: i32, tl: i32, pp: i32, pl: i32, retain: bool, mem: &Mem<'_>) -> i
     // A topic or link error is over once a message goes through.
     let _ = ERROR.compare_exchange(error::BAD_TOPIC, 0, Ordering::AcqRel, Ordering::Relaxed);
     let _ = ERROR.compare_exchange(error::NOT_CONNECTED, 0, Ordering::AcqRel, Ordering::Relaxed);
-    WAKE.notify_one();
+    wake();
     1
 }
 
@@ -299,7 +315,7 @@ fn subscribe(fp: i32, fl: i32, mem: &Mem<'_>) -> i32 {
         return -1;
     };
     let filter = text_of(&bytes, MAX_TOPIC);
-    let mut m = lock();
+    let mut m = MQTT.lock_scan();
     if !m.complete || filter.is_empty() {
         return -1;
     }
@@ -322,13 +338,13 @@ fn subscribe(fp: i32, fl: i32, mem: &Mem<'_>) -> i32 {
     };
     m.slots[i].filter = filter;
     drop(m);
-    WAKE.notify_one();
+    wake();
     i as i32
 }
 
 fn slot_text(slot: i32, ptr: i32, cap: i32, mem: &mut Mem<'_>) -> i32 {
     // Copied straight from the slot under the lock: nothing is allocated.
-    let m = lock();
+    let m = MQTT.lock_scan();
     let Some(s) = m.slots.get(slot as usize) else {
         return 0;
     };
@@ -361,7 +377,7 @@ fn matches(filter: &str, topic: &str) -> bool {
 static BAD_TOPIC_NOTED: AtomicBool = AtomicBool::new(false);
 
 fn on_connected() {
-    let mut m = lock();
+    let mut m = MQTT.lock_ceiling();
     for s in &mut m.slots {
         s.subscribed = false;
     }
@@ -380,7 +396,7 @@ fn on_data(topic: &[u8], data: &[u8]) {
         return;
     };
     let data = &data[..data.len().min(MAX_PAYLOAD)];
-    let mut m = lock();
+    let mut m = MQTT.lock_ceiling();
     for (i, s) in m
         .slots
         .iter_mut()
@@ -472,7 +488,31 @@ struct Applied {
     will: Option<(String, Vec<u8>)>,
 }
 
-fn applied_of(m: &Mqtt) -> Applied {
+/// The settings the worker works with: a copy made under the lock (`Mqtt::copy_settings`), so the
+/// `Applied` strings are built outside it.
+#[derive(Default)]
+struct Settings {
+    text: [String; 4],
+    port: i32,
+    keep_alive: i32,
+    network: i32,
+    complete: bool,
+}
+
+impl Mqtt {
+    /// Copies the settings reusing what `dst` has allocated.
+    fn copy_settings(&self, dst: &mut Settings) {
+        for (d, s) in dst.text.iter_mut().zip(&self.text) {
+            d.clone_from(s);
+        }
+        dst.port = self.port;
+        dst.keep_alive = self.keep_alive;
+        dst.network = self.network;
+        dst.complete = self.complete;
+    }
+}
+
+fn applied_of(m: &Settings) -> Applied {
     Applied {
         broker: m.text[0].trim().to_string(),
         port: m.port,
@@ -496,13 +536,11 @@ fn default_client_id() -> String {
 
 /// The settings now; the will comes from the Sparkplug node (its lock is taken after the MQTT lock
 /// is released, so the two never nest).
-fn snapshot() -> (Applied, bool, i32) {
-    let (mut applied, complete, network) = {
-        let guard = lock();
-        (applied_of(&guard), guard.complete, guard.network)
-    };
-    applied.will = sparkplug::will();
-    (applied, complete, network)
+fn snapshot(cfg: &mut Settings, sp: &mut sparkplug::Session) -> (Applied, bool, i32) {
+    MQTT.lock_ceiling().copy_settings(cfg);
+    let mut applied = applied_of(cfg);
+    applied.will = sp.will();
+    (applied, cfg.complete, cfg.network)
 }
 
 fn start_client(a: &Applied) -> Result<EspMqttClient<'static>, EspError> {
@@ -623,17 +661,23 @@ fn watch(told: &mut Told, live: &mut Option<Live>, broker: &str) {
 /// Subscribes new filters and sends the queued publications.
 fn serve(live: &mut Live, told: &mut Told, retry_at: &mut Instant) {
     if Instant::now() >= *retry_at {
-        let todo: Vec<(usize, String)> = lock()
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| !s.subscribed && !s.filter.is_empty())
-            .map(|(i, s)| (i, s.filter.clone()))
-            .collect();
-        for (i, filter) in todo {
+        // One filter at a time: copied under the lock, subscribed without it.
+        let mut filter = String::new();
+        loop {
+            let pending = {
+                let m = MQTT.lock_ceiling();
+                m.slots
+                    .iter()
+                    .position(|s| !s.subscribed && !s.filter.is_empty())
+                    .inspect(|&i| {
+                        filter.clear();
+                        filter.push_str(&m.slots[i].filter);
+                    })
+            };
+            let Some(i) = pending else { break };
             match live.client.subscribe(&filter, QoS::AtMostOnce) {
                 Ok(_) => {
-                    if let Some(s) = lock().slots.get_mut(i) {
+                    if let Some(s) = MQTT.lock_ceiling().slots.get_mut(i) {
                         s.subscribed = true;
                     }
                 }
@@ -647,14 +691,14 @@ fn serve(live: &mut Live, told: &mut Told, retry_at: &mut Instant) {
     }
     // The lock is not held while enqueueing: the client task may be waiting for it in `on_event`.
     loop {
-        let Some(p) = lock().queue.pop_front() else {
+        let Some(p) = MQTT.lock_ceiling().queue.pop_front() else {
             break;
         };
         if let Err(e) = live
             .client
             .enqueue(p.topic(), QoS::AtMostOnce, p.retain, p.payload())
         {
-            lock().queue.push_front(p);
+            MQTT.lock_ceiling().queue.push_front(p);
             told.failure(format!("publish failed: {e}"));
             break;
         }
@@ -669,20 +713,24 @@ fn worker() {
         failure: String::new(),
     };
     let mut retry_at = Instant::now();
+    let mut cfg = Settings::default();
+    let mut sp = sparkplug::Session::new();
+    // SAFETY: the handle of the calling task.
+    TASK.store(
+        unsafe { sys::xTaskGetCurrentTaskHandle() }.cast(),
+        Ordering::Release,
+    );
     loop {
-        {
-            let guard = lock();
-            let _ = WAKE
-                .wait_timeout(guard, TICK)
-                .unwrap_or_else(|e| e.into_inner());
-        }
+        // Sleeps until the scan queues something, `TICK` at most (a lost notification only delays).
+        // SAFETY: waits on the notification of the calling task.
+        unsafe { sys::ulTaskGenericNotifyTake(0, 1, WAIT_TICKS) };
         // A Sparkplug session that ended starts a new `bdSeq` before the settings (and the will)
         // are read for the next client.
-        if sparkplug::track(CONNECTED.load(Ordering::Acquire)) && live.take().is_some() {
+        if sp.track(CONNECTED.load(Ordering::Acquire)) && live.take().is_some() {
             CONNECTED.store(false, Ordering::Release);
             note!("sparkplug: session ended, restarting the client");
         }
-        let (mut applied, complete, network) = snapshot();
+        let (mut applied, complete, network) = snapshot(&mut cfg, &mut sp);
         let idle =
             (uptime_ms() as u32).wrapping_sub(LAST_CALL_MS.load(Ordering::Acquire)) > LEASE_MS;
         let wanted = complete
@@ -694,7 +742,7 @@ fn worker() {
             };
         if !wanted {
             if live.take().is_some() {
-                sparkplug::ended();
+                sp.ended();
                 note!("client stopped");
             }
             CONNECTED.store(false, Ordering::Release);
@@ -704,8 +752,8 @@ fn worker() {
                 CONNECTED.store(false, Ordering::Release);
                 note!("settings changed, restarting the client");
                 // A session that was up ends here: the new client has the next `bdSeq`.
-                sparkplug::ended();
-                applied = snapshot().0;
+                sp.ended();
+                applied = snapshot(&mut cfg, &mut sp).0;
             }
             // A client without auto reconnect (see `start_client`) that is not connected for a while
             // is renewed; its will is still valid, so `bdSeq` stays.
@@ -752,8 +800,7 @@ fn worker() {
             if connected {
                 serve(l, &mut told, &mut retry_at);
             }
-            sparkplug::poll(&mut l.client, connected);
+            sp.poll(&mut l.client, connected);
         }
-        sparkplug::mirror();
     }
 }

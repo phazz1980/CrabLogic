@@ -27,6 +27,7 @@ mod io;
 mod modbus;
 mod mqtt;
 mod net;
+mod note_queue;
 mod notes;
 mod pcf;
 mod pulse;

@@ -18,10 +18,8 @@
 //! at any time. The W5500 is polled over SPI (no INT wire is needed). Pins are checked per chip
 //! before any hardware is touched; LAN8720 on the C3 (no EMAC) only puts a note in the journal.
 
-use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crab_kernel::host::Mem;
@@ -36,6 +34,8 @@ use esp_idf_svc::netif::{EspNetif, NetifConfiguration};
 use esp_idf_svc::sys::EspError;
 
 use super::net;
+use super::note_queue::{dropped_text, NoteQueue};
+use super::spin::Spin;
 
 // The C3 is the only RISC-V chip of the master; the ESP32 is Xtensa.
 #[cfg(target_arch = "riscv32")]
@@ -73,7 +73,21 @@ struct Wanted {
     complete: bool,
 }
 
-static WANTED: Mutex<Wanted> = Mutex::new(Wanted {
+impl Wanted {
+    /// `self = other` without a new allocation while the texts fit (the thread copies every tick).
+    fn copy_from(&mut self, o: &Wanted) {
+        self.dhcp = o.dhcp;
+        self.pins = o.pins;
+        self.mac = o.mac;
+        self.rmii = o.rmii;
+        self.ip.clone_from(&o.ip);
+        self.gateway.clone_from(&o.gateway);
+        self.subnet.clone_from(&o.subnet);
+        self.complete = o.complete;
+    }
+}
+
+const INITIAL: Wanted = Wanted {
     dhcp: true,
     pins: Pins {
         sck: 18,
@@ -87,7 +101,10 @@ static WANTED: Mutex<Wanted> = Mutex::new(Wanted {
     gateway: String::new(),
     subnet: String::new(),
     complete: false,
-});
+};
+/// Written by the scan, copied by the thread: a "ceiling" lock (`board/spin.rs`), the thread's
+/// section is a copy that allocates only when a text grew.
+static WANTED: Spin<Wanted> = Spin::new(INITIAL);
 static STARTED: AtomicBool = AtomicBool::new(false);
 static READY: AtomicBool = AtomicBool::new(false);
 /// The W5500 driver took SPI2 (never freed): the SPI of driver blocks cannot use it on the C3.
@@ -96,29 +113,26 @@ static SPI2_TAKEN: AtomicBool = AtomicBool::new(false);
 static IP: AtomicU32 = AtomicU32::new(0);
 
 /// Messages for the master journal (see `net::take_notes`).
-static NOTES: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-const MAX_NOTES: usize = 16;
+static NOTES: NoteQueue<String> = NoteQueue::new();
 
+/// A note from the Ethernet thread (waits for the queue).
 macro_rules! note {
-    ($($arg:tt)*) => { push_note(format!($($arg)*)) };
+    ($($arg:tt)*) => { NOTES.push_wait(format!($($arg)*)) };
 }
 
+/// A note from the scan (the bus ops of modules): never waits; a busy queue drops it and counts it.
 pub fn push_note(text: String) {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    if q.len() == MAX_NOTES {
-        q.pop_front();
-    }
-    q.push_back(text);
+    NOTES.push_try(text);
 }
 
-/// Takes the queued Ethernet messages (for the journal).
+/// Takes the queued Ethernet messages (for the journal); the scan calls it between steps and never
+/// waits (a busy queue gives nothing this time).
 pub fn take_notes() -> Vec<String> {
-    let mut q = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    q.drain(..).collect()
-}
-
-fn lock() -> std::sync::MutexGuard<'static, Wanted> {
-    WANTED.lock().unwrap_or_else(|e| e.into_inner())
+    let (mut lines, dropped) = NOTES.take_try();
+    if dropped > 0 {
+        lines.push(dropped_text(dropped));
+    }
+    lines
 }
 
 /// Whether the W5500 driver took (or is about to take) SPI2.
@@ -148,7 +162,7 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, mem: &mut Mem<'_>) -> i32 {
 
 fn set_number(code: i32, value: i32) -> i32 {
     {
-        let mut w = lock();
+        let mut w = WANTED.lock_scan();
         match code {
             1 => w.dhcp = value != 0,
             2 => w.pins.sck = value,
@@ -178,19 +192,19 @@ fn set_number(code: i32, value: i32) -> i32 {
 }
 
 fn set_text(code: i32, ptr: i32, len: i32, mem: &Mem<'_>) -> i32 {
-    let Some(bytes) = mem.read(ptr, len, MAX_TEXT) else {
+    let Some(bytes) = mem.slice(ptr, (len.max(0) as usize).min(MAX_TEXT)) else {
         return 0;
     };
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    let mut w = lock();
+    let mut w = WANTED.lock_scan();
     let field = match code {
         1 => &mut w.ip,
         2 => &mut w.gateway,
         3 => &mut w.subnet,
         _ => return 0,
     };
-    if *field != text {
-        *field = text;
+    // Settings from variables may come every step: a new string only when the text changed.
+    if field.as_bytes() != bytes {
+        *field = String::from_utf8_lossy(bytes).into_owned();
     }
     0
 }
@@ -208,7 +222,8 @@ fn start() {
         return;
     }
     if !super::spawn_background(b"crab-eth\0", ETH_STACK, worker) {
-        note!("cannot start the Ethernet thread");
+        // The scan side: the note is dropped (and counted) when the queue is busy.
+        push_note("cannot start the Ethernet thread".to_string());
         STARTED.store(false, Ordering::Release);
     }
 }
@@ -351,7 +366,8 @@ fn ip_to_u32(ip: Ipv4Addr) -> u32 {
 }
 
 fn worker() {
-    let first = lock().clone();
+    let mut first = INITIAL;
+    first.copy_from(&WANTED.lock_ceiling());
     let checked = match first.rmii {
         Some(r) => check_rmii(CHIP, r),
         None => check_pins(CHIP, first.pins),
@@ -385,11 +401,12 @@ fn run<T>(mut eth: EspEth<'static, T>, first: Wanted, mut fixed: Option<Fixed>) 
     }
     note!("driver ready");
     let mut seen = first.clone();
+    let mut wanted = INITIAL;
     let mut told_pins = false;
     let mut link = false;
     let mut address = Ipv4Addr::UNSPECIFIED;
     loop {
-        let wanted = lock().clone();
+        wanted.copy_from(&WANTED.lock_ceiling());
         if wanted != seen {
             let hardware = (wanted.pins, wanted.mac, wanted.rmii);
             if hardware != (first.pins, first.mac, first.rmii) && !told_pins {
@@ -408,7 +425,7 @@ fn run<T>(mut eth: EspEth<'static, T>, first: Wanted, mut fixed: Option<Fixed>) 
                     Err(e) => note!("cannot change the interface: {e}"),
                 }
             }
-            seen = wanted;
+            seen.copy_from(&wanted);
         }
         let up = eth.is_connected().unwrap_or(false);
         if up != link {

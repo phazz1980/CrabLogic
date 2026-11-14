@@ -41,6 +41,7 @@ fn readable(pin: u8) -> bool {
 /// Two words: the ESP32 has no 64-bit atomics.
 static OUTPUTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 
+#[link_section = ".iram1.crab_write_pin"]
 fn write_pin(pin: u8, high: bool) {
     if !usable(pin) {
         return;
@@ -70,6 +71,7 @@ const PULLUP: i32 = 0x100;
 
 /// Level of `pin`; the first read sets it up as an input (with the pull-up if asked), unless a
 /// module drives it: then the level it is driven to is read, as `digitalRead` does.
+#[link_section = ".iram1.crab_read_pin"]
 fn read_pin(pin: u8, pullup: bool) -> i32 {
     if !readable(pin) {
         return 0;
@@ -101,6 +103,7 @@ pub fn forget_output(pin: i32) {
     }
 }
 
+#[link_section = ".iram1.crab_millis"]
 pub fn millis() -> i32 {
     // SAFETY: no arguments, no state.
     (unsafe { sys::esp_timer_get_time() } / 1000) as i32
@@ -170,6 +173,10 @@ impl Devices for BoardDevices {
         BoardHal
     }
 
+    // The frequent calls in IRAM with the step: from flash their speed depended on how a build
+    // happened to lay code out in the small flash cache (2x on the ESP32). The rest (19 KB with
+    // everything inlined) stays in flash.
+    #[link_section = ".iram1.crab_devices_call"]
     fn call(&mut self, import: usize, args: &[Val], mem: Mem<'_>) -> Option<Val> {
         let a = |i: usize| args.get(i).map_or(0, |v| v.i());
         match import {
@@ -178,6 +185,18 @@ impl Devices for BoardDevices {
                 None
             }
             id::GPIO_READ => Some(Val::I32(read_pin((a(0) & 0xFF) as u8, a(0) & PULLUP != 0))),
+            id::MILLIS => Some(Val::I32(millis())),
+            _ => self.call_rest(import, args, mem),
+        }
+    }
+}
+
+impl BoardDevices {
+    /// The calls of [`Devices::call`] that are not on its fast path.
+    #[inline(never)]
+    fn call_rest(&mut self, import: usize, args: &[Val], mem: Mem<'_>) -> Option<Val> {
+        let a = |i: usize| args.get(i).map_or(0, |v| v.i());
+        match import {
             id::ADC_READ => {
                 let pin = (a(0) & 0xFF) as u8;
                 Some(Val::I32(if readable(pin) {
@@ -211,7 +230,6 @@ impl Devices for BoardDevices {
                 }
                 None
             }
-            id::MILLIS => Some(Val::I32(millis())),
             id::BUS => {
                 let mut mem = mem;
                 Some(Val::I32(self.bus.call(
