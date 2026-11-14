@@ -87,11 +87,7 @@ impl EditorApp {
                 }
                 theme::save_last_project(path);
                 let board = &doc.project.config.board;
-                self.port = board
-                    .port
-                    .clone()
-                    .or_else(|| board.host.clone())
-                    .unwrap_or_default();
+                self.port = board.port.clone().unwrap_or_default();
                 self.doc = Some(doc);
                 self.disk_stamp = self.project_stamp();
                 self.disk_warned = false;

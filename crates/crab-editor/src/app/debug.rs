@@ -33,45 +33,51 @@ impl EditorApp {
         }
     }
 
-    /// Uploads the modules that report their signals to the master firmware, then connects.
-    pub fn start_debug(&mut self, ctx: &egui::Context) {
-        if self.net_target() {
-            self.info(
-                LogLevel::Error,
-                crate::i18n::tr("Отладка пока только по USB"),
-            );
+    /// Uploads the modules over the link of the project (USB, else the network); nothing happens
+    /// without a project, a link that cannot be chosen is shown as an error.
+    pub fn upload_modules_now(&mut self, ctx: &egui::Context) {
+        if self.doc.is_none() {
             return;
         }
-        self.debug_firmware = true;
-        let port = self.port_choice();
-        self.start_job(JobKind::UploadModules { port }, ctx);
+        match self.link_choice() {
+            Ok(port) => self.start_job(JobKind::UploadModules { port: Some(port) }, ctx),
+            Err(e) => self.info(LogLevel::Error, e),
+        }
     }
 
-    /// Connects to a board that already runs debugging firmware.
-    pub fn connect_debug(&mut self, port: Option<String>, ctx: &egui::Context) {
-        if port.is_none() && self.net_target() {
-            self.info(
-                LogLevel::Error,
-                crate::i18n::tr("Отладка пока только по USB"),
-            );
-            return;
-        }
+    /// Uploads the modules that report their signals to the master firmware, then connects.
+    pub fn start_debug(&mut self, ctx: &egui::Context) {
+        self.debug_firmware = true;
+        self.upload_modules_now(ctx);
+    }
+
+    /// Connects to a board that already runs debugging firmware: by the link of the upload job
+    /// (`COM10` or `tcp:host`), or by the chosen link when `link` is `None`.
+    pub fn connect_debug(&mut self, link: Option<String>, ctx: &egui::Context) {
+        // The network accepts one client, USB one reader: the old session lets go first.
         self.stop_debug();
         self.sim = None;
         self.console.release();
-        let Some(doc) = &self.doc else { return };
-        let Some(port) = port.or_else(|| self.board_port()) else {
-            self.info(
-                LogLevel::Error,
-                crate::i18n::tr("Выберите порт платы на панели инструментов"),
-            );
-            return;
+        let chosen = match link {
+            Some(text) => Ok(match crab_build::net_link::BoardLink::parse(&text) {
+                crab_build::net_link::BoardLink::Serial(port) => crab_build::Chosen::Serial(port),
+                crab_build::net_link::BoardLink::Tcp(host) => crab_build::Chosen::Net(host),
+            }),
+            None => self.link_choice().and_then(|_| self.effective_link()),
         };
-        match DebugState::start(&doc.project, &self.lib, &port, ctx) {
+        let chosen = match chosen {
+            Ok(chosen) => chosen,
+            Err(e) => {
+                self.info(LogLevel::Error, e);
+                return;
+            }
+        };
+        let Some(doc) = &self.doc else { return };
+        match DebugState::start(&doc.project, &self.lib, &chosen, ctx) {
             Ok(state) => {
                 self.info(
                     LogLevel::Info,
-                    crate::i18n::msg("Отладка: подключение к {0}", &[&port]),
+                    crate::i18n::msg("Отладка: подключение к {0}", &[&state.port]),
                 );
                 self.debug = Some(state);
             }
@@ -79,11 +85,17 @@ impl EditorApp {
         }
     }
 
-    /// Port of the board: chosen in the toolbar, set in the project, or detected.
+    /// Serial port of the board when the link now goes by USB; `None` for the network.
     pub(super) fn board_port(&self) -> Option<String> {
-        if self.net_target() {
-            return None;
+        match self.effective_link() {
+            Ok(crab_build::Chosen::Serial(port)) => Some(port),
+            _ => None,
         }
+    }
+
+    /// Serial port for what only USB can do (writing the network key): the toolbar port, the
+    /// project's one or the detected one, whatever the saved address is.
+    pub(super) fn usb_port(&self) -> Option<String> {
         self.port_choice()
             .or_else(|| self.doc.as_ref()?.project.config.board.port.clone())
             .or_else(|| crab_build::auto_port(&self.ports).ok())

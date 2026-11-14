@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crab_codegen::Program;
 use crab_core::{Layout, Library, ParamKind, PortRef, Project, SignalType};
-use crab_debug::{Command, DebugTable, Live, MasterSession, ModuleMap, Source, Value};
+use crab_debug::{Command, DebugTable, Live, MasterSession, Source, Value};
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::theme::Palette;
@@ -55,53 +55,36 @@ impl DebugState {
     pub fn start(
         project: &Project,
         lib: &Library,
-        port: &str,
+        link: &crab_build::Chosen,
         ctx: &egui::Context,
     ) -> Result<Self, String> {
         let project = &project.without_disabled();
         let program = Program::build(project, lib).map_err(|e| e.to_string())?;
         let table = crab_codegen::debug::debug_table(&program);
         let inputs = input_ports(project, lib, &table);
-        let memo = crab_build::board_memo::load(&project.work_dir()).map(|(m, _)| m);
-        let mut modules = Vec::new();
-        for sheet in program.sheets() {
-            let built = program
-                .wasm_module_with(sheet, true)
-                .map_err(|e| crate::i18n::fmt("лист {0}: {1}", &[&sheet, &e]))?;
-            let slots = built
-                .watched
-                .iter()
-                .map(|label| {
-                    let port = label.parse::<PortRef>().ok()?;
-                    table.output_index(&port)
-                })
-                .collect();
-            let crc = crab_build::mcu_module::crc32(&built.wasm);
-            // An AOT image is what the board reports a CRC of.
-            let image_crc = memo
-                .as_ref()
-                .and_then(|m| m.image_crc(&built.name, crc))
-                .filter(|&c| c != crc);
-            modules.push(ModuleMap {
-                crc,
-                image_crc,
-                sheet,
-                name: built.name,
-                slots,
-            });
-        }
+        let modules = crab_build::debug_modules(&program, &table, &project.work_dir())?;
+        let (connector, port) = match link {
+            crab_build::Chosen::Serial(port) => (crab_debug::transport::serial(port), port.clone()),
+            crab_build::Chosen::Net(host) => {
+                let password = &project.config.project.password;
+                if password.is_empty() {
+                    return Err(crate::i18n::tr(
+                        "Отладка по сети требует пароль проекта: задайте его в меню Проект → Проект в памяти платы → Пароль и запишите ключ на плату по USB",
+                    )
+                    .to_owned());
+                }
+                (crab_debug::transport::tcp(host, password), host.clone())
+            }
+        };
         let ctx = ctx.clone();
-        let session = MasterSession::start(
-            table.clone(),
-            modules,
-            crab_debug::transport::serial(port),
-            move || ctx.request_repaint(),
-        );
+        let session = MasterSession::start(table.clone(), modules, connector, move || {
+            ctx.request_repaint()
+        });
         Ok(Self {
             live: session.snapshot(),
             session,
             table,
-            port: port.to_owned(),
+            port,
             chart: Vec::new(),
             diagnostics: false,
             values: false,

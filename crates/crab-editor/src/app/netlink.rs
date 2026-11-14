@@ -1,28 +1,66 @@
 use super::*;
 
-/// True when the target is a network address, not a serial port.
-fn is_net(target: &str) -> bool {
-    crab_build::net_link::looks_like_address(target)
+/// The text of a link for the upload job and the debugger: `COM10` or `tcp:192.168.0.100`.
+pub(super) fn link_text(link: &crab_build::Chosen) -> String {
+    match link {
+        crab_build::Chosen::Serial(port) => port.clone(),
+        crab_build::Chosen::Net(host) => format!("tcp:{host}"),
+    }
 }
 
 impl EditorApp {
-    /// The toolbar target is a network address (upload over the network).
-    pub fn net_target(&self) -> bool {
-        is_net(&self.port)
+    /// Network address of the board kept in the project (`[board] host`).
+    pub fn board_host(&self) -> Option<String> {
+        let host = self.doc.as_ref()?.project.config.board.host.as_deref()?;
+        let host = host.trim();
+        (!host.is_empty()).then(|| host.to_owned())
+    }
+
+    /// The link the upload and the debugging use now (USB is more important than the network):
+    /// the toolbar port or the project's one if it is among the ports present, else the project's
+    /// address, see [`crab_build::choose_link`]. Uses the last scan of the ports.
+    pub fn effective_link(&self) -> Result<crab_build::Chosen, String> {
+        let doc = self
+            .doc
+            .as_ref()
+            .ok_or_else(|| crate::i18n::tr("проект не открыт").to_owned())?;
+        let mut board = doc.project.config.board.clone();
+        if let Some(port) = self.port_choice() {
+            board.port = Some(port);
+        }
+        crab_build::choose_link_auto(&board, &self.ports)
+    }
+
+    /// [`Self::effective_link`] as text for a job, after a fresh look at the serial ports (a cable
+    /// may have been plugged or pulled since the last scan).
+    pub(super) fn link_choice(&mut self) -> Result<String, String> {
+        if let Ok(ports) = crab_build::serial_ports() {
+            self.ports = ports;
+        }
+        self.effective_link().map(|l| link_text(&l))
     }
 
     /// Opens the window to type the board address.
     pub fn open_net_input(&mut self) {
-        self.net_input = Some(if self.net_target() {
-            self.port.clone()
-        } else {
-            String::new()
+        self.net_input = Some(self.board_host().unwrap_or_default());
+    }
+
+    /// Writes the toolbar COM port to `[board] port`; the saved address stays.
+    pub fn target_changed(&mut self) {
+        let port = self.port_choice();
+        let Some(doc) = &mut self.doc else { return };
+        if doc.project.config.board.port == port {
+            return;
+        }
+        let lib = self.lib.clone();
+        let _ = doc.edit(&lib, Some("board_port".into()), |p| {
+            p.config.board.port = port;
+            Ok::<(), String>(())
         });
     }
 
-    /// Keeps `[board] host` of the project in step with the toolbar target.
-    pub fn target_changed(&mut self) {
-        let host = is_net(&self.port).then(|| self.port.trim().to_owned());
+    /// Sets (or with `None` removes) `[board] host`; the saved port stays.
+    pub fn set_board_host(&mut self, host: Option<String>) {
         let Some(doc) = &mut self.doc else { return };
         if doc.project.config.board.host == host {
             return;
@@ -47,7 +85,7 @@ impl EditorApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 ui.label(crate::i18n::tr(
-                    "Адрес платы: IP или IP:порт (по умолчанию порт 4040)",
+                    "Адрес платы: IP или IP:порт (по умолчанию порт 4040). Нужен, когда кабель не подключён: по USB работа идёт в первую очередь",
                 ));
                 let edit = ui.add(
                     egui::TextEdit::singleline(text)
@@ -69,14 +107,11 @@ impl EditorApp {
                 });
             });
         if apply {
-            let mut address = text.trim().to_owned();
-            // A bare name without a dot would be taken for a serial port.
-            if !is_net(&address) {
-                address = format!("tcp:{address}");
-            }
-            self.port = address;
-            self.target_changed();
+            let address = text.trim();
+            let address = address.strip_prefix("tcp:").unwrap_or(address).trim();
+            let address = address.to_owned();
             self.net_input = None;
+            self.set_board_host(Some(address));
         } else if close {
             self.net_input = None;
         }
@@ -98,16 +133,7 @@ impl EditorApp {
         if self.net_key_rx.is_some() {
             return;
         }
-        if self.net_target() {
-            self.info(
-                LogLevel::Error,
-                crate::i18n::tr(
-                    "Ключ записывается только по USB: выберите COM-порт на панели инструментов",
-                ),
-            );
-            return;
-        }
-        let Some(port) = self.board_port() else {
+        let Some(port) = self.usb_port() else {
             self.info(
                 LogLevel::Error,
                 crate::i18n::tr("Выберите COM-порт платы на панели инструментов"),

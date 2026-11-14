@@ -53,12 +53,11 @@ fn run() {
     let mut buf = [0u8; CHUNK];
     let mut events = Vec::new();
     let mut out = Vec::new();
+    let mut held = Vec::with_capacity(HELD_MAX);
     loop {
         let n = usb::read(&mut buf, READ_WAIT_MS);
-        // While a network client is logged in, USB input is not taken: two command streams would
-        // mix in the middle of an upload (`specs/ota`).
-        if n > 0 && !super::netcmd::active() {
-            feed_events(&buf[..n], false, &mut events);
+        if n > 0 {
+            usb_input(&buf[..n], &mut held, &mut events);
         }
         usb::take_answers(&mut out);
         if !out.is_empty() {
@@ -66,6 +65,43 @@ fn run() {
             super::netcmd::mirror(&out);
             out.clear();
         }
+    }
+}
+
+/// The longest USB line held back while a network client is logged in.
+const HELD_MAX: usize = 160;
+
+/// USB has priority over the network (`specs/ota`, phase 1b): while a network client is logged
+/// in, USB bytes are held until a whole line arrives. A printable, non-empty line drops the
+/// network client and goes to the parser; anything else (line noise when a cable is plugged in,
+/// bare line ends) is thrown away, so it neither drops the client nor mixes into its stream.
+fn usb_input(bytes: &[u8], held: &mut Vec<u8>, events: &mut Vec<Event>) {
+    if !super::netcmd::active() {
+        if held.is_empty() {
+            return feed_events(bytes, false, events);
+        }
+        held.extend_from_slice(bytes);
+        feed_events(held, false, events);
+        return held.clear();
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'\n' {
+            if held.len() < HELD_MAX {
+                held.push(b);
+            } else {
+                held.clear(); // too long for a command: noise
+            }
+            continue;
+        }
+        let line = held.trim_ascii();
+        if !line.is_empty() && line.iter().all(|c| (0x20..0x7f).contains(c) || *c == b'\t') {
+            super::netcmd::kick_for_usb();
+            held.push(b'\n');
+            held.extend_from_slice(&bytes[i + 1..]);
+            feed_events(held, false, events);
+            return held.clear();
+        }
+        held.clear();
     }
 }
 
@@ -77,11 +113,18 @@ pub fn feed(bytes: &[u8], from_net: bool) {
 
 fn feed_events(bytes: &[u8], from_net: bool, events: &mut Vec<Event>) {
     with_input(|input| {
+        // A client dropped for USB: its last bytes must not reach the parser USB now owns.
+        if from_net && !super::netcmd::active() {
+            return;
+        }
         input.push(bytes);
         while let Some(event) = input.next_event() {
             events.push(event);
         }
     });
+    if !from_net && !events.is_empty() {
+        super::netcmd::usb_heard();
+    }
     for event in events.drain(..) {
         handle(event, from_net);
     }

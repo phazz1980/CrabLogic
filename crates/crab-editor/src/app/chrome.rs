@@ -77,8 +77,7 @@ impl EditorApp {
             self.run_check();
         }
         if pressed(shortcut(Modifiers::NONE, Key::F5)) {
-            let port = self.port_choice();
-            self.start_job(JobKind::UploadModules { port }, ctx);
+            self.upload_modules_now(ctx);
         }
         // Delete only when no text field or window has focus.
         if self.dialog.is_none()
@@ -613,8 +612,7 @@ impl EditorApp {
                 ))
                 .clicked()
             {
-                let port = self.port_choice();
-                self.start_job(JobKind::UploadModules { port }, ui.ctx());
+                self.upload_modules_now(ui.ctx());
             }
             if ui
                 .add_enabled(

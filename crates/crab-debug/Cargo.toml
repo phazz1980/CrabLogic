@@ -8,8 +8,12 @@ edition.workspace = true
 default = []
 # Serial port transport (USB). Off for crates that only need the protocol.
 serial = ["dep:serialport"]
+# Network transport (TCP port of the master with the challenge-response login).
+net = ["dep:sha2", "dep:hmac"]
 
 [dependencies]
 crab-core = { path = "../crab-core" }
 thiserror.workspace = true
 serialport = { version = "4", optional = true, default-features = false }
+sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.12", optional = true }

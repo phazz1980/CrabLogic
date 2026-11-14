@@ -45,13 +45,18 @@ enum Command {
         /// Файл проекта .crab (или папка с ним)
         project: PathBuf,
     },
-    /// Показывать живые значения с платы (модули собраны с --watch)
+    /// Показывать живые значения с платы (модули собраны с --watch). Без --port и --host связь
+    /// выбирается по проекту: сохранённый порт есть в системе — по USB, иначе по адресу `[board] host`
     Monitor {
         /// Файл проекта .crab (или папка с ним)
         project: PathBuf,
-        /// Порт платы, например COM3 (по умолчанию из настроек проекта)
+        /// Порт платы, например COM3
         #[arg(long, short)]
         port: Option<String>,
+        /// Адрес платы по сети, например 192.168.1.50 или 192.168.1.50:4040 (нужен пароль проекта и
+        /// ключ на плате: crablogic netkey)
+        #[arg(long)]
+        host: Option<String>,
     },
     /// Напечатать хеш проекта (логика и настройки, без координат): по нему редактор сверяет файл с платой
     Hash {
@@ -120,9 +125,17 @@ enum Command {
         /// Права на железо через запятую, например gpio_write,millis (заменяют module.toml)
         #[arg(long, value_delimiter = ',')]
         allow: Option<Vec<String>>,
-        /// Порт платы, например COM3 (по умолчанию единственный найденный)
+        /// Порт платы, например COM3 (по умолчанию: порт проекта из --project, иначе единственный найденный)
         #[arg(long, short)]
         port: Option<String>,
+        /// Адрес платы по сети, например 192.168.1.50 или 192.168.1.50:4040. Пароль для входа берётся
+        /// из проекта, поэтому с --host обязателен --project
+        #[arg(long)]
+        host: Option<String>,
+        /// Файл проекта .crab (или папка с ним): пароль для --host; без --port и --host из него
+        /// выбирается связь (порт, если он есть в системе, иначе адрес)
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
     /// Замеры производительности мастера на плате: заливает стенды, снимает цифры из `list`, пишет
     /// отчёт bench/<чип>-<мастер>-<дата>.{toml,md}. Модули на плате заменяются стендами.
@@ -286,7 +299,11 @@ fn run() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Monitor { project, port } => run_monitor(&project, cli.library.as_deref(), port),
+        Command::Monitor {
+            project,
+            port,
+            host,
+        } => run_monitor(&project, cli.library.as_deref(), port, host),
         Command::Hash { project } => match Project::load(&project)
             .map_err(|e| e.to_string())
             .and_then(|p| p.content_hash().map_err(|e| e.to_string()))
@@ -322,7 +339,9 @@ fn run() -> ExitCode {
             name,
             allow,
             port,
-        } => run_upload_wasm(&file, name, allow, port),
+            host,
+            project,
+        } => run_upload_wasm(&file, name, allow, port, host, project.as_deref()),
         Command::GenWasm {
             project,
             sheet,
@@ -588,10 +607,16 @@ fn run_upload_wasm(
     name: Option<String>,
     allow: Option<Vec<String>>,
     port: Option<String>,
+    host: Option<String>,
+    project: Option<&Path>,
 ) -> ExitCode {
     let failed = |message: String| {
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)
+    };
+    let link = match explicit_link(port, host, project) {
+        Ok(link) => link,
+        Err(message) => return failed(message),
     };
     let wasm = match std::fs::read(file) {
         Ok(bytes) => bytes,
@@ -616,15 +641,56 @@ fn run_upload_wasm(
         .unwrap_or_default();
     let allow = allow.unwrap_or_else(|| manifest.map(|m| m.allow).unwrap_or_default());
     let cache = file.parent().unwrap_or(Path::new("."));
-    push_module(
-        &name,
-        &wasm,
-        &allow,
-        &[],
-        LinkSpec::serial(port),
-        cache,
-        None,
-    )
+    push_module(&name, &wasm, &allow, &[], link, cache, None)
+}
+
+/// The link of `upload-wasm`: `--host` (with the password of `--project`) or `--port`; with neither,
+/// the choice by `--project` (a saved port that is present goes by USB, else the saved address) or
+/// the only port found.
+fn explicit_link(
+    port: Option<String>,
+    host: Option<String>,
+    project: Option<&Path>,
+) -> Result<LinkSpec, String> {
+    if port.is_some() && host.is_some() {
+        return Err("укажите что-то одно: --port или --host".into());
+    }
+    let loaded = match project {
+        Some(path) => Some(Project::load(path).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let password = loaded
+        .as_ref()
+        .map(|p| p.config.project.password.clone())
+        .unwrap_or_default();
+    if host.is_some() && loaded.is_none() {
+        return Err(
+            "для --host нужен --project <файл проекта>: пароль для входа по сети берётся из проекта"
+                .into(),
+        );
+    }
+    if port.is_some() || host.is_some() {
+        return Ok(LinkSpec {
+            port,
+            host,
+            password,
+        });
+    }
+    match loaded {
+        Some(project) => project_link_spec(&project),
+        None => Ok(LinkSpec::serial(None)),
+    }
+}
+
+/// The link of the project by the serial ports present now.
+fn project_link_spec(project: &Project) -> Result<LinkSpec, String> {
+    let mut link = LinkSpec::serial(None);
+    link.password = project.config.project.password.clone();
+    match crab_build::project_link(&project.config.board)? {
+        crab_build::Chosen::Serial(port) => link.port = Some(port),
+        crab_build::Chosen::Net(host) => link.host = Some(host),
+    }
+    Ok(link)
 }
 
 /// Sends one module to the master firmware over serial: as an AOT image when the master runs AOT
@@ -1110,6 +1176,29 @@ fn upload_sheets(
             Err(e) => return failed(e.to_string()),
         }
     }
+    // Remember the board as the editor does (`board.toml`): the debugger (`monitor`, the editor)
+    // recognises an AOT image by it. A failure here never fails the upload.
+    if info.takes_aot() {
+        let remembered = upload_plan::read_crabmod_space(&mut serial)
+            .map_err(|e| e.to_string())
+            .and_then(|space| {
+                let Some(space) = space else { return Ok(()) };
+                let mut memo = crab_build::board_memo::BoardMemo::new(&info, &space);
+                memo.modules = modules
+                    .iter()
+                    .zip(&plan.images)
+                    .map(|(m, image)| crab_build::board_memo::MemoModule {
+                        name: m.name.clone(),
+                        wasm_crc: mm::crc32(&m.wasm),
+                        image_crc: mm::crc32(&image.bytes),
+                    })
+                    .collect();
+                crab_build::board_memo::save(&project.work_dir(), &memo).map_err(|e| e.to_string())
+            });
+        if let Err(e) = remembered {
+            eprintln!("предупреждение: не удалось запомнить состояние платы: {e}");
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -1185,6 +1274,16 @@ fn run_gen_wasm(
     }
     if upload {
         link.password = project.config.project.password.clone();
+        // Without --port and --host: USB if the saved port is present, else the saved address.
+        if link.port.is_none() && link.host.is_none() {
+            match project_link_spec(&project) {
+                Ok(chosen) => link = chosen,
+                Err(message) => {
+                    eprintln!("ошибка: {message}");
+                    return ExitCode::from(EXIT_BUILD_FAILED);
+                }
+            }
+        }
         return upload_sheets(
             &project,
             &modules,
@@ -1269,7 +1368,12 @@ fn run_pull(
     ExitCode::SUCCESS
 }
 
-fn run_monitor(project_dir: &Path, library: Option<&Path>, port: Option<String>) -> ExitCode {
+fn run_monitor(
+    project_dir: &Path,
+    library: Option<&Path>,
+    port: Option<String>,
+    host: Option<String>,
+) -> ExitCode {
     let (project, lib) = match load(project_dir, library) {
         Ok(loaded) => loaded,
         Err(code) => return code,
@@ -1286,13 +1390,41 @@ fn run_monitor(project_dir: &Path, library: Option<&Path>, port: Option<String>)
             return ExitCode::from(EXIT_GEN_FAILED);
         }
     };
-    let Some(port) = port.or_else(|| project.config.board.port.clone()) else {
-        eprintln!(
-            "ошибка: укажите порт через --port или в файле проекта ([board] port = \"COM3\")"
-        );
-        return ExitCode::from(EXIT_BUILD_FAILED);
+    let failed = |message: String| {
+        eprintln!("ошибка: {message}");
+        ExitCode::from(EXIT_BUILD_FAILED)
+    };
+    // An explicit --port or --host wins; otherwise the project and the ports present decide.
+    let link = match (port, host) {
+        (Some(_), Some(_)) => return failed("укажите что-то одно: --port или --host".into()),
+        (Some(port), None) => crab_build::Chosen::Serial(port),
+        (None, Some(host)) => crab_build::Chosen::Net(host),
+        (None, None) => match crab_build::project_link(&project.config.board) {
+            Ok(link) => link,
+            Err(message) => return failed(message),
+        },
+    };
+    let password = &project.config.project.password;
+    let (connector, shown) = match &link {
+        crab_build::Chosen::Serial(port) => (crab_debug::transport::serial(port), port.clone()),
+        crab_build::Chosen::Net(host) => {
+            if password.is_empty() {
+                return failed(
+                    "для связи по сети нужен пароль проекта ([project] password) и ключ на плате (crablogic netkey)"
+                        .into(),
+                );
+            }
+            (
+                crab_debug::transport::tcp(host, password),
+                format!("{host} (по сети)"),
+            )
+        }
     };
     let table = crab_codegen::debug::debug_table(&program);
+    let modules = match crab_build::debug_modules(&program, &table, &project.work_dir()) {
+        Ok(modules) => modules,
+        Err(message) => return failed(message),
+    };
     let names: Vec<String> = table
         .entries
         .iter()
@@ -1301,12 +1433,8 @@ fn run_monitor(project_dir: &Path, library: Option<&Path>, port: Option<String>)
             crab_debug::Source::Var(v) => format!("${v}"),
         })
         .collect();
-    let session = crab_debug::Session::start_with(
-        table,
-        crab_debug::transport::serial(&port),
-        project.config.project.password.clone(),
-        || {},
-    );
+    let session = crab_debug::MasterSession::start(table, modules, connector, || {});
+    let port = shown;
     let mine = project.content_hash().ok();
     let mut reported = None;
     println!("Монитор {port}, Ctrl+C — выход");
@@ -1328,7 +1456,14 @@ fn run_monitor(project_dir: &Path, library: Option<&Path>, port: Option<String>)
                 format!("{name}={v}{mark}")
             })
             .collect();
-        println!("[{}] {}", live.status, values.join("  "));
+        if live.status.is_empty() {
+            println!("{}", values.join("  "));
+        } else {
+            println!("[{}] {}", live.status, values.join("  "));
+        }
+        if live.schema_matches == Some(false) {
+            println!("  модули на плате не совпадают с этим проектом: значений нет (залейте модули с --watch)");
+        }
         if live.project_hash != reported {
             reported = live.project_hash;
             if let Some(on_board) = reported {

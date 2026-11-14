@@ -1123,6 +1123,7 @@ dependencies = [
 name = "crab-ai"
 version = "1.6.0"
 dependencies = [
+ "crab-build",
  "crab-codegen",
  "crab-core",
  "crab-debug",
@@ -1147,8 +1148,8 @@ version = "1.6.0"
 dependencies = [
  "crab-codegen",
  "crab-core",
+ "crab-debug",
  "espflash",
- "hmac",
  "serde",
  "serialport",
  "sha2 0.10.9",
@@ -1215,7 +1216,9 @@ name = "crab-debug"
 version = "1.6.0"
 dependencies = [
  "crab-core",
+ "hmac",
  "serialport",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
 ]
 

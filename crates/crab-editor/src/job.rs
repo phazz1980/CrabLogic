@@ -271,13 +271,13 @@ fn upload_modules(
     let project = &project;
     let board = &project.config.board;
     let explicit = port.map(str::trim).filter(|p| !p.is_empty());
-    let link = match (explicit, &board.port, &board.host) {
-        (Some(text), _, _) => crab_build::net_link::BoardLink::parse(text),
-        (None, Some(port), _) => crab_build::net_link::BoardLink::parse(port),
-        (None, None, Some(host)) => crab_build::net_link::BoardLink::Tcp(host.clone()),
-        (None, None, None) => crab_build::net_link::BoardLink::Serial(
-            crab_build::choose_port(None, board).map_err(|e| e.to_string())?,
-        ),
+    // Without an explicit choice: the project's port if it is present, else its address.
+    let link = match explicit {
+        Some(text) => crab_build::net_link::BoardLink::parse(text),
+        None => match crab_build::project_link(board)? {
+            crab_build::Chosen::Serial(port) => crab_build::net_link::BoardLink::Serial(port),
+            crab_build::Chosen::Net(host) => crab_build::net_link::BoardLink::Tcp(host),
+        },
     };
     let (mut serial, port, over_net): (Box<dyn crab_build::net_link::Link>, String, bool) =
         match link {
@@ -481,7 +481,12 @@ fn upload_modules(
             "Модули залиты на {0} за {1} с (со сборкой)",
             &[&port, &seconds(started)],
         ),
-        port: (!over_net).then_some(port),
+        // The debugger connects to the same link after the upload.
+        port: Some(if over_net {
+            format!("tcp:{port}")
+        } else {
+            port
+        }),
         debug: watch,
     })
 }

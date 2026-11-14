@@ -6,12 +6,13 @@
 //!   and the answers come back as a copy of the answer queue.
 //! - Login: a fresh nonce, HMAC-SHA256 with the key (mbedtls of ESP-IDF); wrong answers are
 //!   slowed down and locked out (`crab_master_rs::netauth`).
-//! - While a client is logged in, `crab-io` takes no bytes from USB (two command streams would
-//!   mix in the middle of an upload); the answers go to both.
+//! - USB has priority (phase 1b): a USB command drops the logged-in client (`err busy usb`), and
+//!   for `USB_HOLD_MS` after a USB command a login is refused the same way. While a client is
+//!   logged in, the answers go to both.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crab_master_rs::netauth::{self, Limiter, FAIL_PAUSE_MS, PORT};
@@ -26,8 +27,10 @@ const OUT_MAX: usize = 16 * 1024;
 const LOGIN_WAIT: Duration = Duration::from_secs(5);
 const WRITE_WAIT: Duration = Duration::from_secs(2);
 /// A client silent this long is dropped: a Wi-Fi link that went away sends no FIN, and the
-/// server would stay busy (USB input stays off while a client is logged in).
+/// server would stay busy.
 const IDLE: Duration = Duration::from_secs(120);
+/// After a USB command, the network login is refused this long (someone works at the board).
+const USB_HOLD_MS: u32 = 10_000;
 
 /// The key (from NVS at start, `netkey` over USB). `crab-io` and `crab-netcmd` only.
 static KEY: Spin<Option<[u8; 32]>> = Spin::new(None);
@@ -40,10 +43,30 @@ static OUT: Spin<Vec<u8>> = Spin::new(Vec::new());
 static OVERFLOW: AtomicBool = AtomicBool::new(false);
 /// The server thread runs (started only once a key exists, to save its stack otherwise).
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Uptime of the last USB command, ms (low 32 bits, `| 1` so 0 means never).
+static USB_AT: AtomicU32 = AtomicU32::new(0);
 
-/// Whether a network client is logged in (then `crab-io` ignores USB input).
+/// Whether a network client is logged in.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
+}
+
+/// A command came over USB (called by `crab-io`).
+pub fn usb_heard() {
+    USB_AT.store(uptime_ms() as u32 | 1, Ordering::Release);
+}
+
+fn usb_busy() -> bool {
+    let at = USB_AT.load(Ordering::Acquire);
+    at != 0 && (uptime_ms() as u32).wrapping_sub(at) < USB_HOLD_MS
+}
+
+/// A USB command while a client is logged in: the client is dropped at once and the parser is
+/// cleared for USB (called by `crab-io` before it feeds the line).
+pub fn kick_for_usb() {
+    if ACTIVE.swap(false, Ordering::AcqRel) {
+        super::io::with_input(|i| i.clear());
+    }
 }
 
 /// For `info`.
@@ -264,6 +287,10 @@ fn serve(mut stream: TcpStream, listener: &TcpListener, limiter: &mut Limiter) {
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
     let _ = stream.set_write_timeout(Some(WRITE_WAIT));
+    if usb_busy() {
+        let _ = stream.write_all(b"err busy usb\n");
+        return;
+    }
     if !login(&mut stream) {
         limiter.failed(uptime_ms());
         let _ = stream.write_all(b"err auth\n");
@@ -303,6 +330,15 @@ fn serve(mut stream: TcpStream, listener: &TcpListener, limiter: &mut Limiter) {
             }
             out.clear();
         }
+        if !active() {
+            // Dropped for USB.
+            let _ = stream.write_all(b"err busy usb\n");
+            super::notes::push(
+                "netcmd",
+                "клиент по сети отключён: работа по USB".to_owned(),
+            );
+            break;
+        }
         if OVERFLOW.load(Ordering::Acquire)
             || !network_up()
             || !HAS_KEY.load(Ordering::Acquire)
@@ -312,7 +348,13 @@ fn serve(mut stream: TcpStream, listener: &TcpListener, limiter: &mut Limiter) {
         }
         refuse_others(listener);
     }
-    super::io::with_input(|i| i.clear());
+    // Our leftovers only: once dropped for USB, the parser belongs to USB and may hold its
+    // command (checked under the parser lock, which `kick_for_usb` takes after the flag).
+    super::io::with_input(|i| {
+        if active() {
+            i.clear();
+        }
+    });
     ACTIVE.store(false, Ordering::Release);
     OUT.lock_wait().clear();
     super::notes::push("netcmd", "клиент по сети отключён".to_owned());

@@ -4,20 +4,16 @@
 //! The key itself is written to the board only over USB (`netkey`).
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::time::Duration;
 
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use crab_debug::net::{self as debug_net, to_hex, LoginError};
+pub use crab_debug::net::{auth_answer, net_key, with_port, DEFAULT_PORT};
 
 use crate::mcu_module::{read_line, ModuleUploadError};
 
-/// Port of the master when the address has none.
-pub const DEFAULT_PORT: u16 = 4040;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Same short read timeout as the serial port has: the readers retry it until their own limit.
 const READ_TIMEOUT: Duration = Duration::from_millis(200);
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Anything the upload code can talk to: a serial port or a TCP stream.
 pub trait Link: Read + Write {}
@@ -31,6 +27,8 @@ pub enum NetLinkError {
     Connect { host: String, reason: String },
     #[error("к плате уже подключён другой клиент")]
     Busy,
+    #[error("плата занята: с ней работают по USB")]
+    BusyUsb,
     #[error(
         "неверный пароль для заливки по сети (или ключ на плате не записан — \
          запишите его по USB: crablogic netkey)"
@@ -85,49 +83,15 @@ pub fn looks_like_address(text: &str) -> bool {
     text.starts_with("tcp:") || (text.contains('.') && !text.contains(['/', '\\']))
 }
 
-/// The login key from the project password.
-pub fn net_key(password: &str) -> [u8; 32] {
-    let mut hash = Sha256::new();
-    hash.update(b"crablogic");
-    hash.update(password.as_bytes());
-    hash.finalize().into()
-}
-
-/// The answer to the challenge: `HMAC-SHA256(key, nonce)`.
-pub fn auth_answer(key: &[u8; 32], nonce: &[u8]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
-    mac.update(nonce);
-    mac.finalize().into_bytes().into()
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.is_ascii() {
-        return None;
-    }
-    (0..text.len() / 2)
-        .map(|i| u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok())
-        .collect()
-}
-
-fn with_port(host: &str) -> String {
-    let host = host.trim().strip_prefix("tcp:").unwrap_or(host.trim());
-    // `host:port`, or a bare host / IPv4 (an IPv6 literal in brackets is `[::1]:port`).
-    let has_port = match host.rsplit_once(':') {
-        Some((head, tail)) => {
-            !tail.is_empty()
-                && tail.bytes().all(|b| b.is_ascii_digit())
-                && (!head.contains(':') || head.ends_with(']'))
-        }
-        None => false,
-    };
-    if has_port {
-        host.to_owned()
-    } else {
-        format!("{host}:{DEFAULT_PORT}")
+fn from_login(e: LoginError) -> NetLinkError {
+    match e {
+        LoginError::NoPassword => NetLinkError::NoPassword,
+        LoginError::Connect { host, reason } => NetLinkError::Connect { host, reason },
+        LoginError::Busy => NetLinkError::Busy,
+        LoginError::BusyUsb => NetLinkError::BusyUsb,
+        LoginError::BadPassword => NetLinkError::BadPassword,
+        LoginError::Protocol(p) => NetLinkError::Protocol(p),
+        LoginError::Io(reason) => NetLinkError::Link(reason),
     }
 }
 
@@ -135,57 +99,7 @@ fn with_port(host: &str) -> String {
 /// the serial port: reads time out after 200 ms (`WouldBlock` or `TimedOut`, both retried by the
 /// upload code).
 pub fn connect(host: &str, password: &str) -> Result<TcpStream, NetLinkError> {
-    if password.is_empty() {
-        return Err(NetLinkError::NoPassword);
-    }
-    let addr = with_port(host);
-    let fail = |reason: String| NetLinkError::Connect {
-        host: host.to_owned(),
-        reason,
-    };
-    let addrs = addr.to_socket_addrs().map_err(|e| fail(e.to_string()))?;
-    let mut last = String::from("адрес не найден");
-    let mut stream = None;
-    for a in addrs {
-        match TcpStream::connect_timeout(&a, CONNECT_TIMEOUT) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(e) => last = e.to_string(),
-        }
-    }
-    let mut stream = stream.ok_or_else(|| fail(last))?;
-    stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    login(&mut stream, password).map_err(|e| match e {
-        NetLinkError::Link(reason) => fail(reason),
-        other => other,
-    })?;
-    Ok(stream)
-}
-
-/// The login on an opened link.
-fn login<P: Read + Write>(port: &mut P, password: &str) -> Result<(), NetLinkError> {
-    let line = read_line(port)?;
-    if line == "err busy" {
-        return Err(NetLinkError::Busy);
-    }
-    let nonce = line
-        .strip_prefix("auth ")
-        .and_then(|hex| from_hex(hex.trim()))
-        .filter(|n| !n.is_empty())
-        .ok_or_else(|| NetLinkError::Protocol(line.clone()))?;
-    let answer = auth_answer(&net_key(password), &nonce);
-    port.write_all(format!("auth {}\n", to_hex(&answer)).as_bytes())?;
-    port.flush()?;
-    match read_line(port)?.as_str() {
-        "ok" => Ok(()),
-        "err auth" => Err(NetLinkError::BadPassword),
-        "err busy" => Err(NetLinkError::Busy),
-        other => Err(NetLinkError::Protocol(other.to_owned())),
-    }
+    debug_net::connect(host, password, READ_TIMEOUT).map_err(from_login)
 }
 
 /// Writes the network key of `password` to the board over USB (`netkey <hex>`), or removes it
@@ -250,6 +164,7 @@ mod tests {
 
     #[test]
     fn key_is_sha256_of_prefix_and_password() {
+        use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(b"crablogicsecret");
         let want: [u8; 32] = h.finalize().into();
@@ -264,22 +179,6 @@ mod tests {
         assert_eq!(a, auth_answer(&key, &NONCE));
         assert_ne!(a, auth_answer(&key, b"fedcba9876543210"));
         assert_ne!(a, auth_answer(&net_key("other"), &NONCE));
-    }
-
-    #[test]
-    fn hex_round_trip() {
-        assert_eq!(from_hex("00ff10").unwrap(), vec![0, 255, 16]);
-        assert!(from_hex("0").is_none());
-        assert!(from_hex("zz").is_none());
-    }
-
-    #[test]
-    fn addresses_get_the_default_port() {
-        assert_eq!(with_port("1.2.3.4"), "1.2.3.4:4040");
-        assert_eq!(with_port("1.2.3.4:5000"), "1.2.3.4:5000");
-        assert_eq!(with_port("tcp:board.local"), "board.local:4040");
-        assert_eq!(with_port("[::1]"), "[::1]:4040");
-        assert_eq!(with_port("[::1]:7"), "[::1]:7");
     }
 
     #[test]

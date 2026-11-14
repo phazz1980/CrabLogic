@@ -87,3 +87,6 @@ mod serial {
 
 #[cfg(feature = "serial")]
 pub use serial::{serial, serial_at};
+
+#[cfg(feature = "net")]
+pub use crate::net::{self, tcp};

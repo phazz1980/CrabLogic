@@ -95,28 +95,34 @@ impl Context for FolderContext {
     }
 
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String> {
-        let port = self
-            .project
-            .config
-            .board
-            .port
-            .clone()
-            .ok_or("порт платы не задан в файле проекта ([board] port = \"COM3\")")?;
+        let board = &self.project.config.board;
+        let link = crab_build::project_link(board)?;
         let project = self.project.without_disabled();
         let program = Program::build(&project, &self.lib).map_err(|e| e.to_string())?;
         let table = crab_codegen::debug::debug_table(&program);
-        let session = crab_debug::Session::start_with(
-            table.clone(),
-            crab_debug::transport::serial(&port),
-            self.project.config.project.password.clone(),
-            || {},
-        );
+        let modules = crab_build::debug_modules(&program, &table, &project.work_dir())?;
+        let connector = match link {
+            crab_build::Chosen::Serial(port) => crab_debug::transport::serial(&port),
+            crab_build::Chosen::Net(host) => {
+                let password = &self.project.config.project.password;
+                if password.is_empty() {
+                    return Err(
+                        "плата задана адресом по сети, но у проекта нет пароля ([project] password)"
+                            .into(),
+                    );
+                }
+                crab_debug::transport::tcp(&host, password)
+            }
+        };
+        let session = crab_debug::MasterSession::start(table.clone(), modules, connector, || {});
         // Wait for a full set of values or give up after a few seconds.
         let mut live = session.snapshot();
-        for _ in 0..30 {
+        for _ in 0..50 {
             thread::sleep(Duration::from_millis(100));
             live = session.snapshot();
-            if live.schema_matches == Some(false) || live.values.iter().all(Option::is_some) {
+            if live.schema_matches == Some(false)
+                || (live.schema_matches == Some(true) && live.values.iter().all(Option::is_some))
+            {
                 break;
             }
         }
@@ -182,7 +188,8 @@ fn upload_with_cli(project: &Project, port: Option<String>, debug: bool) -> Resu
     if debug {
         command.arg("--watch");
     }
-    if let Some(port) = port.or_else(|| project.config.board.port.clone()) {
+    // Without an explicit port the command line chooses by the project: USB, else the network.
+    if let Some(port) = port {
         match network_address(&port) {
             Some(host) => command.arg("--host").arg(host),
             None => command.arg("--port").arg(port),

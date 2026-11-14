@@ -7,12 +7,15 @@ use serialport::SerialPortType;
 
 pub mod aot_xtensa;
 pub mod board_memo;
+pub mod debug_link;
 pub mod flash;
 pub mod mcu_module;
 pub mod net_link;
 pub mod placement;
 pub mod upload_plan;
 pub mod wamrc;
+
+pub use debug_link::{choose_link, choose_link_auto, debug_modules, project_link, Chosen};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {

@@ -182,10 +182,13 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
         app.open_board_settings(ui.ctx());
     }
     ui.separator();
-    let selected = if app.port.is_empty() {
-        crate::i18n::tr("авто").to_owned()
-    } else {
-        app.port.clone()
+    // The link that is used now: USB when the saved port is present, else the saved address.
+    let link = app.effective_link();
+    let (plug, selected) = match &link {
+        Ok(crab_build::Chosen::Serial(port)) => ("🔌 ", port.clone()),
+        Ok(crab_build::Chosen::Net(host)) => ("🌐 ", host.clone()),
+        Err(_) if app.port.is_empty() => ("🔌 ", crate::i18n::tr("авто").to_owned()),
+        Err(_) => ("🔌 ", app.port.clone()),
     };
     // The plug stays large; the port name beside it is smaller.
     let color = ui.visuals().widgets.inactive.fg_stroke.color;
@@ -196,7 +199,7 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
         valign: egui::Align::Center,
         ..Default::default()
     };
-    shown.append("🔌 ", 0.0, font(17.0));
+    shown.append(plug, 0.0, font(17.0));
     shown.append(&selected, 0.0, font(13.0));
     // Outline instead of a filled background.
     let saved = ui.visuals().widgets.clone();
@@ -217,7 +220,7 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut app.port, String::new(), crate::i18n::tr("авто"))
                 .on_hover_text(crate::i18n::tr(
-                    "Порт из настроек проекта или единственный найденный",
+                    "Единственный найденный порт (или адрес по сети из настроек проекта)",
                 ));
             for p in &app.ports {
                 let text = if p.description.is_empty() || p.description == p.address {
@@ -231,14 +234,19 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
                 ui.weak(crate::i18n::tr("портов не найдено"));
             }
             ui.separator();
-            if app.net_target() {
-                let address = app.port.clone();
-                ui.selectable_value(&mut app.port, address.clone(), address);
+            if let Some(host) = app.board_host() {
+                ui.label(format!("🌐 {host}")).on_hover_text(crate::i18n::tr(
+                    "Адрес платы по сети: используется, когда сохранённого COM-порта нет в системе",
+                ));
+                if ui.button(crate::i18n::tr("Убрать адрес по сети")).clicked() {
+                    app.set_board_host(None);
+                    ui.close();
+                }
             }
             if ui
                 .button(crate::i18n::tr("По сети…"))
                 .on_hover_text(crate::i18n::tr(
-                    "Залить модули по Wi-Fi или Ethernet: адрес платы",
+                    "Адрес платы для работы без кабеля: заливка и отладка по Wi-Fi или Ethernet. COM-порт остаётся в проекте",
                 ))
                 .clicked()
             {
@@ -247,7 +255,14 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
             }
         })
         .response
-        .on_hover_text(crate::i18n::tr("Порт платы"));
+        .on_hover_text(match &link {
+            Ok(crab_build::Chosen::Net(_)) => crate::i18n::tr(
+                "Связь с платой: по сети. USB главнее: если кабель подключён — по USB",
+            ),
+            _ => crate::i18n::tr(
+                "Связь с платой: по USB. USB главнее: если кабель подключён — по USB, иначе по адресу сети (По сети…)",
+            ),
+        });
     ui.visuals_mut().widgets = saved;
     if app.port != port_before {
         app.target_changed();
@@ -287,8 +302,7 @@ pub fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
             crate::i18n::tr("Залить модули: листы схемы как WASM-модули в мастер-прошивку на плате, без перепрошивки"),
         )
     {
-        let port = app.port_choice();
-        app.start_job(JobKind::UploadModules { port }, ui.ctx());
+        app.upload_modules_now(ui.ctx());
     }
     icon_toggle(
         ui,

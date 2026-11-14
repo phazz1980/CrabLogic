@@ -7,6 +7,8 @@ pub mod board_report;
 pub mod image;
 pub mod master;
 pub mod monitor;
+#[cfg(feature = "net")]
+pub mod net;
 pub mod protocol;
 pub mod pull;
 pub mod session;

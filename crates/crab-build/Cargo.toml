@@ -11,7 +11,7 @@ serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 sha2 = "0.10"
-hmac = "0.12"
+crab-debug = { path = "../crab-debug", features = ["net"] }
 wasmparser = "0.263"
 ureq = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
