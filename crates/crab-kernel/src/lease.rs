@@ -50,6 +50,11 @@ impl Fault {
 pub trait Hal: Clone {
     /// Called once when a lease of `pin` ends and `fault` is not [`Fault::Hold`].
     fn safe(&self, pin: u8, use_: PinUse, fault: Fault);
+    /// A lease of `pin` was taken or changed: a board keeps the safe state where a watchdog can
+    /// reach it without the kernel (`specs/safety-audit`).
+    fn leased(&self, _pin: u8, _use: PinUse, _fault: Fault) {}
+    /// The lease of `pin` ended (after [`Hal::safe`]).
+    fn ended(&self, _pin: u8) {}
 }
 
 /// A board without outputs to protect (the PC simulator records outputs in its stub instead).
@@ -89,6 +94,7 @@ impl<H: Hal> Drop for Lease<H> {
         if self.fault != Fault::Hold {
             self.hal.safe(self.pin, self.use_, self.fault);
         }
+        self.hal.ended(self.pin);
     }
 }
 
@@ -112,8 +118,10 @@ impl<H: Hal> Leases<H> {
             l.use_ = use_;
             l.fault = fault;
             l.inherited = false;
+            self.hal.leased(pin, use_, fault);
             return;
         }
+        self.hal.leased(pin, use_, fault);
         self.held.push(Lease {
             pin,
             use_,
@@ -218,5 +226,41 @@ mod tests {
         );
         assert!(new.holds(4) && !new.holds(1) && !new.holds(3));
         assert_eq!(new.release_inherited(), 0);
+    }
+
+    /// Records the hooks a board uses for its watchdog table.
+    #[derive(Clone, Default)]
+    struct Table(Rc<RefCell<Vec<Option<Fault>>>>);
+
+    impl Hal for Table {
+        fn safe(&self, _: u8, _: PinUse, _: Fault) {}
+        fn leased(&self, pin: u8, _: PinUse, fault: Fault) {
+            let mut t = self.0.borrow_mut();
+            if t.len() <= pin as usize {
+                t.resize(pin as usize + 1, None);
+            }
+            t[pin as usize] = Some(fault);
+        }
+        fn ended(&self, pin: u8) {
+            self.0.borrow_mut()[pin as usize] = None;
+        }
+    }
+
+    #[test]
+    fn hooks_follow_the_leases() {
+        let hal = Table::default();
+        let mut l = Leases::new(hal.clone());
+        l.take(2, PinUse::Out, Fault::Low);
+        l.take(2, PinUse::Out, Fault::High);
+        l.take(5, PinUse::Pwm, Fault::Hold);
+        assert_eq!(hal.0.borrow()[2], Some(Fault::High));
+        assert_eq!(hal.0.borrow()[5], Some(Fault::Hold));
+        // A handed-over lease stays in the table: the outputs do not change.
+        let mut new = Leases::new(hal.clone());
+        l.hand_over(&mut new);
+        assert_eq!(hal.0.borrow()[2], Some(Fault::High));
+        new.release();
+        assert_eq!(hal.0.borrow()[2], None);
+        assert_eq!(hal.0.borrow()[5], None);
     }
 }

@@ -120,6 +120,8 @@ pub enum Command {
     CoreErase,
     /// `selftest panic`: crashes the master on purpose, to check the crash dump.
     SelfTestPanic,
+    /// `selftest hang`: hangs the scan on purpose, to check the scan watchdog.
+    SelfTestHang,
 }
 
 /// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
@@ -428,6 +430,7 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
         },
         "selftest" => match one(&mut args)? {
             "panic" => Command::SelfTestPanic,
+            "hang" => Command::SelfTestHang,
             _ => return Err(ParseError::UnknownCommand),
         },
         _ => return Err(ParseError::UnknownCommand),
@@ -599,6 +602,7 @@ mod core_tests {
         assert!(parse_command("core read x").is_err());
         assert!(parse_command("core info 1").is_err());
         assert!(parse_command("selftest").is_err());
+        assert_eq!(parse_command("selftest hang"), Ok(Command::SelfTestHang));
         assert!(parse_command("selftest other").is_err());
     }
 

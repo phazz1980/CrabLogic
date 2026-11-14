@@ -36,6 +36,7 @@ mod spin;
 mod tick;
 mod uart;
 pub(crate) mod usb;
+mod watchdog;
 mod web;
 
 use std::time::{Duration, Instant};
@@ -209,7 +210,15 @@ fn count_boot() -> u32 {
         _ => Reset::Other,
     };
     // SAFETY: called once, from the runtime thread, before anything else touches the counter.
-    unsafe { (*core::ptr::addr_of_mut!(BOOT_COUNTER)).boot(why) }
+    // Volatile copy in and out: the optimizer must not shrink `magic` (only ever 0 or MAGIC) to a
+    // bit, or the garbage of RTC memory passes for a valid counter.
+    unsafe {
+        let p = core::ptr::addr_of_mut!(BOOT_COUNTER);
+        let mut counter = p.read_volatile();
+        let bad = counter.boot(why);
+        p.write_volatile(counter);
+        bad
+    }
 }
 
 impl Master {
@@ -224,7 +233,10 @@ impl Master {
             upload: None,
             started: Instant::now(),
             layout: 0,
-            bad_boots: count_boot(),
+            bad_boots: {
+                watchdog::take_trip();
+                count_boot()
+            },
             cycle: Cycle::new(crab_kernel::abi::DEFAULT_PERIOD_MS),
             overruns_noted: 0,
             overruns_noted_at: 0,
@@ -277,7 +289,18 @@ impl Master {
                 if memory == 0 {
                     memory = crab_mem(bytes).unwrap_or(0);
                 }
-                Image::Wasm(bytes.to_vec())
+                // A failed Rust allocation aborts the firmware: the copy is reserved first, so
+                // a module that does not fit is an error, not a restart (`specs/safety-audit`).
+                let mut copy = Vec::new();
+                copy.try_reserve_exact(bytes.len()).map_err(|_| {
+                    format!(
+                        "не хватает памяти для образа модуля ({} байт, свободно {})",
+                        bytes.len(),
+                        free_heap()
+                    )
+                })?;
+                copy.extend_from_slice(bytes);
+                Image::Wasm(copy)
             }
             ExecutionMode::AotXip => Image::AotXip(bytes),
         };
@@ -343,6 +366,8 @@ impl Master {
     /// `by_hand` (upload, `swap`, `reset`, boot) starts the restart policy afresh; a restart by
     /// the policy keeps its pause growth, fault count, pause flag and reported pins.
     fn start(&mut self, at: usize, by_hand: bool) -> Result<(), String> {
+        // Loading and starting a module is long and known: the scan watchdog waits longer.
+        watchdog::hold(watchdog::HOLD_MS);
         let area = self
             .storage
             .area(at)
@@ -842,7 +867,20 @@ impl Master {
             Ok(Command::CoreRead { offset }) => coredump::answer_read(offset),
             Ok(Command::CoreErase) => coredump::answer_erase(),
             // Never a panic in the scan: the test crash is made by `crab-io` only.
-            Ok(Command::SelfTestPanic) => println!("err selftest is answered by the port thread"),
+            // Only test builds crash on purpose (in `crab-io`); a released master refuses it.
+            Ok(Command::SelfTestPanic) => println!("err selftest is not in this build"),
+            // A hang of the scan on purpose: the scan watchdog must restart the board.
+            #[cfg(feature = "selftest")]
+            Ok(Command::SelfTestHang) => {
+                println!("ok");
+                // The normal deadline, not the longer one commands get.
+                watchdog::feed();
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            #[cfg(not(feature = "selftest"))]
+            Ok(Command::SelfTestHang) => println!("err selftest is not in this build"),
             // The answers the editor knows from the C++ master.
             Err(
                 e @ (ParseError::BadIndexOrType
@@ -893,7 +931,12 @@ impl Master {
     /// Everything between two steps: the commands handed over by `crab-io`, the upload, notes of
     /// the network.
     fn between_steps(&mut self) {
-        for event in io::take_for_scan() {
+        let events = io::take_for_scan();
+        if !events.is_empty() || self.upload.is_some() {
+            // Commands and image chunks may write flash: longer than a step may take.
+            watchdog::hold(watchdog::HOLD_MS);
+        }
+        for event in events {
             match event {
                 Event::Line(line) => self.command(&line),
                 Event::Chunk(data) => self.chunk(&data),
@@ -996,10 +1039,15 @@ impl Master {
     fn run(&mut self) -> ! {
         let (mut ticker, error) = tick::Ticker::new(self.cycle.period_ms());
         if let Some(e) = error {
-            self.log("cycle", &format!("{e}; период по тикам FreeRTOS"));
+            self.log(
+                "cycle",
+                &format!("{e}; период по тикам FreeRTOS, сторож шага не работает"),
+            );
         }
+        watchdog::set_period(self.cycle.period_ms());
         loop {
             ticker.wait();
+            watchdog::feed();
             let dt = self.cycle.begin(tick::now_us());
             self.scan(dt);
             let overran = self.cycle.end(tick::now_us());
@@ -1017,6 +1065,7 @@ impl Master {
             if want != self.cycle.period_ms() {
                 self.cycle.set_period(want);
                 ticker.set_period(want);
+                watchdog::set_period(want);
             }
         }
     }

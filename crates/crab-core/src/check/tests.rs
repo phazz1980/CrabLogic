@@ -38,6 +38,37 @@ fn library() -> Library {
             dir: Default::default(),
         });
     }
+    for (kind, mode, inputs, pin) in [("hw_in", "in", "", 4), ("hw_out", "out", "in", 5)] {
+        let input = if inputs.is_empty() {
+            String::new()
+        } else {
+            "[[input]]
+name = \"in\"
+type = \"bool\"
+"
+            .to_string()
+        };
+        let def: BlockDef = toml::from_str(&format!(
+            "[block]
+type = \"{kind}\"
+name = \"{kind}\"
+group = \"Тест\"
+                 [[param]]
+name = \"pin\"
+type = \"pin\"
+mode = \"{mode}\"
+default = {pin}
+                 {input}[[output]]
+name = \"out\"
+type = \"bool\"
+"
+        ))
+        .unwrap();
+        lib.insert(LibraryBlock {
+            def,
+            dir: Default::default(),
+        });
+    }
     lib
 }
 
@@ -117,6 +148,34 @@ fn chain_order() {
     assert!(!r.has_errors(), "{:#?}", r.diagnostics);
     assert_eq!(ids(&logic, &r.order), ["a", "b", "c"]);
     assert!(r.feedback.is_empty());
+}
+
+#[test]
+fn inputs_first_outputs_last() {
+    // Declared out of order: the output first, then logic, the input last.
+    let (logic, r) = run(
+        &[("o", "hw_out"), ("n", "not"), ("s", "src"), ("i", "hw_in")],
+        &[("s.out", "o.in"), ("s.out", "n.in")],
+    );
+    assert!(!r.has_errors(), "{:#?}", r.diagnostics);
+    assert_eq!(ids(&logic, &r.order), ["i", "s", "n", "o"]);
+}
+
+#[test]
+fn dependencies_win_over_scan_class() {
+    // The output block feeds `n`, so it still runs before it, although `n` is ordinary.
+    let (logic, r) = run(
+        &[
+            ("o", "hw_out"),
+            ("n", "not"),
+            ("s", "src"),
+            ("t", "src"),
+            ("i", "hw_in"),
+        ],
+        &[("s.out", "o.in"), ("o.out", "n.in")],
+    );
+    assert!(!r.has_errors(), "{:#?}", r.diagnostics);
+    assert_eq!(ids(&logic, &r.order), ["i", "s", "t", "o", "n"]);
 }
 
 #[test]

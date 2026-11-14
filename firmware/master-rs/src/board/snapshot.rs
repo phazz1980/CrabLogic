@@ -4,7 +4,6 @@
 //! debugger, a busy snapshot is published one step later.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
 
 use crab_kernel::host::OutputEvent;
 use crab_master_rs::boot_guard;
@@ -97,8 +96,9 @@ pub static SNAP: Spin<Snapshot> = Spin::new(Snapshot {
     cycle: None,
 });
 
-/// Module errors and `log` lines of modules: (milliseconds since start, text).
-static JOURNAL: Mutex<VecDeque<(u32, String)>> = Mutex::new(VecDeque::new());
+/// Module errors and `log` lines of modules: (milliseconds since start, text). A "ceiling" lock:
+/// the scan writes, `crab-io` copies the lines out above the scan priority.
+static JOURNAL: Spin<VecDeque<(u32, String)>> = Spin::new(VecDeque::new());
 
 /// The scan only tries this lock (a step later when busy); `crab-io` waits for it.
 fn snap() -> Guard<'static, Snapshot> {
@@ -106,7 +106,7 @@ fn snap() -> Guard<'static, Snapshot> {
 }
 
 pub fn log(ms: u32, line: String) {
-    let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut j = JOURNAL.lock_scan();
     if j.len() == JOURNAL_LINES {
         j.pop_front();
     }
@@ -115,12 +115,7 @@ pub fn log(ms: u32, line: String) {
 
 /// `log`.
 pub fn answer_log() {
-    let lines: Vec<(u32, String)> = JOURNAL
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .cloned()
-        .collect();
+    let lines: Vec<(u32, String)> = JOURNAL.lock_ceiling().iter().cloned().collect();
     for (ms, text) in lines {
         println!("{ms} {text}");
     }
@@ -237,7 +232,11 @@ pub fn answer_info() {
         _ => "other",
     };
     let bad = snap().bad_boots;
-    println!("reset={reason} bad={bad}");
+    // `trip=scan:<ms>`: the scan watchdog restarted the board (the step ran past that limit).
+    match super::watchdog::boot_trip() {
+        Some(ms) => println!("reset={reason} bad={bad} trip=scan:{ms}"),
+        None => println!("reset={reason} bad={bad}"),
+    }
     println!("crabmod={}/{} largest={}", storage.0, storage.1, storage.2);
     for line in areas {
         println!("{line}");

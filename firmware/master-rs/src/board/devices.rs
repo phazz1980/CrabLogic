@@ -131,6 +131,14 @@ impl Hal for BoardHal {
         }
         write_pin(pin, high);
     }
+
+    fn leased(&self, pin: u8, use_: PinUse, fault: Fault) {
+        super::watchdog::leased(pin, use_, fault);
+    }
+
+    fn ended(&self, pin: u8) {
+        super::watchdog::ended(pin);
+    }
 }
 
 /// The devices of one module: its claims and open buses (`crab.bus`) live and die with it.

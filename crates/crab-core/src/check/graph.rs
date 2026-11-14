@@ -330,15 +330,20 @@ pub(super) fn order_blocks(
         }
     }
 
-    // Kahn's algorithm; ties are broken by declaration order for stable output.
-    let mut ready: BinaryHeap<Reverse<usize>> =
-        (0..n).filter(|&i| indegree[i] == 0).map(Reverse).collect();
-    while let Some(Reverse(i)) = ready.pop() {
+    // Kahn's algorithm. Among the ready blocks, hardware inputs go first and hardware
+    // outputs last (the "I/O image": inputs are sampled at the start of a step, outputs
+    // written at its end whenever dependencies allow); ties are broken by declaration order.
+    let class = |i: usize| scan_class(defs[i]);
+    let mut ready: BinaryHeap<Reverse<(u8, usize)>> = (0..n)
+        .filter(|&i| indegree[i] == 0)
+        .map(|i| Reverse((class(i), i)))
+        .collect();
+    while let Some(Reverse((_, i))) = ready.pop() {
         report.order.push(i);
         for &j in &active[i] {
             indegree[j] -= 1;
             if indegree[j] == 0 {
-                ready.push(Reverse(j));
+                ready.push(Reverse((class(j), j)));
             }
         }
     }
@@ -361,6 +366,26 @@ pub(super) fn order_blocks(
                 ),
             );
         }
+    }
+}
+
+/// Scan class of a block: 0 hardware input, 1 ordinary, 2 hardware output. A block is an
+/// input (output) when it has a `pin` parameter that only reads (only drives) the pin;
+/// a block with both kinds of pins is ordinary.
+fn scan_class(def: Option<&BlockDef>) -> u8 {
+    let Some(def) = def else { return 1 };
+    let (mut input, mut output) = (false, false);
+    for p in def.params.iter().filter(|p| p.kind == ParamKind::Pin) {
+        match p.mode {
+            crate::PinMode::In | crate::PinMode::Adc => input = true,
+            crate::PinMode::Out | crate::PinMode::Pwm | crate::PinMode::Dac => output = true,
+            crate::PinMode::Io => {}
+        }
+    }
+    match (input, output) {
+        (true, false) => 0,
+        (false, true) => 2,
+        _ => 1,
     }
 }
 

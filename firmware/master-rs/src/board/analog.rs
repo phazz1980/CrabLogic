@@ -259,10 +259,10 @@ fn oneshot_read(index: usize, unit: sys::adc_unit_t, channel: sys::adc_channel_t
         }
         adc.units[index] = Some(Unit(handle));
     }
-    let handle = adc.units[index]
-        .as_ref()
-        .map(|u| u.0)
-        .expect("opened above");
+    // Opened above; no panic in the step path all the same (`specs/safety-audit`).
+    let Some(handle) = adc.units[index].as_ref().map(|u| u.0) else {
+        return 0;
+    };
     if adc.channels[index] >> channel & 1 == 0 {
         let cfg = sys::adc_oneshot_chan_cfg_t {
             atten: sys::adc_atten_t_ADC_ATTEN_DB_12,

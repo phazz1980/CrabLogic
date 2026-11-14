@@ -6,7 +6,7 @@
 //! 0xFF is the default pin of the board.
 
 use super::bus;
-use std::sync::Mutex;
+use super::spin::Spin;
 use std::time::{Duration, Instant};
 
 /// Chips one board serves.
@@ -37,7 +37,9 @@ struct Chip {
     ready: bool,
 }
 
-static TABLE: Mutex<Vec<Chip>> = Mutex::new(Vec::new());
+/// A "ceiling" lock (`board/spin.rs`): the step reads and sets words, the poll task copies the
+/// table out and back above the scan priority, never across a bus transfer.
+static TABLE: Spin<Vec<Chip>> = Spin::new(Vec::new());
 
 /// The chip of `key`, registered at its first use; the poll task starts with the first chip.
 fn with_chip<R>(
@@ -47,7 +49,7 @@ fn with_chip<R>(
     first: u16,
     f: impl FnOnce(&mut Chip) -> R,
 ) -> Option<R> {
-    let mut table = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = TABLE.lock_scan();
     let period = u64::try_from(period.max(5)).unwrap_or(5);
     let index = match table.iter().position(|c| c.key == key) {
         Some(i) => {
@@ -124,10 +126,10 @@ fn start_task() {
 
 fn poll_all() {
     // Copies out, so modules are not held up by a slow bus.
-    let chips: Vec<Chip> = TABLE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let chips: Vec<Chip> = TABLE.lock_ceiling().clone();
     for chip in chips {
         let polled = poll(chip, Instant::now());
-        let mut table = TABLE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut table = TABLE.lock_ceiling();
         if let Some(c) = table.iter_mut().find(|c| c.key == chip.key) {
             // Keep what modules changed meanwhile (the wanted word, roles, period).
             c.sent = polled.sent;

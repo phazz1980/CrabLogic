@@ -121,7 +121,7 @@ impl Bus {
             }
             Request::I2cOpen { sda, scl, hz } => self.i2c_open(sda, scl, hz),
             Request::I2cWrite { addr, ptr, len } => {
-                let Some(data) = self.i2c_ready(mem.read(ptr, len as i32, len)) else {
+                let Some(data) = self.i2c_ready(mem.slice(ptr, len)) else {
                     return self.i2c_fail();
                 };
                 // SAFETY: `data` outlives the call; the address was claimed.
@@ -157,7 +157,7 @@ impl Bus {
                 super::i2c_send::send(slot, addr as u8, data)
             }
             Request::I2cRead { addr, ptr, len } => {
-                if !self.i2c || mem.read(ptr, len as i32, len).is_none() {
+                if !self.i2c || mem.slice(ptr, len).is_none() {
                     return self.i2c_fail();
                 }
                 let mut buf = [0u8; MAX_LEN as usize];
@@ -183,10 +183,10 @@ impl Bus {
                 rptr,
                 rlen,
             } => {
-                let Some(data) = self.i2c_ready(mem.read(wptr, wlen as i32, wlen)) else {
+                let Some(data) = self.i2c_ready(mem.slice(wptr, wlen)) else {
                     return self.i2c_fail();
                 };
-                if mem.read(rptr, rlen as i32, rlen).is_none() {
+                if mem.slice(rptr, rlen).is_none() {
                     return ERR_ARGS;
                 }
                 let mut buf = [0u8; MAX_LEN as usize];
@@ -209,7 +209,7 @@ impl Bus {
             }
             Request::UartOpen { port, tx, rx, baud } => self.uart_open(port, tx, rx, baud),
             Request::UartWrite { port, ptr, len } => {
-                let Some(data) = mem.read(ptr, len as i32, len) else {
+                let Some(data) = mem.slice(ptr, len) else {
                     return ERR_ARGS;
                 };
                 if !self.owns_uart(port) {
@@ -230,7 +230,7 @@ impl Bus {
                 }
             }
             Request::UartRead { port, ptr, cap } => {
-                if mem.read(ptr, cap as i32, cap).is_none() {
+                if mem.slice(ptr, cap).is_none() {
                     return ERR_ARGS;
                 }
                 if !self.owns_uart(port) {
@@ -282,12 +282,14 @@ impl Bus {
                 if !self.spi {
                     return ERR_NOT_CLAIMED;
                 }
-                let Some(data) = mem.read(ptr, len as i32, len) else {
+                let Some(data) = mem.slice(ptr, len) else {
                     return ERR_ARGS;
                 };
-                match spi_transfer(cs, mode, &data) {
-                    Ok(Some(rx)) => store(mem, ptr, &rx),
-                    Ok(None) => len as i32,
+                // The answer goes to a buffer on the stack: no heap work in the step.
+                let mut rx = [0u8; MAX_LEN as usize];
+                match spi_transfer(cs, mode, data, &mut rx[..len]) {
+                    Ok(true) => store(mem, ptr, &rx[..len]),
+                    Ok(false) => len as i32,
                     Err(code) => code,
                 }
             }
@@ -296,11 +298,11 @@ impl Bus {
                 ow_reset(pin) as i32
             }
             Request::OwWrite { pin, ptr, len } => {
-                let Some(data) = mem.read(ptr, len as i32, len) else {
+                let Some(data) = mem.slice(ptr, len) else {
                     return ERR_ARGS;
                 };
                 self.ow_setup(pin);
-                for byte in &data {
+                for byte in data {
                     for bit in 0..8 {
                         ow_write_bit(pin, byte >> bit & 1 != 0);
                     }
@@ -308,7 +310,7 @@ impl Bus {
                 len as i32
             }
             Request::OwRead { pin, ptr, len } => {
-                if mem.read(ptr, len as i32, len).is_none() {
+                if mem.slice(ptr, len).is_none() {
                     return ERR_ARGS;
                 }
                 self.ow_setup(pin);
@@ -335,7 +337,7 @@ impl Bus {
                 ptr,
                 count,
             } => {
-                if mem.read(ptr, (count * 2) as i32, count * 2).is_none() {
+                if mem.slice(ptr, count * 2).is_none() {
                     return ERR_ARGS;
                 }
                 self.ow_setup(pin);
@@ -354,7 +356,7 @@ impl Bus {
     }
 
     /// The data to send if this module opened the bus and the memory range is valid.
-    fn i2c_ready(&self, data: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    fn i2c_ready<'m>(&self, data: Option<&'m [u8]>) -> Option<&'m [u8]> {
         if self.i2c {
             data
         } else {
@@ -661,7 +663,7 @@ pub fn system_i2c_read(addr: u8, buf: &mut [u8]) -> bool {
 }
 
 /// One full-duplex SPI transfer with CS held low by GPIO. `Ok(None)`: nothing to read back (no MISO).
-fn spi_transfer(cs: i32, mode: u8, tx: &[u8]) -> Result<Option<Vec<u8>>, i32> {
+fn spi_transfer(cs: i32, mode: u8, tx: &[u8], rx: &mut [u8]) -> Result<bool, i32> {
     let mut shared = SPI.lock().unwrap_or_else(|e| e.into_inner());
     let Some((_, _, miso)) = shared.pins else {
         return Err(ERR_NOT_CLAIMED);
@@ -692,7 +694,6 @@ fn spi_transfer(cs: i32, mode: u8, tx: &[u8]) -> Result<Option<Vec<u8>>, i32> {
         }
         shared.cs_ready |= 1 << cs;
     }
-    let mut rx = vec![0u8; if miso >= 0 { tx.len() } else { 0 }];
     // SAFETY: a zeroed transaction is valid for the C struct; the buffers outlive the call.
     let mut t: sys::spi_transaction_t = unsafe { core::mem::zeroed() };
     t.length = tx.len() * 8;
@@ -713,7 +714,7 @@ fn spi_transfer(cs: i32, mode: u8, tx: &[u8]) -> Result<Option<Vec<u8>>, i32> {
     if err != 0 {
         return Err(io_error(err));
     }
-    Ok((miso >= 0).then_some(rx))
+    Ok(miso >= 0)
 }
 
 fn delay_us(us: u32) {

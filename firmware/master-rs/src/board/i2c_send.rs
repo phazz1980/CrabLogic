@@ -4,24 +4,30 @@
 //! The step never waits here: a busy queue answers "not yet" (0) and the module tries again.
 
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Condvar, Mutex};
 
 use crab_kernel::abi::bus_op::ERR_BUS;
 use crab_master_rs::send_queue::{SendQueue, MAX};
 use esp_idf_svc::sys;
 
-const STACK: usize = 3072;
+use super::spin::Spin;
 
-/// The queue; `None` until the first module sends.
-static QUEUE: Mutex<Option<Box<SendQueue>>> = Mutex::new(None);
-static WAKE: Condvar = Condvar::new();
+const STACK: usize = 3072;
+/// The longest sleep of the thread between notifications, FreeRTOS ticks (1 ms each): a lost
+/// notification only delays a send.
+const WAIT_TICKS: u32 = 100;
+
+/// The queue; `None` until the first module sends. A "try" lock (`board/spin.rs`): the step only
+/// tries it, the thread waits for it.
+static QUEUE: Spin<Option<Box<SendQueue>>> = Spin::new(None);
 /// The FreeRTOS task of the thread (for its stack figure in `list`).
 static TASK: AtomicPtr<core::ffi::c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 /// A slot for a module: sets the queue and the thread up on the first call. `Err` is a
-/// `crab.bus` code: no thread or every slot owned.
+/// `crab.bus` code: no thread or every slot owned, or 0 ("not yet") while the thread holds the queue.
 pub fn claim() -> Result<usize, i32> {
-    let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(mut q) = QUEUE.try_lock() else {
+        return Err(0);
+    };
     if q.is_none() {
         if !start() {
             return Err(ERR_BUS);
@@ -33,7 +39,7 @@ pub fn claim() -> Result<usize, i32> {
 
 /// The module of `slot` went (called when its bus goes).
 pub fn release(slot: usize) {
-    if let Some(q) = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(q) = QUEUE.lock_wait().as_mut() {
         q.release(slot);
     }
 }
@@ -42,14 +48,24 @@ pub fn release(slot: usize) {
 #[link_section = ".iram1.crab_i2c_send"]
 pub fn send(slot: usize, addr: u8, data: &[u8]) -> i32 {
     let code = match QUEUE.try_lock() {
-        Ok(mut q) => match q.as_mut() {
+        Some(mut q) => match q.as_mut() {
             Some(q) => q.send(slot, addr, data),
             None => ERR_BUS,
         },
-        Err(_) => return 0,
+        None => return 0,
     };
-    if code > 0 {
-        WAKE.notify_one();
+    let task = TASK.load(Ordering::Relaxed);
+    if code > 0 && !task.is_null() {
+        // SAFETY: the task never ends once started.
+        unsafe {
+            sys::xTaskGenericNotify(
+                task.cast(),
+                0,
+                1,
+                sys::eNotifyAction_eSetBits,
+                core::ptr::null_mut(),
+            )
+        };
     }
     code
 }
@@ -73,18 +89,15 @@ fn run() {
     );
     let mut buf = [0u8; MAX];
     loop {
-        let job = {
-            let mut q = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                if let Some(job) = q.as_mut().and_then(|q| q.take(&mut buf)) {
-                    break job;
-                }
-                q = WAKE.wait(q).unwrap_or_else(|e| e.into_inner());
-            }
+        let job = QUEUE.lock_wait().as_mut().and_then(|q| q.take(&mut buf));
+        let Some((slot, addr, len)) = job else {
+            // A send after `take` found nothing sets the bit, so this returns at once.
+            // SAFETY: waits on the notification of the calling task.
+            unsafe { sys::ulTaskGenericNotifyTake(0, 1, WAIT_TICKS) };
+            continue;
         };
-        let (slot, addr, len) = job;
         let err = super::bus::queued_i2c_write(addr, &buf[..len]);
-        if let Some(q) = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(q) = QUEUE.lock_wait().as_mut() {
             q.done(slot, err);
         }
     }

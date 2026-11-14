@@ -9,6 +9,11 @@ build = "build.rs"
 # target/toolchain and must not affect desktop builds.
 [workspace]
 
+[features]
+# Test commands of the master (`selftest panic`, `selftest hang`): only in test builds
+# (`cargo build --release --features selftest`), never in a released firmware (specs/safety-audit).
+selftest = []
+
 [dependencies]
 crab-kernel = { path = "../../crates/crab-kernel", default-features = false }
 

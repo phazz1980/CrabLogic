@@ -25,6 +25,7 @@ unsafe extern "C" fn on_mark(
     _edata: *const sys::gptimer_alarm_event_data_t,
     task: *mut c_void,
 ) -> bool {
+    super::watchdog::check();
     let mut woken: sys::BaseType_t = 0;
     // SAFETY: `task` is the scan task, which never ends while the timer runs.
     unsafe {

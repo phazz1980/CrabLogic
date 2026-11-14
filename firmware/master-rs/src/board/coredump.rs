@@ -126,7 +126,8 @@ pub fn answer_erase() {
         return;
     };
     // SAFETY: the partition record is valid; the range is its first sector.
-    let err = unsafe { sys::esp_partition_erase_range(d.part as *const sys::esp_partition_t, 0, ERASE) };
+    let err =
+        unsafe { sys::esp_partition_erase_range(d.part as *const sys::esp_partition_t, 0, ERASE) };
     if err == sys::ESP_OK {
         println!("ok");
     } else {

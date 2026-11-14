@@ -18,6 +18,9 @@ const READ_WAIT_MS: u32 = 2;
 
 /// The parser of the port: the scan switches it to image chunks once an upload is ready.
 static INPUT: Mutex<Option<Input>> = Mutex::new(None);
+/// Events waiting for the scan, at most (`specs/safety-audit`): `crab-io` waits for room, so the
+/// port is slowed down instead of the memory growing or an image chunk being lost.
+const TO_SCAN_MAX: usize = 64;
 /// Commands and chunks for the scan, oldest first.
 static TO_SCAN: Spin<VecDeque<Event>> = Spin::new(VecDeque::new());
 
@@ -83,9 +86,20 @@ fn handle(event: Event) {
             Ok(Command::CoreRead { offset }) => return super::coredump::answer_read(offset),
             Ok(Command::CoreErase) => return super::coredump::answer_erase(),
             // A crash on purpose (`specs/bug-report`): ESP-IDF writes the dump and restarts.
+            #[cfg(feature = "selftest")]
             Ok(Command::SelfTestPanic) => panic!("selftest panic"),
             _ => {}
         }
     }
-    TO_SCAN.lock_wait().push_back(event);
+    let mut event = Some(event);
+    while let Some(e) = event.take() {
+        let mut q = TO_SCAN.lock_wait();
+        if q.len() < TO_SCAN_MAX {
+            q.push_back(e);
+        } else {
+            drop(q);
+            event = Some(e);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }

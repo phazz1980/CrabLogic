@@ -10,6 +10,8 @@ use esp_idf_svc::io::Write;
 use esp_idf_svc::sys;
 use std::ffi::CString;
 use std::sync::Mutex;
+
+use super::spin::{Guard, Spin};
 use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!(concat!(env!("OUT_DIR"), "/device_page.html"));
@@ -26,25 +28,31 @@ struct State {
     last_try: Option<Instant>,
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
-static STARTED: Mutex<Option<Instant>> = Mutex::new(None);
+/// Shared by the step (widget values) and the threads `web` and the HTTP server. A "ceiling" lock
+/// (`board/spin.rs`): the threads hold it only for work in memory, never for flash or the network
+/// (`specs/safety-audit`), so the step waits at most for that short section.
+static STATE: Spin<Option<State>> = Spin::new(None);
 
-fn lock() -> std::sync::MutexGuard<'static, Option<State>> {
-    STATE.lock().unwrap_or_else(|e| e.into_inner())
+/// Taken by the step.
+fn lock_scan() -> Guard<'static, Option<State>> {
+    STATE.lock_scan()
 }
 
+/// Taken by the background threads.
+fn lock() -> Guard<'static, Option<State>> {
+    STATE.lock_ceiling()
+}
+
+/// Milliseconds since boot (the page only compares them).
 fn now_ms() -> u32 {
-    let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
-    started
-        .get_or_insert_with(Instant::now)
-        .elapsed()
-        .as_millis() as u32
+    // SAFETY: no arguments, no state.
+    (unsafe { sys::esp_timer_get_time() } / 1000) as u32
 }
 
 /// `net` ops 17–24 of modules.
 pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32, mem: &mut Mem<'_>) -> i32 {
-    let mut guard = lock();
-    if guard.is_none() {
+    if lock_scan().is_none() {
+        // The first call of a module: the saved layout is read from NVS outside the lock.
         let mut web = WebState::new(PAGE);
         if let Some((bytes, hash)) = load_layout() {
             web.restore_layout(&bytes, hash);
@@ -52,17 +60,17 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32, mem: &mut Mem<'_>) -> i32 {
         if let Some(saved) = load_net() {
             web.restore_net(saved);
         }
-        *guard = Some(State {
+        *lock_scan() = Some(State {
             web,
             server: false,
             last_try: None,
         });
-        drop(guard);
         start_task();
-        guard = lock();
     }
-    let state = guard.as_mut().expect("set above");
-    state.web.net_op(op, a, b, c, d, mem, now_ms())
+    match lock_scan().as_mut() {
+        Some(state) => state.web.net_op(op, a, b, c, d, mem, now_ms()),
+        None => 0,
+    }
 }
 
 fn start_task() {
@@ -76,28 +84,41 @@ fn start_task() {
 }
 
 fn tick() {
-    let mut guard = lock();
-    let Some(s) = guard.as_mut() else { return };
-    s.web.tick(now_ms());
-    if let Some((bytes, hash)) = s.web.layout_for_save() {
+    // Only memory work under the lock; NVS writes and the server start come after it.
+    let (layout, net, start) = {
+        let mut guard = lock();
+        let Some(s) = guard.as_mut() else { return };
+        s.web.tick(now_ms());
+        let layout = s
+            .web
+            .layout_for_save()
+            .map(|(bytes, hash)| (bytes.to_vec(), hash));
+        let net = s.web.take_net_save();
+        // Wi-Fi scan is not in the Rust master yet: the page shows an empty list.
+        let _ = s.web.scan_wanted();
+        let start = !s.server
+            && s.web.complete()
+            && super::net::link_ready()
+            && s.last_try.is_none_or(|t| t.elapsed() >= RETRY);
+        if start {
+            s.last_try = Some(Instant::now());
+        }
+        (layout, net, start)
+    };
+    if let Some((bytes, hash)) = layout {
         if load_layout().map(|(_, h)| h) != Some(hash) {
-            save_layout(bytes, hash);
+            save_layout(&bytes, hash);
         }
     }
-    if let Some(saved) = s.web.take_net_save() {
+    if let Some(saved) = net {
         save_net(&saved);
     }
-    // Wi-Fi scan is not in the Rust master yet: the page shows an empty list.
-    let _ = s.web.scan_wanted();
-    if !s.server
-        && s.web.complete()
-        && super::net::link_ready()
-        && s.last_try.is_none_or(|t| t.elapsed() >= RETRY)
-    {
-        s.last_try = Some(Instant::now());
+    if start {
         if let Some(server) = start_server() {
             core::mem::forget(server);
-            s.server = true;
+            if let Some(s) = lock().as_mut() {
+                s.server = true;
+            }
             super::notes::push("web", "страница устройства на порту 80".into());
         }
     }
