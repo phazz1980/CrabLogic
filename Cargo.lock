@@ -1162,6 +1162,7 @@ dependencies = [
 name = "crab-cli"
 version = "1.6.0"
 dependencies = [
+ "chrono",
  "clap",
  "crab-build",
  "crab-codegen",
@@ -1172,6 +1173,7 @@ dependencies = [
  "serde",
  "serialport",
  "toml 0.8.23",
+ "zip",
 ]
 
 [[package]]

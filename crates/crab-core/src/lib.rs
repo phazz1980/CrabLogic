@@ -23,6 +23,7 @@ pub mod packed;
 pub mod pins;
 pub mod project;
 pub mod protect;
+pub mod report;
 pub mod tags;
 pub mod uart;
 pub mod value;

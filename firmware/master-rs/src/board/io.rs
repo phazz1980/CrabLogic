@@ -79,6 +79,11 @@ fn handle(event: Event) {
             Ok(Command::Outputs { name, count }) => return snapshot::answer_outputs(&name, count),
             Ok(Command::Events { name }) => return snapshot::answer_events(&name),
             Ok(Command::Log) => return snapshot::answer_log(),
+            Ok(Command::CoreInfo) => return super::coredump::answer_info(),
+            Ok(Command::CoreRead { offset }) => return super::coredump::answer_read(offset),
+            Ok(Command::CoreErase) => return super::coredump::answer_erase(),
+            // A crash on purpose (`specs/bug-report`): ESP-IDF writes the dump and restarts.
+            Ok(Command::SelfTestPanic) => panic!("selftest panic"),
             _ => {}
         }
     }

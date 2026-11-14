@@ -16,6 +16,7 @@
 
 mod analog;
 mod bus;
+mod coredump;
 mod devices;
 mod engine;
 mod eth;
@@ -836,6 +837,12 @@ impl Master {
             Ok(Command::Queue { name, cap }) => self.queue(&name, cap),
             Ok(Command::Bus) => self.bus(),
             Ok(Command::Log) => snapshot::answer_log(),
+            // Answered by `crab-io`; here only if handed over anyway.
+            Ok(Command::CoreInfo) => coredump::answer_info(),
+            Ok(Command::CoreRead { offset }) => coredump::answer_read(offset),
+            Ok(Command::CoreErase) => coredump::answer_erase(),
+            // Never a panic in the scan: the test crash is made by `crab-io` only.
+            Ok(Command::SelfTestPanic) => println!("err selftest is answered by the port thread"),
             // The answers the editor knows from the C++ master.
             Err(
                 e @ (ParseError::BadIndexOrType
@@ -1069,7 +1076,10 @@ pub fn main() {
     let runtime = std::thread::Builder::new()
         .stack_size(RUNTIME_STACK)
         .spawn(|| {
-            let started = usb::init().and_then(|()| Master::new());
+            let started = usb::init().and_then(|()| {
+                coredump::init();
+                Master::new()
+            });
             match started {
                 Ok(mut master) => {
                     println!("master ready");

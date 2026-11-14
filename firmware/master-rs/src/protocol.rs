@@ -110,7 +110,20 @@ pub enum Command {
     },
     /// `bus`: the queues of the modules and the topics.
     Bus,
+    /// `core info`: whether a crash dump is stored, its length and CRC (`specs/bug-report`).
+    CoreInfo,
+    /// `core read <offset>`: up to [`CORE_CHUNK`] bytes of the dump from `offset`.
+    CoreRead {
+        offset: usize,
+    },
+    /// `core erase`: forgets the stored dump.
+    CoreErase,
+    /// `selftest panic`: crashes the master on purpose, to check the crash dump.
+    SelfTestPanic,
 }
+
+/// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
+pub const CORE_CHUNK: usize = 512;
 
 /// Longest topic name, exclusive (as in the C++ master).
 pub const MAX_TOPIC_NAME: usize = 24;
@@ -405,6 +418,18 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
             runs: number(&mut args)?,
         },
         "bus" | "topic" | "queue" => parse_bus(command, &mut args)?,
+        "core" => match one(&mut args)? {
+            "info" => Command::CoreInfo,
+            "read" => Command::CoreRead {
+                offset: number(&mut args)?,
+            },
+            "erase" => Command::CoreErase,
+            _ => return Err(ParseError::UnknownCommand),
+        },
+        "selftest" => match one(&mut args)? {
+            "panic" => Command::SelfTestPanic,
+            _ => return Err(ParseError::UnknownCommand),
+        },
         _ => return Err(ParseError::UnknownCommand),
     };
     no_more(&mut args)?;
@@ -421,6 +446,17 @@ pub fn format_outputs(outputs: &[u32], count: usize) -> String {
 }
 
 /// `ev <name> <now ms> <lost> <slot>:<value>:<ms> ...`
+/// `core <offset> <hex> <crc32 hex>`: one piece of the crash dump; the CRC covers the piece.
+pub fn format_core_chunk(offset: usize, data: &[u8]) -> String {
+    let mut line = String::with_capacity(24 + data.len() * 2);
+    let _ = write!(line, "core {offset} ");
+    for b in data {
+        let _ = write!(line, "{b:02x}");
+    }
+    let _ = write!(line, " {:08x}", crate::storage::crc32(data));
+    line
+}
+
 pub fn format_events(name: &str, now_ms: u32, lost: u32, events: &[(u8, u8, u32)]) -> String {
     let mut line = String::new();
     let _ = write!(line, "ev {name} {now_ms} {lost}");
@@ -542,6 +578,35 @@ impl Input {
                 return Some(Event::Line(String::from(text)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod core_tests {
+    use super::*;
+
+    #[test]
+    fn core_commands_parse() {
+        assert_eq!(parse_command("core info"), Ok(Command::CoreInfo));
+        assert_eq!(
+            parse_command("core read 1024"),
+            Ok(Command::CoreRead { offset: 1024 })
+        );
+        assert_eq!(parse_command("core erase"), Ok(Command::CoreErase));
+        assert_eq!(parse_command("selftest panic"), Ok(Command::SelfTestPanic));
+        assert!(parse_command("core").is_err());
+        assert!(parse_command("core read").is_err());
+        assert!(parse_command("core read x").is_err());
+        assert!(parse_command("core info 1").is_err());
+        assert!(parse_command("selftest").is_err());
+        assert!(parse_command("selftest other").is_err());
+    }
+
+    #[test]
+    fn core_chunk_line() {
+        let line = format_core_chunk(512, &[0x00, 0xab, 0x7f]);
+        let crc = crate::storage::crc32(&[0x00, 0xab, 0x7f]);
+        assert_eq!(line, alloc::format!("core 512 00ab7f {crc:08x}"));
     }
 }
 

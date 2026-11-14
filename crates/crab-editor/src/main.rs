@@ -22,6 +22,7 @@ mod debugview;
 mod dialogs;
 mod displaypanel;
 mod doc;
+mod editlog;
 mod help;
 mod i18n;
 mod job;
@@ -52,6 +53,7 @@ fn main() -> eframe::Result {
         selfupdate::run_helper(&args[1..]);
         return Ok(());
     }
+    editlog::install_panic_hook();
     // A project file given on the command line, e.g. by double click in Explorer.
     let project = std::env::args_os().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {

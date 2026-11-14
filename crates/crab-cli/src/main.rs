@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod bench;
+mod report_cmd;
+mod report_decode;
 
 use clap::{Parser, Subcommand};
 use crab_build::upload_plan::{self, SheetModule, StopReport, UploadReport};
@@ -159,6 +161,32 @@ enum Command {
         #[command(subcommand)]
         action: BlockAction,
     },
+    /// Собрать отчёт об ошибке в ZIP: данные платы, дамп сбоя, проект без паролей
+    Report {
+        /// Порт платы, например COM3 (без порта отчёт без данных платы)
+        #[arg(long, short)]
+        port: Option<String>,
+        /// Файл проекта .crab (пароли и ключи заменяются на ***)
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Описание проблемы
+        #[arg(long)]
+        describe: Option<String>,
+        /// Куда сохранить (по умолчанию crablogic-report-<дата>-<время>.zip в текущей папке)
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Стереть дамп сбоя на плате после того, как он прочитан и отчёт записан
+        #[arg(long)]
+        erase_core: bool,
+    },
+    /// Расшифровать дамп сбоя платы из отчёта в стек с именами функций (нужны gdb чипа и ELF мастера)
+    ReportDecode {
+        /// ZIP-файл отчёта
+        zip: PathBuf,
+        /// ELF мастера той же версии (по умолчанию firmware/<чип>/crab-master-rs.elf или последняя сборка)
+        #[arg(long)]
+        elf: Option<PathBuf>,
+    },
     /// Перевести проект из старого формата (папка с project.toml, logic.toml,
     /// layout.toml) в один файл <папка>/<папка>.crab; старые файлы не удаляются
     Convert {
@@ -220,6 +248,29 @@ fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { project } => run_check(&project, cli.library.as_deref()),
+        Command::Report {
+            port,
+            project,
+            describe,
+            out,
+            erase_core,
+        } => report_cmd::run_report(
+            report_cmd::ReportArgs {
+                port,
+                project,
+                describe,
+                out,
+                erase_core,
+            },
+            cli.library.as_deref(),
+        ),
+        Command::ReportDecode { zip, elf } => match report_decode::run(&zip, elf.as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("ошибка: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Monitor { project, port } => run_monitor(&project, cli.library.as_deref(), port),
         Command::Hash { project } => match Project::load(&project)
             .map_err(|e| e.to_string())

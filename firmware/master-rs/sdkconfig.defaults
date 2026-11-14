@@ -18,3 +18,11 @@ CONFIG_ETH_SPI_ETHERNET_W5500=y
 # The continuous ADC (analog inputs) keeps sampling while a module is written to flash: its ISR must
 # live in IRAM, or an interrupt with the flash cache off crashes the board.
 CONFIG_ADC_CONTINUOUS_ISR_IRAM_SAFE=y
+
+# Crash dump to the `coredump` partition (64 KB, specs/bug-report): written by ESP-IDF on a panic or
+# a watchdog, read back with `core read` for the bug report. ELF with CRC32; task stacks only (no
+# whole DRAM), so it fits the partition.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_CHECK_BOOT=y

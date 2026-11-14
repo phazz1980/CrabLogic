@@ -56,6 +56,9 @@ pub struct Live {
     pub master_safe: Option<u32>,
     /// Flash (NVS) write counters of the master, from the `nvs` line of its `info` answer.
     pub nvs: Option<crate::protocol::NvsStats>,
+    /// Reason of the last restart of the master from the `reset=` line of `info`
+    /// (`panic`, `int_wdt`, `poweron`, ...); `None` until told.
+    pub master_reset: Option<String>,
 }
 
 impl Live {

@@ -12,6 +12,15 @@ serde_json = "1"
 thiserror = "2"
 toml = "0.8"
 
+# Keep target/debug small: PDB debug info of every test binary and dependency
+# was the main source of growth (152 GB). Line tables are enough for backtraces.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 strip = true
 lto = "thin"

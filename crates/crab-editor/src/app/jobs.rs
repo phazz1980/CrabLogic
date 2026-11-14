@@ -28,6 +28,9 @@ impl EditorApp {
             });
         }
         let errors = doc.report.errors().count();
+        for l in &lines {
+            crate::editlog::write(l.level.name(), &l.text.to_string());
+        }
         self.log.extend(lines);
         self.update_board_check_now();
         let board_lines = self

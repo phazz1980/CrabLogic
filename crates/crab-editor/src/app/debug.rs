@@ -77,7 +77,9 @@ impl EditorApp {
         if self.console.hold && !self.ai.busy() {
             self.console.hold = false;
         }
-        let busy = self.console.hold || self.job.as_ref().is_some_and(|j| j.uses_port);
+        let busy = self.console.hold
+            || self.report.building()
+            || self.job.as_ref().is_some_and(|j| j.uses_port);
         let port = self.board_port();
         self.console.debug_reader = self.doc.as_ref().is_some_and(|doc| {
             crab_core::uart::block_uarts(&doc.project.logic, &self.lib)
@@ -96,6 +98,45 @@ impl EditorApp {
         if self.bottom_tab == BottomTab::Console {
             self.console.unread = 0;
         }
+    }
+
+    /// Draws the bug report form; saves the report when the user chose a file.
+    pub(super) fn poll_report(&mut self, ctx: &egui::Context) {
+        // The form is taken out of the editor while it reads facts from the rest of it.
+        let mut form = std::mem::take(&mut self.report);
+        let event = form.show(ctx, &report_facts(self, form.open));
+        match event {
+            Some(crate::report::Event::Save(path)) => {
+                // The board data needs the port: debugging and the monitor let it go.
+                if form.wants_board() {
+                    self.stop_debug();
+                    self.console.release();
+                }
+                form.start(
+                    path,
+                    &report_facts(self, true),
+                    &self.lib,
+                    crate::update::CURRENT,
+                    ctx,
+                );
+            }
+            Some(crate::report::Event::Done { path, problems }) => {
+                if path.as_os_str().is_empty() {
+                    self.info(LogLevel::Error, crate::i18n::tr("Отчёт не сохранён"));
+                } else {
+                    self.info(
+                        LogLevel::Ok,
+                        crate::i18n::fmt("Отчёт сохранён: {0}", &[&path.display()]),
+                    );
+                    crate::report::reveal(&path);
+                }
+                for p in problems {
+                    self.info(LogLevel::Warning, p);
+                }
+            }
+            None => {}
+        }
+        self.report = form;
     }
 
     pub fn stop_debug(&mut self) {
@@ -191,6 +232,22 @@ impl EditorApp {
                 crate::i18n::fmt("Отладка {0}: {1}", &[&port, &status]),
             );
         }
+        // The board restarted after a crash: one hint per connection.
+        let crash = self.debug.as_mut().and_then(|d| {
+            let reason = crash_reason(d.live.master_reset.as_deref()?)?;
+            let first = !d.reset_logged;
+            d.reset_logged = true;
+            first.then_some(reason)
+        });
+        if let Some(reason) = crash {
+            self.info(
+                LogLevel::Warning,
+                crate::i18n::fmt(
+                    "Плата перезапустилась после сбоя ({0}). Сохраните отчёт об ошибке: Справка → Сообщить об ошибке.",
+                    &[&crate::i18n::tr(reason)],
+                ),
+            );
+        }
         let Some(d) = &mut self.debug else {
             *self.ai_live.lock().expect("live values") = None;
             return;
@@ -218,5 +275,47 @@ impl EditorApp {
                 .collect()
         });
         *self.ai_live.lock().expect("live values") = published;
+    }
+}
+
+/// Russian name of a restart reason that means a crash; `None` for a normal restart.
+fn crash_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        "panic" => Some("паника"),
+        "int_wdt" | "task_wdt" | "wdt" => Some("сторожевой таймер"),
+        "brownout" => Some("просадка питания"),
+        _ => None,
+    }
+}
+
+/// What the report form shows about the editor. Borrows only the fields it reads, so the
+/// form (a field of the editor) can be borrowed mutably next to it.
+fn report_facts(app: &EditorApp, with_log: bool) -> crate::report::Facts<'_> {
+    let doc = app.doc.as_ref();
+    crate::report::Facts {
+        project: doc.map(|d| &d.project),
+        board_name: doc.map(|d| {
+            crate::boardcfg::board_name(&d.project.config.board, app.lib.boards()).to_owned()
+        }),
+        port: doc.and(app.board_port()),
+        recent: if with_log {
+            let skip = app.log.len().saturating_sub(50);
+            app.log[skip..].iter().map(|l| l.text.to_string()).collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crash_reason;
+
+    #[test]
+    fn only_crashes_give_a_reason() {
+        assert_eq!(crash_reason("task_wdt"), Some("сторожевой таймер"));
+        assert_eq!(crash_reason("brownout"), Some("просадка питания"));
+        assert_eq!(crash_reason("panic"), Some("паника"));
+        assert_eq!(crash_reason("poweron"), None);
     }
 }

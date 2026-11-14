@@ -393,14 +393,34 @@ impl Project {
     /// failed save never leaves a broken project. Comments in the TOML files
     /// are not preserved.
     pub fn save_with(&self, extra: &[(&str, &[u8])]) -> Result<()> {
-        let texts = self.files(true)?;
         let tmp = self.path.with_extension(format!("{PROJECT_EXT}.tmp"));
         let write_err = |source| Error::Write {
             path: self.path.clone(),
             source,
         };
         let file = File::create(&tmp).map_err(write_err)?;
-        let mut zip = ZipWriter::new(BufWriter::new(file));
+        let mut out = BufWriter::new(file);
+        self.write_archive(&mut out, extra)?;
+        out.flush().map_err(write_err)?;
+        drop(out);
+        std::fs::rename(&tmp, &self.path).map_err(write_err)
+    }
+
+    /// The archive (schema files plus `extra` entries) packed in memory: the copy that goes
+    /// into the firmware or a bug report. Equal projects give equal bytes (no timestamps).
+    pub fn archive_bytes(&self, extra: &[(&str, &[u8])]) -> Result<Vec<u8>> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        self.write_archive(&mut out, extra)?;
+        Ok(out.into_inner())
+    }
+
+    fn write_archive<W: Write + std::io::Seek>(
+        &self,
+        out: &mut W,
+        extra: &[(&str, &[u8])],
+    ) -> Result<()> {
+        let texts = self.files(true)?;
+        let mut zip = ZipWriter::new(out);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         let entries = texts
             .iter()
@@ -409,35 +429,13 @@ impl Project {
         for (name, data) in entries {
             zip.start_file(name, options)
                 .map_err(|e| zip_err(&self.path, e))?;
-            zip.write_all(data).map_err(write_err)?;
+            zip.write_all(data).map_err(|source| Error::Write {
+                path: self.path.clone(),
+                source,
+            })?;
         }
-        zip.finish()
-            .map_err(|e| zip_err(&self.path, e))?
-            .flush()
-            .map_err(write_err)?;
-        std::fs::rename(&tmp, &self.path).map_err(write_err)
-    }
-
-    /// The schema files packed into an archive in memory: the copy that goes into the
-    /// firmware. Equal projects give equal bytes (no timestamps), so an unchanged
-    /// project does not change the sketch.
-    pub fn archive_bytes(&self) -> Result<Vec<u8>> {
-        let texts = self.files(true)?;
-        let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        for (name, text) in &texts {
-            zip.start_file(*name, options)
-                .map_err(|e| zip_err(&self.path, e))?;
-            zip.write_all(text.as_bytes())
-                .map_err(|source| Error::Write {
-                    path: self.path.clone(),
-                    source,
-                })?;
-        }
-        Ok(zip
-            .finish()
-            .map_err(|e| zip_err(&self.path, e))?
-            .into_inner())
+        zip.finish().map_err(|e| zip_err(&self.path, e))?;
+        Ok(())
     }
 
     /// The text of the schema files as they are stored: the web page blocks go to

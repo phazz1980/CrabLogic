@@ -35,6 +35,8 @@ pub struct DebugState {
     pub hash_asked: bool,
     /// The last connection status written to the messages, so each change is logged once.
     pub logged_status: String,
+    /// The restart after a crash was already written to the messages in this session.
+    pub reset_logged: bool,
 }
 
 /// One cycle time report with the time it arrived (seconds since the session start).
@@ -110,6 +112,7 @@ impl DebugState {
             checked: None,
             hash_asked: false,
             logged_status: String::new(),
+            reset_logged: false,
         })
     }
 

@@ -1,20 +1,55 @@
-//! "Report a bug": a small form in the editor; "Send" opens a prefilled new-issue page in
-//! the browser. Nothing is sent by the editor itself; the user reviews the text and submits it.
+//! "Report a bug" (`specs/bug-report`): a form that saves a ZIP for the developer. The editor
+//! sends nothing itself; the user passes the file on.
 
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
+
+use crab_core::report::{self, BoardData, Report};
+use crab_core::Project;
 use eframe::egui;
 
-/// Log lines put into the report.
-const LOG_LINES: usize = 12;
-/// Characters of one log line.
-const LINE_LEN: usize = 200;
+/// Newest messages of the editor put into the report.
+const RECENT_LINES: usize = 50;
+
+/// What the editor knows when the form is drawn.
+pub struct Facts<'a> {
+    pub project: Option<&'a Project>,
+    /// Name of the board of the open project.
+    pub board_name: Option<String>,
+    /// Port of the board, when there is one.
+    pub port: Option<String>,
+    /// Newest messages, oldest first.
+    pub recent: Vec<String>,
+}
+
+/// What the form tells the editor.
+pub enum Event {
+    /// The user chose the file: the editor must free the port, then call [`Form::start`].
+    Save(PathBuf),
+    /// The report is written.
+    Done {
+        path: PathBuf,
+        problems: Vec<String>,
+    },
+}
+
+/// Result of the background build.
+struct Finished {
+    path: PathBuf,
+    problems: Vec<String>,
+}
 
 /// State of the report window.
 pub struct Form {
     pub open: bool,
     what: String,
-    expected: String,
-    with_env: bool,
-    with_log: bool,
+    with_project: bool,
+    with_board: bool,
+    /// Text of `panic.txt` attached to this report (the form was opened from the crash question).
+    panic: Option<String>,
+    /// Crash of the previous run, not yet decided on.
+    crash_question: Option<String>,
+    working: Option<Receiver<Finished>>,
 }
 
 impl Default for Form {
@@ -22,17 +57,45 @@ impl Default for Form {
         Self {
             open: false,
             what: String::new(),
-            expected: String::new(),
-            with_env: true,
-            with_log: true,
+            with_project: false,
+            with_board: true,
+            panic: None,
+            crash_question: None,
+            working: None,
         }
     }
 }
 
 impl Form {
-    /// Draws the window; returns the issue URL when "Send" was pressed.
-    pub fn show(&mut self, ctx: &egui::Context, facts: &Context) -> Option<String> {
-        let mut send = false;
+    /// The form is building a report: the board port is taken.
+    pub fn building(&self) -> bool {
+        self.working.is_some()
+    }
+
+    /// The report will read the board (its checkbox is on).
+    pub fn wants_board(&self) -> bool {
+        self.with_board
+    }
+
+    /// Looks for the note of a crash of the previous run and asks about it.
+    pub fn check_crash(&mut self) {
+        self.crash_question = crate::editlog::pending_panic();
+    }
+
+    /// Draws the windows and the progress; returns what the editor has to do.
+    pub fn show(&mut self, ctx: &egui::Context, facts: &Facts) -> Option<Event> {
+        self.crash_window(ctx);
+        if let Some(Finished { path, problems }) = self.poll(ctx) {
+            self.open = false;
+            self.what.clear();
+            self.panic = None;
+            return Some(Event::Done { path, problems });
+        }
+        if !self.open {
+            return None;
+        }
+        let busy = self.working.is_some();
+        let mut save = false;
         let mut open = self.open;
         egui::Window::new(crate::i18n::tr("Сообщить об ошибке"))
             .open(&mut open)
@@ -40,178 +103,229 @@ impl Form {
             .resizable(true)
             .default_width(460.0)
             .show(ctx, |ui| {
-                ui.label(crate::i18n::tr("Что произошло"));
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.what)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY),
-                );
-                ui.label(crate::i18n::tr("Что ожидалось"));
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.expected)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                );
-                ui.checkbox(&mut self.with_env, crate::i18n::tr("Приложить версию, ОС и плату"));
-                ui.checkbox(&mut self.with_log, crate::i18n::tr("Приложить последние сообщения"));
-                ui.weak(crate::i18n::tr("Откроется страница GitHub с этим текстом: проверьте его и отправьте. Файл проекта .crab можно перетащить в поле описания."));
-                send = ui
-                    .add_enabled(
-                        !self.what.trim().is_empty(),
-                        egui::Button::new(crate::i18n::tr("Отправить на GitHub")),
-                    )
-                    .clicked();
+                ui.add_enabled_ui(!busy, |ui| {
+                    ui.label(crate::i18n::tr("Что делали и что пошло не так"));
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.what)
+                            .desired_rows(5)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if self.panic.is_some() {
+                        ui.weak(crate::i18n::tr(
+                            "К отчёту приложена запись о прошлом сбое программы.",
+                        ));
+                    }
+                    ui.add_enabled(
+                        facts.project.is_some(),
+                        egui::Checkbox::new(
+                            &mut self.with_project,
+                            crate::i18n::tr("Приложить проект (пароли и ключи скрыты)"),
+                        ),
+                    );
+                    let label = match &facts.port {
+                        Some(port) => crate::i18n::fmt("Данные платы (порт {0})", &[port]),
+                        None => crate::i18n::tr("Данные платы (порт не выбран)").to_owned(),
+                    };
+                    ui.add_enabled(
+                        facts.port.is_some(),
+                        egui::Checkbox::new(&mut self.with_board, label),
+                    );
+                    ui.weak(crate::i18n::tr(
+                        "Отладка и монитор порта на время сбора данных платы останавливаются.",
+                    ));
+                    ui.weak(crate::i18n::tr(
+                        "Отчёт — ZIP-файл. Отправьте его разработчику сами (почта, мессенджер). Проверьте проект перед отправкой: скрыты только известные поля паролей.",
+                    ));
+                });
+                ui.horizontal(|ui| {
+                    let ready = !self.what.trim().is_empty() && !busy;
+                    save = ui
+                        .add_enabled(
+                            ready,
+                            egui::Button::new(crate::i18n::tr("Сохранить отчёт…")),
+                        )
+                        .clicked();
+                    if busy {
+                        ui.spinner();
+                        ui.label(crate::i18n::tr("Собираю отчёт…"));
+                    }
+                });
             });
-        self.open = open;
-        if !send {
+        // The window stays while the report is being built.
+        self.open = open || busy;
+        if !save {
             return None;
         }
-        let url = issue_url(
-            facts,
-            &Fields {
-                what: &self.what,
-                expected: &self.expected,
-                with_env: self.with_env,
-                with_log: self.with_log,
-            },
-        );
-        *self = Self::default();
-        Some(url)
+        let stamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+        let mut dialog = rfd::FileDialog::new()
+            .set_file_name(report::report_file_name(&stamp))
+            .add_filter("ZIP", &["zip"]);
+        if let Some(dir) = desktop() {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.save_file().map(Event::Save)
     }
-}
 
-/// What the user typed and chose.
-pub struct Fields<'a> {
-    pub what: &'a str,
-    pub expected: &'a str,
-    pub with_env: bool,
-    pub with_log: bool,
-}
-
-/// Facts about the running editor and the open project.
-pub struct Context<'a> {
-    pub repo: &'a str,
-    pub version: &'a str,
-    /// Board name and FQBN of the open project, if any.
-    pub board: Option<(&'a str, &'a str)>,
-    /// Newest log lines, oldest first.
-    pub log: Vec<String>,
-}
-
-/// URL of the new-issue form with the body filled in.
-pub fn issue_url(c: &Context, f: &Fields) -> String {
-    let mut body = crate::i18n::fmt(
-        "## Что произошло\n{0}\n\n## Что ожидалось\n{1}\n",
-        &[&f.what.trim(), &f.expected.trim()],
-    );
-    if f.with_env {
-        body.push_str("\n## Данные\n");
-        body.push_str(&format!("- Версия: {}\n", c.version));
-        body.push_str(&format!("- ОС: {}\n", std::env::consts::OS));
-        match c.board {
-            Some((name, fqbn)) => body.push_str(&format!("- Плата: {name} (`{fqbn}`)\n")),
-            None => body.push_str("- Плата: проект не открыт\n"),
+    /// The question about the crash of the previous run.
+    fn crash_window(&mut self, ctx: &egui::Context) {
+        if self.crash_question.is_none() {
+            return;
+        }
+        let mut answer = None;
+        egui::Window::new(crate::i18n::tr("Прошлый сбой"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(crate::i18n::tr(
+                    "В прошлый раз программа завершилась с ошибкой. Сохранить отчёт об ошибке?",
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button(crate::i18n::tr("Сохранить отчёт…")).clicked() {
+                        answer = Some(true);
+                    }
+                    if ui.button(crate::i18n::tr("Не надо")).clicked() {
+                        answer = Some(false);
+                    }
+                });
+            });
+        if let Some(save) = answer {
+            let text = self.crash_question.take();
+            if save {
+                self.panic = text;
+                self.open = true;
+            }
+            // Handled either way: the question is not asked again.
+            crate::editlog::archive_panic();
         }
     }
-    body.push_str("\nПроект `.crab` можно приложить к issue перетаскиванием.\n");
-    if f.with_log && !c.log.is_empty() {
-        body.push_str("\n## Последние сообщения\n```\n");
-        let skip = c.log.len().saturating_sub(LOG_LINES);
-        for line in c.log.iter().skip(skip) {
-            let line: String = line.chars().take(LINE_LEN).collect();
-            body.push_str(&line);
-            body.push('\n');
+
+    fn poll(&mut self, ctx: &egui::Context) -> Option<Finished> {
+        let rx = self.working.as_ref()?;
+        match rx.try_recv() {
+            Ok(done) => {
+                self.working = None;
+                Some(done)
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                None
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.working = None;
+                Some(Finished {
+                    path: PathBuf::new(),
+                    problems: vec![crate::i18n::tr("сбор отчёта прервался").to_owned()],
+                })
+            }
         }
-        body.push_str("```\n");
     }
-    format!(
-        "https://github.com/{}/issues/new?labels=bug&title={}&body={}",
-        c.repo,
-        encode(&title(f.what)),
-        encode(&body)
-    )
-}
 
-/// Title: "Ошибка: " and the first line of the description.
-fn title(what: &str) -> String {
-    let first = what.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let short: String = first.trim().chars().take(80).collect();
-    crate::i18n::fmt("Ошибка: {0}", &[&short])
-}
-
-/// Percent-encoding of everything but unreserved characters.
-fn encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
+    /// Builds the report on a worker thread and writes it to `path`.
+    pub fn start(
+        &mut self,
+        path: PathBuf,
+        facts: &Facts,
+        lib: &crab_core::Library,
+        version: &str,
+        ctx: &egui::Context,
+    ) {
+        // Masked here (cheap); the packing waits for the thread.
+        let masked = match (self.with_project, facts.project) {
+            (true, Some(p)) => {
+                let mut copy = p.clone();
+                report::mask_secrets(&mut copy, lib);
+                Some(copy)
+            }
+            _ => None,
+        };
+        let port = if self.with_board {
+            facts.port.clone()
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            None
+        };
+        let skip = facts.recent.len().saturating_sub(RECENT_LINES);
+        let mut r = Report {
+            description: self.what.trim().to_owned(),
+            app: format!("CrabLogic editor {version}"),
+            created: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            project_name: facts.project.map(|p| p.config.project.name.clone()),
+            board_name: facts.board_name.clone(),
+            master_version: None,
+            recent: facts.recent[skip..].to_vec(),
+            editor_log: None,
+            panic: self.panic.clone(),
+            board: None,
+            project: None,
+            problems: Vec::new(),
+        };
+        let (tx, rx) = channel();
+        self.working = Some(rx);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let mut problems = Vec::new();
+            let log = crate::editlog::read_all();
+            r.editor_log = (!log.is_empty()).then_some(log);
+            if let Some(project) = masked {
+                match project.archive_bytes(&[]) {
+                    Ok(bytes) => r.project = Some(bytes),
+                    Err(e) => {
+                        problems.push(crate::i18n::fmt("не удалось упаковать проект: {0}", &[&e]))
+                    }
+                }
+            }
+            if let Some(port) = port {
+                let dump = crab_debug::board_report::collect_from_port(&port);
+                problems.extend(dump.problems);
+                r.master_version = report::master_version(&dump.text);
+                r.board = Some(BoardData {
+                    port,
+                    text: dump.text,
+                    coredump: dump.coredump,
+                });
+            }
+            // The problems found so far are listed inside the ZIP too.
+            r.problems = problems.clone();
+            if let Err(e) = report::write_report(&r, &path) {
+                problems.push(e.to_string());
+            }
+            let _ = tx.send(Finished { path, problems });
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// Desktop of the user, or the home folder.
+fn desktop() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    let home = PathBuf::from(home);
+    let desk = home.join("Desktop");
+    Some(if desk.is_dir() { desk } else { home })
+}
+
+/// Shows the file in the file manager.
+pub fn reveal(path: &Path) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.display()))
+            .spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(dir) = path.parent() {
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
     }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn fields(what: &str) -> Fields<'_> {
-        Fields {
-            what,
-            expected: "",
-            with_env: true,
-            with_log: true,
-        }
-    }
-
     #[test]
-    fn url_is_encoded_and_has_the_facts() {
-        let url = issue_url(
-            &Context {
-                repo: "o/r",
-                version: "1.2.3",
-                board: Some(("ESP32", "esp32:esp32:esp32")),
-                log: vec!["a b&c".into()],
-            },
-            &fields("не работает"),
-        );
-        assert!(url.starts_with("https://github.com/o/r/issues/new?labels=bug&title="));
-        assert!(!url.contains(' ') && !url.contains('\n'));
-        assert!(url.contains("1.2.3") && url.contains("a%20b%26c"));
-    }
-
-    #[test]
-    fn only_the_newest_lines_go_in() {
-        let log: Vec<String> = (0..50).map(|i| format!("line{i:02}x")).collect();
-        let url = issue_url(
-            &Context {
-                repo: "o/r",
-                version: "1",
-                board: None,
-                log,
-            },
-            &fields("x"),
-        );
-        assert!(url.contains("line49x") && !url.contains("line00x"));
-    }
-
-    #[test]
-    fn title_comes_from_the_description_and_options_are_honoured() {
-        let c = Context {
-            repo: "o/r",
-            version: "9.9.9",
-            board: None,
-            log: vec!["logline".into()],
-        };
-        let f = Fields {
-            what: "\nпадает\nещё",
-            expected: "",
-            with_env: false,
-            with_log: false,
-        };
-        let url = issue_url(&c, &f);
-        assert!(url.contains("title=%D0%9E%D1%88%D0%B8%D0%B1%D0%BA%D0%B0%3A%20"));
-        assert!(!url.contains("9.9.9") && !url.contains("logline"));
+    fn new_form_is_closed_and_idle() {
+        let f = Form::default();
+        assert!(!f.open && !f.building());
     }
 }

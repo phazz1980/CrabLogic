@@ -288,6 +288,9 @@ fn handle_line(
     if aux.in_info {
         if text == "end" {
             aux.in_info = false;
+        } else if let Some(rest) = text.strip_prefix("reset=") {
+            let reason = rest.split_whitespace().next().unwrap_or_default();
+            l.master_reset = (!reason.is_empty()).then(|| reason.to_owned());
         } else if let Some(nvs) = NvsStats::parse(text) {
             let changed = l.nvs.as_ref() != Some(&nvs);
             l.nvs = Some(nvs);
@@ -810,6 +813,7 @@ mod tests {
             "crabmod=1/2 largest=1",
             "a at=0 len=10 gen=1",
             "nvs writes=12 hour=3 used=50 free=450",
+            "reset=task_wdt bad=1",
             "end",
         ] {
             handle_line(
@@ -825,6 +829,7 @@ mod tests {
         }
         let l = live.lock().unwrap();
         assert_eq!(l.nvs.as_ref().map(|n| (n.writes, n.hour)), Some((12, 3)));
+        assert_eq!(l.master_reset.as_deref(), Some("task_wdt"));
         assert!(l.console.is_empty(), "{:?}", l.console);
         assert!(!aux.in_info);
     }

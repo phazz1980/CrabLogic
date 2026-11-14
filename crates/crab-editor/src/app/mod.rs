@@ -100,6 +100,18 @@ pub enum LogLevel {
     Error,
 }
 
+impl LogLevel {
+    /// Word of the disk log.
+    pub fn name(self) -> &'static str {
+        match self {
+            LogLevel::Info => "INFO",
+            LogLevel::Ok => "OK",
+            LogLevel::Warning => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+}
+
 pub struct LogLine {
     pub level: LogLevel,
     pub text: crate::i18n::LogText,
@@ -386,6 +398,7 @@ impl EditorApp {
         app.lib_dir = find_library(project.as_deref());
         crate::aiconf::apply(&theme::ai_settings());
         app.reload_library();
+        app.report.check_crash();
         // A block or board file given on the command line goes to the import window.
         let (project, block_file) = match project {
             Some(p) if is_block_file(&p) || crate::boardio::is_board_file(&p) => (None, Some(p)),
@@ -414,9 +427,11 @@ impl EditorApp {
     }
 
     pub fn info(&mut self, level: LogLevel, text: impl Into<crate::i18n::LogText>) {
+        let text = text.into();
+        crate::editlog::write(level.name(), &text.to_string());
         self.log.push(LogLine {
             level,
-            text: text.into(),
+            text,
             block: None,
             help: None,
         });
@@ -493,25 +508,7 @@ impl eframe::App for EditorApp {
         crate::blockio::window(self, &ctx);
         crate::boardio::handle_drops(self, &ctx);
         crate::boardio::window(self, &ctx);
-        if self.report.open {
-            let repo = theme::update_repo();
-            let board = self.doc.as_ref().map(|d| {
-                let b = &d.project.config.board;
-                (
-                    crate::boardcfg::board_name(b, self.lib.boards()),
-                    b.fqbn.clone(),
-                )
-            });
-            let facts = crate::report::Context {
-                repo: &repo,
-                version: update::CURRENT,
-                board: board.as_ref().map(|(n, f)| (*n, f.as_str())),
-                log: self.log.iter().map(|l| l.text.to_string()).collect(),
-            };
-            if let Some(url) = self.report.show(&ctx, &facts) {
-                ctx.open_url(egui::OpenUrl::new_tab(url));
-            }
-        }
+        self.poll_report(&ctx);
         if let Some(release) = &self.new_release {
             let install = match &self.self_update {
                 SelfUpdate::Idle(e) => update::Install::Idle(e.as_deref()),

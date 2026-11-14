@@ -786,7 +786,7 @@ impl EditorApp {
             ui.separator();
             if ui
                 .button(crate::i18n::tr("Сообщить об ошибке"))
-                .on_hover_text(crate::i18n::tr("Форма: описание уйдёт на GitHub"))
+                .on_hover_text(crate::i18n::tr("Сохраняет ZIP-файл для разработчика"))
                 .clicked()
             {
                 self.report.open = true;

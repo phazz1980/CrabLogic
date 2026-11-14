@@ -50,6 +50,9 @@ pub enum Error {
     #[error("неверное описание платы {}: {}", .path.display(), .message)]
     InvalidBoard { path: PathBuf, message: String },
 
+    #[error("не удалось собрать отчёт {}: {}", .path.display(), .message)]
+    Report { path: PathBuf, message: String },
+
     #[error("{0}")]
     Crypto(String),
 }

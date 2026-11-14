@@ -86,6 +86,7 @@ const FILES: &[(&str, &str)] = &[
     ("ai", include_str!("../../../help/07-ai.md")),
     ("errors", include_str!("../../../help/08-errors.md")),
     ("news", include_str!("../../../help/09-news.md")),
+    ("report", include_str!("../../../help/14-bug-report.md")),
 ];
 
 pub struct Page {
