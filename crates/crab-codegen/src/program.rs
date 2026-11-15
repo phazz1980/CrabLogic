@@ -17,6 +17,9 @@ pub struct Program<'a> {
     pub signals: Vec<Signal>,
     /// Settings of the UARTs: `[[uart]]` of the board and settings blocks.
     pub uarts: Vec<crab_core::UartConfig>,
+    /// Sheets built as one module, each group ascending and the groups by their first sheet;
+    /// empty: one module per sheet. Set with [`Program::set_groups`].
+    pub groups: Vec<Vec<u32>>,
 }
 
 /// UART of a block with `[block.uart]`, with its settings (checked to exist).
@@ -227,6 +230,7 @@ impl<'a> Program<'a> {
             blocks,
             signals,
             uarts: crab_core::uart::project_uarts(project, lib),
+            groups: Vec::new(),
         })
     }
 }

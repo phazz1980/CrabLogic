@@ -51,6 +51,7 @@
   (export "step" (func 10))
   (export "init" (func 11))
   (export "period_ms" (func 13))
+  (export "outputs" (func 14))
   (func (;9;) (type 4) (result i32)
     i32.const 5
   )
@@ -532,6 +533,9 @@
   )
   (func (;13;) (type 4) (result i32)
     i32.const 10
+  )
+  (func (;14;) (type 4) (result i32)
+    i32.const 0
   )
   (data (;0;) (i32.const 336) "on")
   (data (;1;) (i32.const 340) "T=")

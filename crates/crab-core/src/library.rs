@@ -272,6 +272,10 @@ pub struct BlockInfo {
     /// Short label drawn on the block: `TON`, `a + b`, `&`. Defaults to the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
+    /// A parameter with a list of values whose chosen caption is drawn on the block instead of
+    /// `symbol` (the comparator shows `a > b` instead of `a ? b`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol_param: Option<String>,
     /// Library folder in the editor ("Входы и выходы", "Время", ...).
     pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -527,6 +531,14 @@ impl ParamDef {
             ParamShow::Value => Some(text),
             ParamShow::Secret => Some(mask_secret(&text)),
         }
+    }
+
+    /// The caption of the listed choice equal to `value`.
+    pub fn choice_label(&self, value: &ParamValue) -> Option<&str> {
+        self.choices
+            .iter()
+            .find(|c| choice_matches(&c.value, value))
+            .map(|c| c.label.as_str())
     }
 
     /// The value as the user sees it: the caption of its choice, if listed.

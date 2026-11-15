@@ -117,13 +117,6 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 self.compare(w, mode);
                 Ty::I
             }
-            "greater" | "less" => {
-                let w = self.input_ty(inst, 0).widen(self.param_ty(inst, 0));
-                self.input_as(inst, 0, w);
-                self.param_as(inst, 0, w);
-                self.compare(w, if kind == "greater" { 4 } else { 2 });
-                Ty::I
-            }
             "add" | "sub" | "mul" => {
                 let w = self.input_ty(inst, 0).widen(self.input_ty(inst, 1));
                 self.input_as(inst, 0, w);

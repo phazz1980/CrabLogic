@@ -281,3 +281,63 @@ fn project_without_displays_has_no_configs() {
     assert!(program.display_configs().is_empty());
     assert!(program.display_config("anything").is_none());
 }
+
+/// An `int` signal feeds the number widgets directly: no `int_to_float` block is needed.
+#[test]
+fn int_signal_feeds_value_and_bar_widgets() {
+    let (lib, errors) = Library::load(repo_path("library")).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let dir = std::env::temp_dir().join(format!("crab_display_int_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("project.toml"),
+        "[project]\nname = \"display_int\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n",
+    )
+    .unwrap();
+    let logic = r#"
+[[block]]
+id = "oled"
+type = "oled"
+
+[[block]]
+id = "cnt"
+type = "counter"
+
+[[block]]
+id = "val"
+type = "disp_value"
+display = "oled"
+screen = 1
+w = 48
+
+[[block]]
+id = "bar"
+type = "disp_bar"
+display = "oled"
+screen = 1
+y = 16
+w = 64
+
+[[link]]
+from = "cnt.count"
+to = "val.in"
+
+[[link]]
+from = "cnt.count"
+to = "bar.in"
+"#;
+    std::fs::write(dir.join("logic.toml"), logic).unwrap();
+    let project = Project::load(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let report = crab_core::check(&project.logic, &lib, None);
+    assert!(
+        !report.has_errors(),
+        "{:?}",
+        report.errors().collect::<Vec<_>>()
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    for sheet in program.sheets() {
+        program.wasm_module(sheet).unwrap();
+    }
+}

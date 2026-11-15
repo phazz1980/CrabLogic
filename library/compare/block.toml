@@ -2,6 +2,7 @@
 type = "compare"
 name = "Компаратор"
 symbol = "a ? b"
+symbol_param = "op"
 group = "Сравнение"
 description = "Сравнивает два числа выбранной операцией: =, ≠, <, ≤, >, ≥."
 

@@ -54,11 +54,8 @@ pub fn draw_widget(fb: &mut Fb, w: &WidgetView, v: u32, s: &str) {
         WidgetKindView::Led => {
             let sw = if w.w > 0 { w.w as i32 } else { 8 };
             let sh = if w.h > 0 { w.h as i32 } else { sw };
-            if (v as i32) > 0 {
-                fb.fill_rect(x, y, sw, sh, true);
-            } else {
-                fb.rect(x, y, sw, sh);
-            }
+            // A round indicator, as in the constructor's preview.
+            fb.ellipse(x, y, sw, sh, (v as i32) > 0);
         }
         WidgetKindView::Icon { id } => {
             fb.glyph(x, y, &glyph(ICON_BASE + id as u16), scale, true);
@@ -96,6 +93,7 @@ pub fn init_commands(kind: DisplayKind, buf: &mut [u8; 32]) -> usize {
     };
     put(&[0x00]); // control byte: commands follow
     put(&[0xAE]); // display off
+    put(&[0x2E]); // scroll off: the glass keeps what the previous program started
     put(&[0xD5, 0x80]); // clock
     put(&[0xA8, if short { 0x1F } else { 0x3F }]); // multiplex
     put(&[0xD3, 0x00]); // display offset

@@ -56,7 +56,10 @@ pub struct LocalVar {
 /// A sheet cut out of a [`Program`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SheetModule {
+    /// The number the module is built under: its sheet, or the first sheet of its group.
     pub sheet: u32,
+    /// Every sheet in the module (just `sheet` when the sheet is in no group), ascending.
+    pub sheets: Vec<u32>,
     /// Name for the master: `a-z`, `0-9`, `_`, up to 15 characters.
     pub name: String,
     /// Indices into [`Program::blocks`], in execution order.
@@ -64,6 +67,17 @@ pub struct SheetModule {
     /// Tags the sheet touches, by number.
     pub tags: Vec<TagUse>,
     pub locals: Vec<LocalVar>,
+}
+
+/// Why sheets cannot be joined into modules.
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum GroupError {
+    #[error("в группе нет листов")]
+    Empty,
+    #[error("листа {0} нет в схеме или на нём нет блоков")]
+    NoSuchSheet(u32),
+    #[error("лист {0} входит в две группы")]
+    InTwoGroups(u32),
 }
 
 /// Why a sheet cannot become a module.
@@ -77,7 +91,7 @@ pub enum SheetError {
 
 impl Program<'_> {
     /// Number of the sheet a block stands on; blocks without a position are on sheet 1.
-    fn sheet_of(&self, block_id: &str) -> u32 {
+    pub(crate) fn sheet_of(&self, block_id: &str) -> u32 {
         self.project
             .layout
             .blocks
@@ -85,12 +99,68 @@ impl Program<'_> {
             .map_or(1, |p| p.sheet)
     }
 
-    /// Numbers of the sheets that have blocks, ascending.
-    pub fn sheets(&self) -> Vec<u32> {
+    /// The module a block goes to: its sheet, or the first sheet of the group the sheet is in.
+    /// This is the border of tags (`tag_table`): values cross it, not the border between two
+    /// sheets of one group.
+    fn unit_of(&self, block_id: &str) -> u32 {
+        let sheet = self.sheet_of(block_id);
+        self.groups
+            .iter()
+            .find(|g| g.contains(&sheet))
+            .map_or(sheet, |g| g[0])
+    }
+
+    /// Joins sheets into modules (`specs/module-ram`): every group of `groups` becomes one
+    /// module, built under the number of its first sheet. Sheets in no group stay a module each.
+    /// A group has at least one sheet; a sheet is in one group at most and has blocks.
+    pub fn set_groups(&mut self, mut groups: Vec<Vec<u32>>) -> Result<(), GroupError> {
+        let existing = self.physical_sheets();
+        let mut seen = BTreeSet::new();
+        for group in &mut groups {
+            if group.is_empty() {
+                return Err(GroupError::Empty);
+            }
+            group.sort_unstable();
+            group.dedup();
+            for &sheet in group.iter() {
+                if !existing.contains(&sheet) {
+                    return Err(GroupError::NoSuchSheet(sheet));
+                }
+                if !seen.insert(sheet) {
+                    return Err(GroupError::InTwoGroups(sheet));
+                }
+            }
+        }
+        groups.sort_unstable_by_key(|g| g[0]);
+        self.groups = groups;
+        Ok(())
+    }
+
+    /// Numbers of the sheets that have blocks, ascending, as the editor draws them.
+    pub fn physical_sheets(&self) -> Vec<u32> {
         let set: BTreeSet<u32> = self
             .blocks
             .iter()
             .map(|b| self.sheet_of(&b.block.id))
+            .collect();
+        set.into_iter().collect()
+    }
+
+    /// Sheets of the module built under `unit` (just `unit` when it is in no group), ascending.
+    pub fn sheets_of_module(&self, unit: u32) -> Vec<u32> {
+        match self.groups.iter().find(|g| g[0] == unit) {
+            Some(group) => group.clone(),
+            None => vec![unit],
+        }
+    }
+
+    /// Numbers the modules are built under, ascending: every sheet that has blocks, but the
+    /// sheets that went into a group of an earlier sheet.
+    pub fn sheets(&self) -> Vec<u32> {
+        let set: BTreeSet<u32> = self
+            .blocks
+            .iter()
+            .map(|b| self.unit_of(&b.block.id))
             .collect();
         set.into_iter().collect()
     }
@@ -123,9 +193,9 @@ impl Program<'_> {
         let producer = self.producers();
         for (index, signal) in self.signals.iter().enumerate() {
             let from = producer[index];
-            let from_sheet = self.sheet_of(&self.blocks[from].block.id);
+            let from_sheet = self.unit_of(&self.blocks[from].block.id);
             let crosses = self.blocks.iter().any(|b| {
-                self.sheet_of(&b.block.id) != from_sheet
+                self.unit_of(&b.block.id) != from_sheet
                     && b.inputs
                         .values()
                         .any(|i| matches!(i.source, Source::Signal { index: s, .. } if s == index))
@@ -145,7 +215,7 @@ impl Program<'_> {
     /// Cuts sheet `sheet` out of the program.
     pub fn sheet_module(&self, sheet: u32) -> Result<SheetModule, SheetError> {
         let blocks: Vec<usize> = (0..self.blocks.len())
-            .filter(|&i| self.sheet_of(&self.blocks[i].block.id) == sheet)
+            .filter(|&i| self.unit_of(&self.blocks[i].block.id) == sheet)
             .collect();
         if blocks.is_empty() {
             return Err(SheetError::Empty(sheet));
@@ -200,7 +270,7 @@ impl Program<'_> {
             for input in inst.inputs.values() {
                 if let Source::Signal { index, .. } = input.source {
                     let from = producer[index];
-                    if self.sheet_of(&self.blocks[from].block.id) != sheet {
+                    if self.unit_of(&self.blocks[from].block.id) != sheet {
                         let label = signal_label(self, index);
                         let tag = table
                             .iter()
@@ -230,6 +300,7 @@ impl Program<'_> {
             .unwrap_or_else(|| format!("sheet{sheet}"));
         Ok(SheetModule {
             sheet,
+            sheets: self.sheets_of_module(sheet),
             name,
             blocks,
             tags,
@@ -256,7 +327,7 @@ impl Program<'_> {
                 var_accesses(self, b)
                     .into_iter()
                     .filter(|a| a.0 == name)
-                    .map(|a| (self.sheet_of(&b.block.id), a.2))
+                    .map(|a| (self.unit_of(&b.block.id), a.2))
                     .collect::<Vec<_>>()
             })
             .collect()

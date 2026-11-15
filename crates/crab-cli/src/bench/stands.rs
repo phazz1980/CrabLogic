@@ -50,6 +50,14 @@ impl Chip {
         format!("esp32:esp32:{}", self.name())
     }
 
+    /// Work blocks of the whole-project stand (`specs/module-ram`): what the board must take.
+    pub fn project_blocks(self) -> usize {
+        match self {
+            Self::Esp32 => 200,
+            Self::Esp32c3 => 150,
+        }
+    }
+
     pub fn pins(self) -> Pins {
         match self {
             Self::Esp32 => Pins {
@@ -108,6 +116,11 @@ pub enum Family {
     Cycle,
     /// Copies of a small sheet until the board takes no more.
     Sheets,
+    /// A whole project of the 50/30/20 mix ([`Chip::project_blocks`] work blocks) in sheets of the
+    /// size `n`: does it fit and run.
+    Project,
+    /// The same with Wi-Fi and MQTT on sheet 1.
+    ProjectNet,
     /// Module restart and board reset timing (the logic sheet of 100 blocks).
     Restart,
 }
@@ -130,6 +143,8 @@ impl Family {
             Self::ModbusTcp => "modbus_tcp",
             Self::Cycle => "cycle",
             Self::Sheets => "sheets",
+            Self::Project => "project",
+            Self::ProjectNet => "project_net",
             Self::Restart => "restart",
         }
     }
@@ -152,6 +167,8 @@ impl Family {
                 | Self::Text
                 | Self::Net
                 | Self::ModbusTcp
+                | Self::Project
+                | Self::ProjectNet
                 | Self::Restart
         )
     }
@@ -196,7 +213,28 @@ pub const CYCLE_BLOCKS: usize = 100;
 /// Cycle period of the `cycle_1ms` stand, ms.
 pub const CYCLE_PERIOD_MS: u32 = 1;
 /// Most sheets the memory stand tries.
-pub const MAX_SHEETS: usize = 12;
+pub const MAX_SHEETS: usize = 20;
+/// Work blocks per sheet of the whole-project stands: many small sheets and a few big ones.
+pub const PROJECT_LAYOUTS: [usize; 2] = [10, 20];
+
+/// Sheets and work blocks per sheet of a project stand with `n` asked per sheet. The C3 takes
+/// 150 blocks, which 20 per sheet does not divide: its big layout is 15 per sheet.
+pub fn project_layout(chip: Chip, n: usize) -> (usize, usize) {
+    let per_sheet = if chip == Chip::Esp32c3 && n == 20 {
+        15
+    } else {
+        n
+    };
+    (chip.project_blocks() / per_sheet, per_sheet)
+}
+
+/// Gates, float operations and other blocks (timers) of a sheet of `n` work blocks:
+/// 50% / 30% / 20% (10 → 5, 3, 2).
+pub fn mix_counts(n: usize) -> (usize, usize, usize) {
+    let logic = n / 2;
+    let math = n * 3 / 10;
+    (logic, math, n - logic - math)
+}
 
 /// All stands in the order they run.
 pub fn standard_stands() -> Vec<Stand> {
@@ -223,6 +261,11 @@ pub fn standard_stands() -> Vec<Stand> {
     stands.push(Stand::new(Family::ModbusTcp, 100, Mode::Aot));
     stands.push(Stand::new(Family::Cycle, CYCLE_BLOCKS, Mode::Aot));
     stands.push(Stand::new(Family::Sheets, 0, Mode::Aot));
+    for family in [Family::Project, Family::ProjectNet] {
+        for per_sheet in PROJECT_LAYOUTS {
+            stands.push(Stand::new(family, per_sheet, Mode::Aot));
+        }
+    }
     stands.push(Stand::new(Family::Restart, 100, Mode::Aot));
     stands
 }
@@ -276,6 +319,24 @@ pub fn build_project(
             b.modbus_slave(&source);
         }
         Family::Sheets => b.logic_sheet(1, 10, false),
+        Family::Project | Family::ProjectNet => {
+            let (sheets, per_sheet) = project_layout(chip, stand.n);
+            let mut first_float = String::new();
+            for sheet in 1..=sheets {
+                let float_out = b.mixed_sheet(sheet as u32, per_sheet);
+                if sheet == 1 {
+                    first_float = float_out;
+                }
+            }
+            if stand.family == Family::ProjectNet {
+                let net = secrets
+                    .and_then(Secrets::net)
+                    .ok_or("нет настроек Wi-Fi и MQTT в bench/secrets.toml")?;
+                // Wi-Fi and MQTT blocks sit on sheet 1, like the real project would have them.
+                b.sheet = 1;
+                b.net(&net, &first_float);
+            }
+        }
         family => calls = b.calls(family, stand.n.min(pins.gpio.len()), &pins),
     }
     Ok(Built {
@@ -285,8 +346,19 @@ pub fn build_project(
     })
 }
 
-/// The project of the memory stand with `k` sheets of 10 logic blocks.
+/// The project of the memory stand with `k` sheets of 10 work blocks of the 50/30/20 mix (as the
+/// user chose on 15.11.2026: half logic, 30% math, the rest timers). Helpers (the generator and
+/// the constant) come on top.
 pub fn sheets_project(chip: Chip, k: usize) -> Project {
+    let mut b = Builder::new("bench_sheets", chip);
+    for sheet in 1..=k {
+        b.mixed_sheet(sheet as u32, 10);
+    }
+    b.project
+}
+
+/// The old memory stand: `k` sheets of 10 logic blocks (kept to compare with `history.md`).
+pub fn sheets_project_logic(chip: Chip, k: usize) -> Project {
     let mut b = Builder::new("bench_sheets", chip);
     for sheet in 1..=k {
         b.logic_sheet(sheet as u32, 10, false);
@@ -399,6 +471,35 @@ impl Builder {
         }
     }
 
+    /// A sheet of `n` work blocks in the 50/30/20 mix ([`mix_counts`]): gates after a generator,
+    /// float operations after a constant, timers fed by the generator. Ids carry the sheet number,
+    /// so many sheets live in one project. Returns the last float output.
+    fn mixed_sheet(&mut self, sheet: u32, n: usize) -> String {
+        let (gates, ops, timers) = mix_counts(n);
+        self.logic_sheet(sheet, gates, false);
+        let p = format!("s{sheet}_");
+        let source = format!("{p}c");
+        self.add(&source, "constant", &[("value", ParamValue::Float(1.5))]);
+        let mut prev = format!("{source}.out");
+        for i in 0..ops {
+            let id = format!("{p}m{i}");
+            self.add(&id, ["add", "mul", "sub"][i % 3], &[]);
+            self.constant(&id, "b", ParamValue::Float(1.0));
+            self.link(&prev, &format!("{id}.a"));
+            prev = format!("{id}.out");
+        }
+        let float_out = prev;
+        let mut prev = format!("{p}gen.out");
+        for i in 0..timers {
+            let id = format!("{p}t{i}");
+            let kind = if i % 2 == 0 { "timer_on" } else { "timer_off" };
+            self.add(&id, kind, &[("time", ParamValue::Text("1ms".into()))]);
+            self.link(&prev, &format!("{id}.in"));
+            prev = format!("{id}.out");
+        }
+        float_out
+    }
+
     fn generator(&mut self, id: &str) {
         self.add(
             id,
@@ -429,7 +530,8 @@ impl Builder {
 
     /// Ends a float chain: compares with a limit and drives the output pin.
     fn sink_float(&mut self, from: &str) {
-        self.add("limit", "greater", &[("b", ParamValue::Float(0.5))]);
+        self.add("limit", "compare", &[("op", ParamValue::Int(4))]);
+        self.constant("limit", "b", ParamValue::Float(0.5));
         self.link(from, "limit.a");
         self.sink_bool("limit.out");
     }

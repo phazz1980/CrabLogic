@@ -51,7 +51,9 @@ hi = 6.0
 
 [[block]]
 id = "gt"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 4.5
 
 [[block]]

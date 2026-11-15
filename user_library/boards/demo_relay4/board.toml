@@ -1,0 +1,90 @@
+# Учебная плата для инструкции: ESP32, четыре входа на GPIO и четыре реле на PCF8574 (адрес 0x20).
+# Такой платы в продаже нет — это образец формата; свою плату описывай по её схеме.
+[board]
+id = "demo_relay4"
+name = "Демо: 4 входа, 4 реле"
+chip = "esp32"
+fqbn = "esp32:esp32:esp32"
+version = 1
+
+# Шина I²C расширителя реле: занята, свои блоки на неё не ставить.
+[[pin]]
+gpio = 21
+name = "SDA"
+note = "Шина I²C расширителя реле"
+busy = "занят шиной I²C расширителя реле"
+
+[[pin]]
+gpio = 22
+name = "SCL"
+note = "Шина I²C расширителя реле"
+busy = "занят шиной I²C расширителя реле"
+
+# Входы IN1–IN4. GPIO34 и GPIO35 у ESP32 — только вход, без подтяжки.
+[[pin]]
+gpio = 32
+name = "IN1"
+note = "Вход 1 (АЦП1)"
+functions = ["din", "adc"]
+
+[[pin]]
+gpio = 33
+name = "IN2"
+note = "Вход 2 (АЦП1)"
+functions = ["din", "adc"]
+
+[[pin]]
+gpio = 34
+name = "IN3"
+note = "Вход 3: только вход, внешняя подтяжка на плате"
+functions = ["din", "adc"]
+
+[[pin]]
+gpio = 35
+name = "IN4"
+note = "Вход 4: только вход, внешняя подтяжка на плате"
+functions = ["din", "adc"]
+
+# Светодиод статуса. GPIO2 — strapping-вывод.
+[[pin]]
+gpio = 2
+name = "LED"
+note = "Светодиод на плате (горит при 1); strapping-вывод"
+functions = ["dout", "pwm"]
+
+# Реле K1–K4 на PCF8574, адрес 0x20 = 32, включаются единицей.
+[[device]]
+id = "relays"
+kind = "pcf8574_out"
+name = "Реле"
+description = "Реле K1–K4 на PCF8574 (адрес 0x20, SDA = GPIO21, SCL = GPIO22)"
+channels = ["K1", "K2", "K3", "K4"]
+address = 32
+sda = 21
+scl = 22
+inverted = false
+
+# Те же реле — отдельными выводами для блоков «Цифровой выход».
+[[expander_pin]]
+device = "relays"
+pin = 0
+name = "K1"
+functions = ["dout"]
+
+[[expander_pin]]
+device = "relays"
+pin = 1
+name = "K2"
+functions = ["dout"]
+
+[[expander_pin]]
+device = "relays"
+pin = 2
+name = "K3"
+functions = ["dout"]
+
+[[expander_pin]]
+device = "relays"
+pin = 3
+name = "K4"
+functions = ["dout"]

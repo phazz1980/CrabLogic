@@ -370,6 +370,7 @@ impl Project {
     fn migrated(mut self) -> Self {
         crate::uart::migrate_legacy(&mut self.config.uart, &mut self.logic);
         migrate_wifi_mode(&mut self.logic);
+        migrate_threshold_compare(&mut self.logic);
         crate::uart::migrate_uart_send(&mut self.logic);
         self.logic.sync_tags();
         self
@@ -556,6 +557,28 @@ fn migrate_wifi_mode(logic: &mut Logic) {
     }
 }
 
+/// The blocks `greater` and `less` (an input against a threshold parameter `b`) are the comparator
+/// with the operation `>` / `<` and the threshold as a constant on its input `b`.
+pub fn migrate_threshold_compare(logic: &mut Logic) {
+    for block in logic
+        .blocks
+        .iter_mut()
+        .filter(|b| b.kind == "greater" || b.kind == "less")
+    {
+        let op = if block.kind == "greater" { 4 } else { 2 };
+        block.kind = "compare".into();
+        block.params.insert("op".into(), crate::ParamValue::Int(op));
+        let threshold = block.params.remove("b");
+        // A threshold taken from a link or a variable stays there: only a plain value moves.
+        if !block.param_in.remove("b") && !block.bound.contains_key("b") {
+            block.consts.insert(
+                "b".into(),
+                threshold.unwrap_or(crate::ParamValue::Float(0.0)),
+            );
+        }
+    }
+}
+
 /// A project hash as 16 hex digits.
 pub fn hash_hex(hash: &[u8; 8]) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
@@ -564,6 +587,39 @@ pub fn hash_hex(hash: &[u8; 8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threshold_blocks_become_the_comparator() {
+        let mut logic: Logic = toml::from_str(
+            r#"
+[[block]]
+id = "hot"
+type = "greater"
+b = 30.0
+
+[[block]]
+id = "low"
+type = "less"
+
+[[block]]
+id = "linked"
+type = "less"
+param_in = ["b"]
+"#,
+        )
+        .unwrap();
+        migrate_threshold_compare(&mut logic);
+        let hot = logic.block("hot").unwrap();
+        assert_eq!(hot.kind, "compare");
+        assert_eq!(hot.params.get("op"), Some(&crate::ParamValue::Int(4)));
+        assert_eq!(hot.consts.get("b"), Some(&crate::ParamValue::Float(30.0)));
+        assert!(!hot.params.contains_key("b"));
+        let low = logic.block("low").unwrap();
+        assert_eq!(low.params.get("op"), Some(&crate::ParamValue::Int(2)));
+        assert_eq!(low.consts.get("b"), Some(&crate::ParamValue::Float(0.0)));
+        let linked = logic.block("linked").unwrap();
+        assert!(linked.consts.is_empty() && linked.param_in.is_empty());
+    }
 
     #[test]
     fn sketch_settings_are_gone_after_a_save() {

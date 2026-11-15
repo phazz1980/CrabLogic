@@ -71,7 +71,9 @@ value = 0.5
 
 [[block]]
 id = "lt"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = 0.0
 
 [[link]]

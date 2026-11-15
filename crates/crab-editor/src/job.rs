@@ -218,7 +218,10 @@ pub fn build_sheets(
     watch: bool,
 ) -> Result<(Project, Vec<crab_codegen::WasmModule>, Vec<u32>), String> {
     let project = crab_codegen::prepare(project, lib);
-    let program = Program::build(&project, lib).map_err(|e| e.to_string())?;
+    let mut program = Program::build(&project, lib).map_err(|e| e.to_string())?;
+    program
+        .auto_group_for_board(watch)
+        .map_err(|e| e.to_string())?;
     let mut modules = Vec::new();
     let mut numbers = Vec::new();
     for sheet in program.sheets() {
@@ -229,6 +232,94 @@ pub fn build_sheets(
         numbers.push(sheet);
     }
     Ok((project, modules, numbers))
+}
+
+/// What the project will cost the board, from its blocks and the modules the build makes of the
+/// sheets (`wasm_lens`: sizes of those modules, for the upload time). `None` when the project
+/// does not build.
+pub fn estimate_text(
+    project: &Project,
+    lib: &Library,
+    wasm_lens: &[usize],
+) -> Option<crate::app::EstimateText> {
+    let project = crab_codegen::prepare(project, lib);
+    let mut program = Program::build(&project, lib).ok()?;
+    program.auto_group_for_board(false).ok()?;
+    let est = program.estimate();
+    let kb = |bytes: i64| (bytes as f64 / 1024.0).round() as i64;
+    let used = kb(i64::from(est.heap));
+    let budget = kb(i64::from(est.budget));
+    let over = !est.fits();
+    let summary = if over {
+        crate::i18n::fmt("ОЗУ платы: не хватает, ≈ {0} из {1} КБ", &[&used, &budget])
+    } else {
+        crate::i18n::fmt(
+            "ОЗУ платы: ≈ {0} из {1} КБ, ещё ≈ {2} блоков",
+            &[&used, &budget, &est.more_blocks],
+        )
+    };
+    let mut details = vec![crate::i18n::fmt(
+        "Модулей на плате: {0}, блоков: {1}",
+        &[
+            &est.modules.len(),
+            &est.modules.iter().map(|m| m.blocks).sum::<usize>(),
+        ],
+    )];
+    for m in &est.modules {
+        let sheets = m
+            .sheets
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        details.push(crate::i18n::fmt(
+            "Модуль «{0}» (листы {1}): блоков {2}, ОЗУ ≈ {3} КБ, шаг ≈ {4} мкс раз в {5} мс",
+            &[
+                &m.name,
+                &sheets,
+                &m.blocks,
+                &format!("{:.1}", f64::from(m.heap) / 1024.0),
+                &m.step_us.round(),
+                &m.period_ms,
+            ],
+        ));
+    }
+    details.push(crate::i18n::fmt(
+        "Самый занятый период: ≈ {0}% (шаги модулей идут один за другим)",
+        &[&est.busiest_percent().round()],
+    ));
+    let seconds: f64 = wasm_lens
+        .iter()
+        .map(|&len| {
+            crab_build::upload_plan::stop_seconds(crab_build::upload_plan::estimated_aot_len(len))
+        })
+        .sum();
+    if seconds > 0.0 {
+        details.push(crate::i18n::fmt(
+            "Заливка всех модулей займёт ≈ {0} с",
+            &[&seconds.ceil()],
+        ));
+    }
+    if est.network {
+        details.push(crate::i18n::fmt(
+            "Сеть (Wi-Fi, MQTT и др.) отнимает у проекта ≈ {0} КБ ОЗУ",
+            &[&(kb(i64::from(crab_core::cost::heap_for(est.chip).net_stack)))],
+        ));
+    }
+    if !over {
+        details.push(crate::i18n::fmt(
+            "Ещё поместится ≈ {0} блоков (логика, математика, остальное в пропорции 50/30/20) в уже занятых модулях",
+            &[&est.more_blocks],
+        ));
+    }
+    details.push(
+        crate::i18n::tr("Оценка по замерам на платах; память под тексты не учтена.").to_owned(),
+    );
+    Some(crate::app::EstimateText {
+        summary,
+        over,
+        details,
+    })
 }
 
 /// Modules with their sheet numbers and speeds for the upload planning.
@@ -402,6 +493,21 @@ fn upload_modules(
             return Err(crate::i18n::tr("Заливка отменена").to_owned());
         }
     }
+    // Modules of an earlier build that this one no longer has (a sheet joined into another
+    // module, renamed or deleted) would run beside the new ones: remove them first.
+    if let Some(space) = &space {
+        let keep: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+        for name in space.stale(&keep) {
+            crab_build::mcu_module::delete_module(&mut serial, &name).map_err(|e| e.to_string())?;
+            out(
+                LogLevel::Warning,
+                &crate::i18n::fmt(
+                    "Модуль «{0}» убран с платы: его нет в новой сборке",
+                    &[&name],
+                ),
+            );
+        }
+    }
     for ((module, image), &in_place) in modules.iter().zip(&plan.images).zip(&plan.in_place) {
         let allow = crab_sim::mcu::Manifest::parse(&module.manifest)
             .map(|m| m.allow)
@@ -546,5 +652,32 @@ mod nvs_message_tests {
         let (text, warn) = nvs_message(&busy);
         assert!(warn);
         assert!(text.contains("61"));
+    }
+}
+
+#[cfg(test)]
+mod estimate_tests {
+    use super::estimate_text;
+    use crab_core::{Library, Project};
+
+    fn root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// The panel text of a small project: the status line, a line per module, the time of the
+    /// upload and the room left.
+    #[test]
+    fn the_estimate_of_a_small_project_is_written_out() {
+        let lib = Library::load(root().join("library")).unwrap().0;
+        let project = Project::load(root().join("examples/background")).unwrap();
+        let text = estimate_text(&project, &lib, &[800, 800]).expect("the example builds");
+        assert!(!text.over);
+        assert!(text.summary.starts_with("ОЗУ платы: ≈"), "{}", text.summary);
+        assert!(text.summary.contains("ещё ≈"), "{}", text.summary);
+        let all = text.details.join("\n");
+        assert!(all.contains("Модуль «"), "{all}");
+        assert!(all.contains("Заливка всех модулей"), "{all}");
+        assert!(all.contains("Самый занятый период"), "{all}");
+        assert!(all.contains("Ещё поместится"), "{all}");
     }
 }

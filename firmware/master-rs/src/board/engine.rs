@@ -229,6 +229,17 @@ impl Wamr {
                 .map_err(|e| format!("period_ms не выполнена: {e}"))?;
             m.period_ms = abi::period_of(argv[0] as i32) as u8;
         }
+        // The host keeps as many output values as the module reports; one built before the
+        // export existed gets the old fixed number.
+        let outputs = match m.lookup(c"outputs") {
+            Some(f) => {
+                m.call(f, 0, &mut argv)
+                    .map_err(|e| format!("outputs не выполнена: {e}"))?;
+                usize::try_from(argv[0] as i32).unwrap_or(0)
+            }
+            None => abi::DEFAULT_OUTPUTS,
+        };
+        m.ctx.host.set_outputs(outputs);
         if let Some(init) = m.lookup(c"init") {
             m.call(init, 0, &mut argv)?;
         }

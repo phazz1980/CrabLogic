@@ -4,6 +4,8 @@
 pub mod block_check;
 pub mod debug;
 pub mod error;
+pub mod estimate;
+pub mod grouping;
 pub mod retain;
 pub mod rust_master;
 pub mod sheet;
@@ -18,7 +20,7 @@ pub use program::{Input, Instance, Program, Signal, Source};
 pub use rust_master::{
     block_has_cpp, check_project, has_cpp_code, rust_master_diagnostics, CPP_BLOCK_HINT,
 };
-pub use sheet::{LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
+pub use sheet::{GroupError, LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
 pub use wasm::{WasmError, WasmModule, MASTER_CAPS, MAX_BLOCK_CONFIG};
 
 pub mod program;

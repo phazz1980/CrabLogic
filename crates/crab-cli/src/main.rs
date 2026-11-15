@@ -1047,16 +1047,21 @@ fn stop_verdict(stops: Option<&StopReport>, allow_stop: bool) -> Result<Option<S
 
 /// Sends all the sheet modules over one opened port: the placement (AOT or plain) is decided for
 /// all of them together. `numbers` are the sheet numbers of `modules`; the AOT image of a module
-/// is also written next to its `.wasm`.
+/// is also written next to its `.wasm`. `remove_stale`: modules on the board that are not among
+/// `modules` are removed (the whole project is uploaded).
 fn upload_sheets(
     project: &Project,
     modules: &[crab_codegen::WasmModule],
     numbers: &[u32],
     allows: &[Vec<String>],
     link: LinkSpec,
-    require_aot: bool,
-    allow_stop: bool,
+    flags: UploadFlags,
+    remove_stale: bool,
 ) -> ExitCode {
+    let UploadFlags {
+        require_aot,
+        allow_stop,
+    } = flags;
     use crab_build::mcu_module as mm;
     let failed = |message: String| {
         eprintln!("ошибка: {message}");
@@ -1141,6 +1146,17 @@ fn upload_sheets(
         Ok(Some(text)) => eprintln!("предупреждение: {text}"),
         Ok(None) => {}
         Err(text) => return failed(text),
+    }
+    // Modules of an earlier build that this one no longer has (a sheet joined into another
+    // module, renamed or deleted) would run beside the new ones: remove them first.
+    if let (true, Some(space)) = (remove_stale, &space) {
+        let keep: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+        for name in space.stale(&keep) {
+            if let Err(e) = mm::delete_module(&mut serial, &name) {
+                return failed(e.to_string());
+            }
+            println!("Модуль «{name}» убран с платы: его нет в новой сборке");
+        }
     }
     for (((module, allow), image), &in_place) in modules
         .iter()
@@ -1243,7 +1259,7 @@ fn run_gen_wasm(
         Err(code) => return code,
     };
     let project = crab_codegen::prepare(&project, &lib);
-    let program = match Program::build(&project, &lib) {
+    let mut program = match Program::build(&project, &lib) {
         Ok(program) => program,
         Err(GenError::Schema(diagnostics)) => {
             print_diagnostics(&diagnostics);
@@ -1255,6 +1271,13 @@ fn run_gen_wasm(
             return ExitCode::from(EXIT_GEN_FAILED);
         }
     };
+    // One chosen sheet is built as it is; the rest are joined into modules (specs/module-ram).
+    if sheet.is_none() {
+        if let Err(e) = program.auto_group_for_board(watch) {
+            eprintln!("ошибка: склейка листов: {e}");
+            return ExitCode::from(EXIT_GEN_FAILED);
+        }
+    }
     let sheets = sheet.map_or_else(|| program.sheets(), |n| vec![n]);
     let mut modules = Vec::new();
     let numbers = sheets.clone();
@@ -1307,8 +1330,9 @@ fn run_gen_wasm(
             &numbers,
             &allows,
             link,
-            flags.require_aot,
-            flags.allow_stop,
+            flags,
+            // A single chosen sheet must leave the other modules alone.
+            sheet.is_none(),
         );
     }
     ExitCode::SUCCESS
@@ -1341,8 +1365,9 @@ fn run_monitor(
         Ok(loaded) => loaded,
         Err(code) => return code,
     };
-    let project = project.without_disabled();
-    let program = match Program::build(&project, &lib) {
+    // The same project the upload builds (unused outputs dropped), or the module CRCs differ.
+    let project = crab_codegen::prepare(&project, &lib);
+    let mut program = match Program::build(&project, &lib) {
         Ok(p) => p,
         Err(GenError::Schema(d)) => {
             print_diagnostics(&d);
@@ -1353,6 +1378,11 @@ fn run_monitor(
             return ExitCode::from(EXIT_GEN_FAILED);
         }
     };
+    // The modules the monitor expects are the ones a debug build uploads: joined the same way.
+    if let Err(e) = program.auto_group_for_board(true) {
+        eprintln!("ошибка: склейка листов: {e}");
+        return ExitCode::from(EXIT_GEN_FAILED);
+    }
     let failed = |message: String| {
         eprintln!("ошибка: {message}");
         ExitCode::from(EXIT_BUILD_FAILED)

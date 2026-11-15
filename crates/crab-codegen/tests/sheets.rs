@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crab_codegen::{Program, SheetError, TagKind};
+use crab_codegen::{GroupError, Program, SheetError, TagKind};
 use crab_core::{Library, ParamValue, Project};
 
 fn repo_path(rel: &str) -> PathBuf {
@@ -498,4 +498,231 @@ fn module_carries_the_cycle_period() {
     let text = wasmprinter::print_bytes(&built.wasm).unwrap();
     assert!(text.contains("(export \"period_ms\""), "{text}");
     assert!(text.contains("i32.const 2"), "{text}");
+}
+
+/// Groups of one sheet change nothing: the module of every sheet is byte for byte the same as
+/// without groups (the snapshots of the sheets above keep holding for the same reason).
+#[test]
+fn one_sheet_groups_build_the_same_module() {
+    let lib = library();
+    for name in ["background", "text_wasm", "mqtt_wasm", "selftest_logic2"] {
+        let project = Project::load(repo_path(&format!("examples/{name}"))).unwrap();
+        let plain = Program::build(&project, &lib).unwrap();
+        let mut grouped = Program::build(&project, &lib).unwrap();
+        let singles: Vec<Vec<u32>> = plain.sheets().into_iter().map(|s| vec![s]).collect();
+        grouped.set_groups(singles).unwrap();
+        assert_eq!(plain.sheets(), grouped.sheets(), "{name}");
+        assert_eq!(plain.tag_table(), grouped.tag_table(), "{name}");
+        for sheet in plain.sheets() {
+            let (a, b) = (plain.wasm_module(sheet), grouped.wasm_module(sheet));
+            match (a, b) {
+                (Ok(a), Ok(b)) => {
+                    assert_eq!(a.wasm, b.wasm, "{name} sheet {sheet}");
+                    assert_eq!(a.wasm_aot, b.wasm_aot, "{name} sheet {sheet}");
+                    assert_eq!(a.manifest, b.manifest, "{name} sheet {sheet}");
+                }
+                (a, b) => assert_eq!(format!("{a:?}"), format!("{b:?}"), "{name} sheet {sheet}"),
+            }
+            assert_eq!(grouped.sheet_module(sheet).unwrap().sheets, vec![sheet]);
+        }
+    }
+}
+
+/// Two sheets in one group are one module: the border between them is gone, so no value of
+/// theirs crosses it as a tag, and the blocks of both run in the order of the program.
+#[test]
+fn a_group_of_two_sheets_is_one_module_without_the_border() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    let mut program = Program::build(&project, &lib).unwrap();
+    assert!(!program.tag_table().is_empty());
+    let separate: usize = [1, 2]
+        .iter()
+        .map(|&s| program.sheet_module(s).unwrap().blocks.len())
+        .sum();
+
+    program.set_groups(vec![vec![2, 1]]).unwrap();
+    assert_eq!(program.groups, vec![vec![1, 2]]);
+    assert_eq!(program.sheets(), vec![1]);
+    assert_eq!(program.physical_sheets(), vec![1, 2]);
+    assert!(program.tag_table().is_empty());
+
+    let module = program.sheet_module(1).unwrap();
+    assert_eq!(module.sheets, vec![1, 2]);
+    assert_eq!(module.blocks.len(), separate);
+    assert!(module.tags.is_empty());
+    assert!(module.blocks.windows(2).all(|w| w[0] < w[1]));
+    // The variable written on one sheet and read on the other is a local of the module now.
+    assert_eq!(module.locals.len(), 1);
+
+    let wasm = program.wasm_module(1).unwrap();
+    wasmparser::validate(&wasm.wasm).unwrap();
+    // A member of the group is not a module of its own.
+    assert_eq!(program.sheet_module(2).unwrap_err(), SheetError::Empty(2));
+}
+
+/// The rule between joined sheets: blocks run in the order of the program (data flow over all
+/// sheets), so a value written on one sheet is read on the other in the same step. Over the
+/// border of two modules the reader sees the value of the writer's last step when its module
+/// runs first, so joining never makes a link slower.
+#[test]
+fn joined_sheets_see_each_other_in_the_same_step() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    let mut program = Program::build(&project, &lib).unwrap();
+    program.set_groups(vec![vec![1, 2]]).unwrap();
+    // Position of each block in the module and the signal that block writes.
+    let module = program.sheet_module(1).unwrap();
+    let mut crossing = 0;
+    for (at, &bi) in module.blocks.iter().enumerate() {
+        let inst = &program.blocks[bi];
+        for input in inst.inputs.values() {
+            let crab_codegen::Source::Signal { index, .. } = input.source else {
+                continue;
+            };
+            let writer = module
+                .blocks
+                .iter()
+                .position(|&b| program.blocks[b].outputs.values().any(|&s| s == index))
+                .expect("the writer is in the module");
+            assert!(writer < at, "{} reads a later block", inst.block.id);
+            let sheet_of = |id: &str| project.layout.blocks.get(id).map_or(1, |p| p.sheet);
+            if sheet_of(&program.blocks[module.blocks[writer]].block.id) != sheet_of(&inst.block.id)
+            {
+                crossing += 1;
+            }
+        }
+    }
+    assert!(crossing > 0, "the example has no link between the sheets");
+}
+
+#[test]
+fn bad_groups_are_refused_and_change_nothing() {
+    let lib = library();
+    let project = background();
+    let mut program = Program::build(&project, &lib).unwrap();
+    assert_eq!(program.set_groups(vec![vec![]]), Err(GroupError::Empty));
+    assert_eq!(
+        program.set_groups(vec![vec![1, 9]]),
+        Err(GroupError::NoSuchSheet(9))
+    );
+    assert_eq!(
+        program.set_groups(vec![vec![1], vec![1, 2]]),
+        Err(GroupError::InTwoGroups(1))
+    );
+    assert!(program.groups.is_empty());
+    assert_eq!(program.sheets(), vec![1, 2]);
+}
+
+/// Every example project: the plan is valid, keeps every sheet in exactly one module, and a
+/// module made of sheets that built alone builds joined and is valid WASM.
+#[test]
+fn auto_groups_of_the_examples_build() {
+    let lib = library();
+    let dir = repo_path("examples");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let Ok(project) = Project::load(&path) else {
+            continue;
+        };
+        let Ok(plain) = Program::build(&project, &lib) else {
+            continue;
+        };
+        let mut program = Program::build(&project, &lib).unwrap();
+        program.auto_group(None).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // Every sheet is in one module.
+        let mut covered: Vec<u32> = program
+            .sheets()
+            .into_iter()
+            .flat_map(|unit| program.sheets_of_module(unit))
+            .collect();
+        covered.sort_unstable();
+        assert_eq!(covered, plain.physical_sheets(), "{name}");
+        for group in &program.groups {
+            let alone_ok = group.iter().all(|&s| plain.wasm_module(s).is_ok());
+            let joined = program.wasm_module(group[0]);
+            if alone_ok {
+                let wasm = joined.unwrap_or_else(|e| panic!("{name} {group:?}: {e:?}"));
+                wasmparser::validate(&wasm.wasm).unwrap();
+            }
+        }
+    }
+}
+
+/// Two sheets of one class are joined by the plan, two of different classes are not.
+#[test]
+fn auto_group_joins_sheets_of_one_class_only() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    // As the example is, sheet 2 is a background sheet: no group.
+    let mut program = Program::build(&project, &lib).unwrap();
+    assert!(program.plan_groups(None).is_empty());
+    program.auto_group(None).unwrap();
+    assert_eq!(program.sheets(), vec![1, 2]);
+
+    // Both normal: one module, and it builds.
+    for info in &mut project.layout.sheets {
+        info.background = false;
+    }
+    let mut program = Program::build(&project, &lib).unwrap();
+    assert_eq!(program.plan_groups(None), vec![vec![1, 2]]);
+    program.auto_group(None).unwrap();
+    assert_eq!(program.sheets(), vec![1]);
+    wasmparser::validate(&program.wasm_module(1).unwrap().wasm).unwrap();
+
+    // The board's variant joins them as well, in debug mode too, and the module builds.
+    for watch in [false, true] {
+        let mut program = Program::build(&project, &lib).unwrap();
+        program.auto_group_for_board(watch).unwrap();
+        assert_eq!(program.sheets(), vec![1], "watch {watch}");
+        wasmparser::validate(&program.wasm_module_with(1, watch).unwrap().wasm).unwrap();
+    }
+
+    // One of them fast: they stay apart.
+    project.logic.sheets.push(crab_core::SheetExecution {
+        number: 2,
+        speed: crab_core::SheetSpeed::Fast,
+    });
+    let program = Program::build(&project, &lib).unwrap();
+    assert!(program.plan_groups(None).is_empty());
+}
+
+/// What the `outputs()` export of a module returns, read from its text form.
+fn outputs_export(wasm: &[u8]) -> i32 {
+    let text = wasmprinter::print_bytes(wasm).unwrap();
+    let export = text
+        .lines()
+        .find(|l| l.contains("(export \"outputs\""))
+        .expect("no outputs export");
+    let index: String = export
+        .split("(func ")
+        .nth(1)
+        .unwrap()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let head = format!("(func (;{index};)");
+    let mut lines = text.lines().skip_while(|l| !l.contains(&head));
+    lines.next().unwrap();
+    let body = lines.next().unwrap().trim();
+    body.strip_prefix("i32.const ").unwrap().parse().unwrap()
+}
+
+/// The module says how many output slots the host must keep: none without `watch`, one per
+/// watched signal with it (the master then holds no more values than that).
+#[test]
+fn module_tells_how_many_outputs_it_reports() {
+    let lib = library();
+    let mut project = background();
+    project.logic.vars[0].retain = false;
+    let program = Program::build(&project, &lib).unwrap();
+    let plain = program.wasm_module_with(1, false).unwrap();
+    assert_eq!(outputs_export(&plain.wasm), 0);
+    let watched = program.wasm_module_with(1, true).unwrap();
+    assert!(!watched.watched.is_empty());
+    assert_eq!(outputs_export(&watched.wasm), watched.watched.len() as i32);
 }

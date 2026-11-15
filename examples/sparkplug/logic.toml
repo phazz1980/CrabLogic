@@ -26,7 +26,9 @@ value = 21.5
 
 [[block]]
 id = "hot"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 25.0
 
 [[block]]

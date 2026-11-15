@@ -635,7 +635,10 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
             let debug = args.get("debug").and_then(Value::as_bool).unwrap_or(false);
             let store = LocalValues::open_default().map_err(|e| e.to_string())?;
             let project = crab_codegen::prepare(&ctx.project().with_local(&lib, &store), &lib);
-            let program = Program::build(&project, &lib).map_err(|e| e.to_string())?;
+            let mut program = Program::build(&project, &lib).map_err(|e| e.to_string())?;
+            program
+                .auto_group_for_board(debug)
+                .map_err(|e| e.to_string())?;
             let mut modules = Vec::new();
             for sheet in program.sheets() {
                 let module = program

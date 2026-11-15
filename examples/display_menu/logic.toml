@@ -66,12 +66,16 @@ type = "sub"
 
 [[block]]
 id = "cold"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = 0.0
 
 [[block]]
 id = "warm"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 0.0
 
 [[block]]

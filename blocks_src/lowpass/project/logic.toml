@@ -15,7 +15,9 @@ pin = 2
 
 [[block]]
 id = "gt"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 2000.0
 
 [[link]]

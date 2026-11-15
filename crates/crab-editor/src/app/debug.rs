@@ -73,7 +73,10 @@ impl EditorApp {
             }
         };
         let Some(doc) = &self.doc else { return };
-        match DebugState::start(&doc.project, &self.lib, &chosen, ctx) {
+        // The same project the upload builds: with the local values (Wi-Fi password and the
+        // like), or the module CRCs differ and the debugger sees a foreign module.
+        let project = doc.project.with_local(&self.lib, &self.local);
+        match DebugState::start(&project, &self.lib, &chosen, ctx) {
             Ok(state) => {
                 self.info(
                     LogLevel::Info,

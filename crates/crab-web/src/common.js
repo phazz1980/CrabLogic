@@ -10,10 +10,34 @@ document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
 document.addEventListener("pointerup", () => { pointerDown = false; }, true);
 document.addEventListener("pointercancel", () => { pointerDown = false; }, true);
 
+// Connection indicator in the header: the page talks to the local `crablogic-web` server, which
+// ends with the editor; a lost link means the edits are no longer saved.
+let linkOk = null;
+function setLink(ok) {
+  if (ok === linkOk) return;
+  linkOk = ok;
+  let el = document.getElementById("link");
+  if (!el) {
+    el = document.createElement("span");
+    el.id = "link";
+    const head = document.querySelector("header");
+    if (!head) return;
+    head.appendChild(el);
+  }
+  el.className = ok ? "ok" : "lost";
+  el.textContent = ok ? "● Связь с сервером есть" : "● Нет связи с сервером: изменения не сохраняются, откройте конструктор из редактора заново";
+}
 async function api(name, args = {}) {
-  const r = await fetch("/api/" + name, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
-  });
+  let r;
+  try {
+    r = await fetch("/api/" + name, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
+    });
+  } catch (e) {
+    setLink(false);
+    throw e;
+  }
+  setLink(true);
   const j = await r.json();
   if (!j.ok) throw new Error(j.error);
   return j.result;
@@ -236,5 +260,7 @@ function startPolling() {
     } catch (e) { /* the server may be busy; try again */ }
   }, 2000);
   // keeps the server alive while the page is open
-  setInterval(() => fetch("/ping").catch(() => {}), 10000);
+  const ping = () => fetch("/ping").then(() => setLink(true), () => setLink(false));
+  ping();
+  setInterval(ping, 5000);
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::listing::parse_list;
 use super::report::{BenchReport, Meta, StandResult};
 use super::secrets::Secrets;
@@ -23,6 +25,77 @@ fn library() -> Library {
 }
 
 #[test]
+fn memory_stand_sheet_is_a_50_30_20_mix() {
+    for chip in CHIPS {
+        let project = sheets_project(chip, 1);
+        let count = |kinds: &[&str]| {
+            project
+                .logic
+                .blocks
+                .iter()
+                .filter(|b| kinds.contains(&b.kind.as_str()))
+                .count()
+        };
+        assert_eq!(count(&["and", "or", "xor", "not"]), 5);
+        assert_eq!(count(&["add", "mul", "sub", "div"]), 3);
+        assert_eq!(count(&["timer_on", "timer_off"]), 2);
+    }
+}
+
+#[test]
+fn mix_counts_keep_50_30_20() {
+    assert_eq!(stands::mix_counts(10), (5, 3, 2));
+    assert_eq!(stands::mix_counts(20), (10, 6, 4));
+    assert_eq!(stands::mix_counts(15), (7, 4, 4));
+    for n in [10, 15, 20, 50] {
+        let (a, b, c) = stands::mix_counts(n);
+        assert_eq!(a + b + c, n);
+    }
+}
+
+#[test]
+fn project_stands_hold_the_target_blocks() {
+    let lib = library();
+    let secrets = Secrets::parse(FAKE).unwrap();
+    for chip in CHIPS {
+        for stand in standard_stands()
+            .into_iter()
+            .filter(|s| matches!(s.family, Family::Project | Family::ProjectNet))
+        {
+            let (sheets, per_sheet) = stands::project_layout(chip, stand.n);
+            assert_eq!(sheets * per_sheet, chip.project_blocks(), "{}", stand.id);
+            let built = build_project(&stand, chip, Some(&secrets)).unwrap();
+            let modules = generate_modules(&built.project, &lib).unwrap();
+            assert_eq!(modules.len(), sheets, "{} on {}", stand.id, chip.name());
+            // Without the network stand there are no Wi-Fi blocks, with it exactly those three.
+            let net = built
+                .project
+                .logic
+                .blocks
+                .iter()
+                .filter(|b| ["wifi", "mqtt", "mqtt_publish"].contains(&b.kind.as_str()))
+                .count();
+            assert_eq!(
+                net,
+                if stand.family == Family::ProjectNet {
+                    3
+                } else {
+                    0
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn old_logic_stand_is_kept_and_builds() {
+    let lib = library();
+    let project = stands::sheets_project_logic(Chip::Esp32, stands::MAX_SHEETS);
+    let modules = generate_modules(&project, &lib).unwrap();
+    assert_eq!(modules.len(), stands::MAX_SHEETS);
+}
+
+#[test]
 fn every_stand_passes_check_and_wasm_generation() {
     let lib = library();
     let secrets = Secrets::parse(FAKE).unwrap();
@@ -38,10 +111,10 @@ fn every_stand_passes_check_and_wasm_generation() {
             };
             let modules = generate_modules(&project, &lib)
                 .unwrap_or_else(|e| panic!("{} on {}: {e}", stand.id, chip.name()));
-            let expected = if stand.family == Family::Sheets {
-                stands::MAX_SHEETS
-            } else {
-                1
+            let expected = match stand.family {
+                Family::Sheets => stands::MAX_SHEETS,
+                Family::Project | Family::ProjectNet => stands::project_layout(chip, stand.n).0,
+                _ => 1,
             };
             assert_eq!(modules.len(), expected, "{} on {}", stand.id, chip.name());
         }
@@ -494,4 +567,189 @@ fn cycle_report_has_the_table_and_round_trips() {
     assert!(diffs
         .iter()
         .any(|d| d.metric.starts_with("цикл: опоздавших") && d.worse));
+}
+
+/// Module heap (`из них код`) of the AOT stands, bytes, from the tracked reports
+/// `bench/esp32-0.1.0-2026-11-14-1746.md` and `bench/esp32c3-0.1.0-2026-11-14-1757.md`.
+const ESP32_HEAP_REF: [(&str, u32); 21] = [
+    ("empty_aot", 11540),
+    ("logic_10_aot", 11964),
+    ("logic_100_aot", 16132),
+    ("logic_500_aot", 34576),
+    ("float_10_aot", 12024),
+    ("float_100_aot", 16172),
+    ("float_500_aot", 34636),
+    ("timers_10_aot", 12880),
+    ("timers_100_aot", 24952),
+    ("timers_500_aot", 78616),
+    ("text_10_aot", 12096),
+    ("text_100_aot", 16244),
+    ("text_500_aot", 34648),
+    ("gpio_in_aot", 11852),
+    ("gpio_out_aot", 11852),
+    ("adc_aot", 11760),
+    ("i2c_aot", 12260),
+    ("retain_aot", 12568),
+    ("uart_aot", 13112),
+    ("net_100_aot", 17304),
+    ("modbus_tcp_100_aot", 16812),
+];
+
+const C3_HEAP_REF: [(&str, u32); 21] = [
+    ("empty_aot", 11464),
+    ("logic_10_aot", 11912),
+    ("logic_100_aot", 16052),
+    ("logic_500_aot", 34504),
+    ("float_10_aot", 11932),
+    ("float_100_aot", 16080),
+    ("float_500_aot", 34536),
+    ("timers_10_aot", 12812),
+    ("timers_100_aot", 24848),
+    ("timers_500_aot", 78524),
+    ("text_10_aot", 12072),
+    ("text_100_aot", 16328),
+    ("text_500_aot", 35276),
+    ("gpio_in_aot", 11780),
+    ("gpio_out_aot", 11780),
+    ("adc_aot", 11656),
+    ("i2c_aot", 12164),
+    ("retain_aot", 12512),
+    ("uart_aot", 13112),
+    ("net_100_aot", 17308),
+    ("modbus_tcp_100_aot", 20336),
+];
+
+fn core_chip(chip: Chip) -> Option<crab_core::pins::Chip> {
+    crab_core::pins::Chip::from_fqbn(&chip.fqbn())
+}
+
+fn within(estimate: u32, measured: u32, percent: u32) -> bool {
+    estimate.abs_diff(measured) * 100 <= measured * percent
+}
+
+#[test]
+fn heap_estimate_matches_the_stand_reports_within_10_percent() {
+    let secrets = Secrets::parse(FAKE).unwrap();
+    for (chip, reference) in [
+        (Chip::Esp32, &ESP32_HEAP_REF[..]),
+        (Chip::Esp32c3, &C3_HEAP_REF[..]),
+    ] {
+        let heap = crab_core::cost::heap_for(core_chip(chip));
+        for (id, measured) in reference {
+            let stand = standard_stands()
+                .into_iter()
+                .find(|s| s.id == *id)
+                .unwrap_or_else(|| panic!("no stand {id}"));
+            let built = build_project(&stand, chip, Some(&secrets)).unwrap();
+            let kinds = built.project.logic.blocks.iter().map(|b| b.kind.as_str());
+            // The `code` of the report is the load and the blocks, without the master's part of a
+            // module and without the linear memory.
+            let estimate = heap.module_bytes(kinds, 0) - heap.slot;
+            assert!(
+                within(estimate, *measured, 10),
+                "{id} on {}: estimate {estimate}, measured {measured}",
+                chip.name()
+            );
+        }
+    }
+}
+
+/// Whole-project stands without the network, from `bench/esp32-2.0.0-2026-11-15-0929.md` and
+/// `bench/esp32c3-2.0.0-2026-11-15-0932.md`: stand, sheets that ran, free heap before and after.
+const PROJECT_REF: [(Chip, &str, usize, u32, u32); 4] = [
+    (Chip::Esp32, "project_10_aot", 13, 209_612, 18_620),
+    (Chip::Esp32, "project_20_aot", 10, 209_612, 54_272),
+    (Chip::Esp32c3, "project_10_aot", 5, 89_436, 22_760),
+    (Chip::Esp32c3, "project_20_aot", 5, 89_276, 20_540),
+];
+
+#[test]
+fn heap_estimate_matches_the_project_stands_within_10_percent() {
+    let lib = library();
+    for (chip, id, running, before, after) in PROJECT_REF {
+        let heap = crab_core::cost::heap_for(core_chip(chip));
+        let stand = standard_stands().into_iter().find(|s| s.id == id).unwrap();
+        let built = build_project(&stand, chip, None).unwrap();
+        let modules = generate_modules(&built.project, &lib).unwrap();
+        // The blocks of every sheet, in the order of the modules.
+        let mut sheets: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+        for block in &built.project.logic.blocks {
+            let sheet = built.project.layout.blocks[&block.id].sheet;
+            sheets.entry(sheet).or_default().push(block.kind.as_str());
+        }
+        let bytes: Vec<u32> = sheets
+            .values()
+            .zip(&modules)
+            .take(running)
+            .map(|(kinds, module)| {
+                let memory = mm::module_memory(&module.wasm).unwrap_or(0);
+                heap.module_bytes(kinds.iter().copied(), memory)
+            })
+            .collect();
+        assert_eq!(bytes.len(), running);
+        let estimate = heap.project_bytes(&bytes);
+        let measured = before - after;
+        assert!(
+            within(estimate, measured, 10),
+            "{id} on {}: estimate {estimate}, measured {measured}",
+            chip.name()
+        );
+    }
+}
+
+/// The whole-project stands, which did not fit as 10 or 20 sheets (`plan.md` of module-ram), are
+/// one module for the plan: every sheet joins, and the module is valid WASM that, by the heap
+/// table, fits a fresh board.
+#[test]
+fn the_plan_joins_the_project_stands_into_one_module() {
+    let lib = library();
+    let secrets = Secrets::parse(FAKE).unwrap();
+    // Free heap of a fresh board without the network (`bench/esp32-2.0.0-2026-11-15-0929.md`,
+    // `bench/esp32c3-2.0.0-2026-11-15-0932.md`).
+    let fresh = |chip: Chip| match chip {
+        Chip::Esp32 => 209_612u32,
+        Chip::Esp32c3 => 89_436,
+    };
+    for chip in CHIPS {
+        let core = core_chip(chip);
+        let heap = crab_core::cost::heap_for(core);
+        for stand in standard_stands()
+            .into_iter()
+            .filter(|s| matches!(s.family, Family::Project | Family::ProjectNet))
+        {
+            let built = build_project(&stand, chip, Some(&secrets)).unwrap();
+            let project = crab_codegen::prepare(&built.project, &lib);
+            let mut program = Program::build(&project, &lib).unwrap();
+            let (sheets, _) = stands::project_layout(chip, stand.n);
+            let all: Vec<u32> = (1..=sheets as u32).collect();
+            assert_eq!(
+                program.plan_groups(core),
+                vec![all],
+                "{} on {}",
+                stand.id,
+                chip.name()
+            );
+            program.auto_group(core).unwrap();
+            assert_eq!(program.sheets(), vec![1]);
+            let module = program.wasm_module(1).unwrap();
+            assert!(module.wasm.starts_with(b"\0asm"));
+
+            if stand.family == Family::Project {
+                let sheet = program.sheet_module(1).unwrap();
+                let kinds = sheet
+                    .blocks
+                    .iter()
+                    .map(|&i| program.blocks[i].block.kind.as_str());
+                let memory = mm::module_memory(&module.wasm).unwrap_or(0);
+                let bytes = heap.project_bytes(&[heap.module_bytes(kinds, memory)]);
+                assert!(
+                    bytes + crab_core::cost::MASTER_RESERVE <= fresh(chip),
+                    "{} on {}: {bytes} B do not fit {} B",
+                    stand.id,
+                    chip.name(),
+                    fresh(chip)
+                );
+            }
+        }
+    }
 }

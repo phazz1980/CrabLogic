@@ -13,8 +13,15 @@ pub struct BenchReport {
     pub meta: Meta,
     #[serde(default, rename = "stand", skip_serializing_if = "Vec::is_empty")]
     pub stands: Vec<StandResult>,
+    /// How many sheets of the 50/30/20 mix fit (`specs/module-ram`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheets: Option<SheetsFit>,
+    /// The same with sheets of logic only, as the stand was before 15.11.2026 (for the history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheets_logic: Option<SheetsFit>,
+    /// Whole-project stands: do 200 blocks (150 on the C3) fit and run (`specs/module-ram`).
+    #[serde(default, rename = "project", skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<ProjectFit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<RestartTimes>,
     /// The Modbus TCP stand: what the PC saw while it polled the board.
@@ -219,6 +226,46 @@ pub struct SheetsFit {
     /// Free heap after each sheet was added.
     #[serde(default)]
     pub free_after: Vec<u32>,
+    /// Free heap before the first sheet (the master with no module).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_before: Option<u32>,
+    /// The board was reset before the stand, so the heap is that of a fresh boot; without it
+    /// earlier stands (Wi-Fi, MQTT) may have taken some.
+    #[serde(default)]
+    pub fresh: bool,
+}
+
+/// One whole-project stand: the project of the 50/30/20 mix uploaded sheet by sheet.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProjectFit {
+    pub id: String,
+    /// `ok` (every sheet runs and the master keeps its reserve), `failed` or `skipped`.
+    pub status: String,
+    /// Work blocks of the project (without helpers: generators and constants).
+    pub work_blocks: usize,
+    pub sheets: usize,
+    pub per_sheet: usize,
+    /// Modules the sheets were joined into (0 in reports before the joining).
+    #[serde(default)]
+    pub modules: usize,
+    /// Modules running at the end.
+    pub running: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_before: Option<u32>,
+    #[serde(default)]
+    pub fresh: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_after: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub largest_after: Option<u32>,
+    /// Sum over the sheets of their average step, microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_us: Option<u32>,
+    /// Sum over the sheets of their longest step, microseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_max_us: Option<u32>,
 }
 
 /// Times of the two kinds of restart, milliseconds.
@@ -322,6 +369,7 @@ impl BenchReport {
         self.modbus_table(&mut o);
         self.cycle_table(&mut o);
         self.memory_table(&mut o);
+        self.project_table(&mut o);
         self.times_table(&mut o);
         if !self.notes.is_empty() {
             let _ = writeln!(o, "\n## Примечания\n");
@@ -542,13 +590,61 @@ impl BenchReport {
         );
     }
 
+    fn project_table(&self, o: &mut String) {
+        if self.projects.is_empty() {
+            return;
+        }
+        let _ = writeln!(o, "## Проект на всю плату (смесь 50/30/20)\n");
+        let _ = writeln!(
+            o,
+            "| Стенд | Блоков | Листов × по | Модулей | Работает | Свободно после | Наибольший блок | Шаг сумма / макс, мкс | Итог |"
+        );
+        let _ = writeln!(o, "|---|---:|---:|---:|---:|---:|---:|---:|---|");
+        for p in &self.projects {
+            let steps = match (p.step_us, p.step_max_us) {
+                (Some(a), Some(m)) => format!("{a} / {m}"),
+                _ => "—".to_owned(),
+            };
+            let verdict = match p.status.as_str() {
+                "ok" => "влезло".to_owned(),
+                _ => p.reason.clone().unwrap_or_else(|| p.status.clone()),
+            };
+            let _ = writeln!(
+                o,
+                "| {} | {} | {} × {} | {} | {} | {} | {} | {} | {} |",
+                p.id,
+                p.work_blocks,
+                p.sheets,
+                p.per_sheet,
+                p.modules,
+                p.running,
+                int(p.free_after),
+                int(p.largest_after),
+                steps,
+                verdict
+            );
+        }
+        if let Some(free) = self
+            .projects
+            .iter()
+            .filter(|p| p.fresh)
+            .find_map(|p| p.free_before)
+        {
+            let _ = writeln!(
+                o,
+                "\nСтарт каждого стенда — после сброса платы, свободно {free} Б."
+            );
+        }
+        let _ = writeln!(o);
+    }
+
     fn memory_table(&self, o: &mut String) {
         let rows: Vec<&StandResult> = self
             .stands
             .iter()
             .filter(|s| s.is_ok() && s.free.is_some())
             .collect();
-        if rows.is_empty() && self.sheets.is_none() {
+        if rows.is_empty() && self.sheets.is_none() && self.sheets_logic.is_none() {
             return;
         }
         let _ = writeln!(o, "## Память, байт\n");
@@ -572,10 +668,22 @@ impl BenchReport {
             }
             let _ = writeln!(o);
         }
-        if let Some(f) = &self.sheets {
+        let kinds = [
+            (&self.sheets, "смеси 50/30/20 (логика, математика, таймеры)"),
+            (&self.sheets_logic, "логики (как раньше, для истории)"),
+        ];
+        for (fit, what) in kinds {
+            let Some(f) = fit else { continue };
+            let start = match (f.free_before, f.fresh) {
+                (Some(free), true) => format!(" Старт после сброса платы: свободно {free} Б."),
+                (Some(free), false) => {
+                    format!(" Старт без сброса платы (куча могла быть занята прошлыми стендами): свободно {free} Б.")
+                }
+                (None, _) => String::new(),
+            };
             let _ = writeln!(
                 o,
-                "Листов по 10 блоков поместилось: **{}** (пробовали до {}){}.\n",
+                "Листов по 10 блоков {what} поместилось: **{}** (пробовали до {}){}.{start}\n",
                 f.fit,
                 f.tried,
                 f.reason
@@ -896,6 +1004,13 @@ mod tests {
             tried: 12,
             reason: Some("нет памяти".into()),
             free_after: vec![90_000, 80_000],
+            free_before: Some(200_000),
+            fresh: true,
+        });
+        r.sheets_logic = Some(SheetsFit {
+            fit: 9,
+            tried: 12,
+            ..SheetsFit::default()
         });
         r.restart = Some(RestartTimes {
             module_ms: Some(120),

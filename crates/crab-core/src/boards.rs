@@ -298,6 +298,26 @@ impl BoardDef {
                     })
                     .collect();
                 if pins.is_empty() {
+                    // The author listed no pins of this device: bring out every channel
+                    // it names (relays are outputs, optoisolated inputs are inputs).
+                    let function = match d.kind.as_str() {
+                        "pcf8574_in" => PinFunction::Din,
+                        _ => PinFunction::Dout,
+                    };
+                    let limit = expander.chip.pins() as usize;
+                    pins = d
+                        .channels
+                        .iter()
+                        .take(limit)
+                        .enumerate()
+                        .map(|(i, name)| BoardExpanderPin {
+                            pin: i as i64,
+                            label: name.trim().to_owned(),
+                            functions: [function].into(),
+                        })
+                        .collect();
+                }
+                if pins.is_empty() {
                     return None;
                 }
                 pins.sort_by_key(|p| p.pin);
@@ -531,6 +551,29 @@ mod tests {
             .pin(39)
             .unwrap()
             .has(PinFunction::Din));
+    }
+
+    #[test]
+    fn device_without_listed_pins_brings_out_its_channels() {
+        use crate::value::ParamValue;
+        let mut d = def();
+        for (id, kind) in [("relays", "pcf8574_out"), ("inputs", "pcf8574_in")] {
+            d.devices.push(DeviceDef {
+                id: id.into(),
+                kind: kind.into(),
+                name: id.into(),
+                description: String::new(),
+                channels: vec!["A".into(), "B".into()],
+                params: [("address".to_owned(), ParamValue::Int(0x24))].into(),
+            });
+        }
+        let layout = d.layout().unwrap();
+        let [out, inp] = layout.expanders() else {
+            panic!("two expanders expected");
+        };
+        assert!(out.fits(1, crate::PinMode::Out) && !out.fits(1, crate::PinMode::In));
+        assert!(inp.fits(0, crate::PinMode::In) && !inp.fits(0, crate::PinMode::Out));
+        assert!(!inp.fits(2, crate::PinMode::In));
     }
 
     #[test]

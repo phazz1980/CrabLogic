@@ -269,10 +269,19 @@ impl EditorApp {
         if doc.dirty {
             self.save();
         }
-        let running = self
+        let mut running = self
             .web_editor
             .as_mut()
             .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+        // The constructor edits the file it was started with: after another project was opened
+        // it would show (and overwrite) the old one, so it is restarted for this project.
+        if running && self.web_project.as_ref() != Some(&path) {
+            if let Some(mut old) = self.web_editor.take() {
+                let _ = old.kill();
+                let _ = old.wait();
+            }
+            running = false;
+        }
         if !running {
             let sibling = std::env::current_exe()
                 .ok()
@@ -286,7 +295,10 @@ impl EditorApp {
             }
             hide_console(&mut cmd);
             match cmd.spawn() {
-                Ok(child) => self.web_editor = Some(child),
+                Ok(child) => {
+                    self.web_editor = Some(child);
+                    self.web_project = Some(path.clone());
+                }
                 Err(e) => {
                     self.info(
                         LogLevel::Error,

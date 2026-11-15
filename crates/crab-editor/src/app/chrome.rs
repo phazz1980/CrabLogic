@@ -1,5 +1,28 @@
 use super::*;
 
+/// Smallest window: the title bar buttons (minimize, maximize, close) stay visible.
+pub const MIN_WINDOW: [f32; 2] = [1000.0, 500.0];
+
+/// The window has no OS frame, so the system may leave it smaller than the minimum (a restored or
+/// snapped size): bring it back, otherwise the window buttons are cut off.
+fn keep_min_size(
+    ctx: &egui::Context,
+    maximized: bool,
+    fullscreen: bool,
+    inner: Option<egui::Vec2>,
+) {
+    let Some(inner) = inner else { return };
+    if maximized || fullscreen {
+        return;
+    }
+    if inner.x < MIN_WINDOW[0] - 1.0 || inner.y < MIN_WINDOW[1] - 1.0 {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            inner.x.max(MIN_WINDOW[0]),
+            inner.y.max(MIN_WINDOW[1]),
+        )));
+    }
+}
+
 impl EditorApp {
     /// Menu part: the AOT compiler (wamrc) of the modules.
     pub(super) fn aot_settings_menu(&mut self, ui: &mut egui::Ui) {
@@ -130,6 +153,7 @@ impl EditorApp {
             )
         });
         self.fix_fullscreen(&ctx, maximized, fullscreen, inner, monitor);
+        keep_min_size(&ctx, maximized, fullscreen, inner);
         // Loaded outside `data_mut`: `load_texture` takes the context lock too.
         let icon_id = egui::Id::unique("app_icon");
         let icon = match ctx.data(|d| d.get_temp::<egui::TextureHandle>(icon_id)) {
@@ -905,13 +929,6 @@ impl EditorApp {
                 let p = &doc.project;
                 ui.label(crate::i18n::fmt("Проект: {0}", &[&p.config.project.name]));
                 ui.separator();
-                let board = &p.config.board;
-                ui.label(crate::i18n::fmt(
-                    "Плата: {0}",
-                    &[&crate::boardcfg::board_name(board, self.lib.boards())],
-                ))
-                .on_hover_text(&board.fqbn);
-                ui.separator();
                 ui.label(crate::i18n::fmt("Блоков: {0}", &[&p.logic.blocks.len()]));
                 ui.separator();
                 let errors = doc.report.errors().count();
@@ -925,6 +942,20 @@ impl EditorApp {
                         RichText::new(crate::i18n::fmt("Ошибок в схеме: {0}", &[&errors]))
                             .color(self.theme.palette.error),
                     );
+                }
+                // The memory estimate is in the status bar only when the project does not fit.
+                if let Some(est) = self
+                    .board_check
+                    .as_ref()
+                    .and_then(|c| c.estimate.as_ref())
+                    .filter(|e| e.over)
+                {
+                    ui.separator();
+                    ui.label(RichText::new(&est.summary).color(self.theme.palette.error))
+                        .on_hover_text(est.details.join(
+                            "
+",
+                        ));
                 }
                 if let Some(check) = self.board_check.as_ref().filter(|c| !c.lines.is_empty()) {
                     ui.separator();
@@ -982,12 +1013,11 @@ impl EditorApp {
                         );
                     }
                     if let Some(nvs) = &d.live.nvs {
+                        // Flash writes are shown only when there are too many of them.
                         let (text, warn) = crate::job::nvs_message(nvs);
-                        let mut label = RichText::new(text);
                         if warn {
-                            label = label.color(self.theme.palette.warning);
+                            ui.label(RichText::new(text).color(self.theme.palette.warning));
                         }
-                        ui.label(label);
                     }
                     // The master on the board against the image of the program (`specs/rust-only`).
                     if let Some(id) = &d.live.master_id {

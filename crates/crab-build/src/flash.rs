@@ -96,6 +96,12 @@ pub enum FlashError {
     Flash(String),
 }
 
+/// A `firmware` folder counts only if some chip folder in it holds a master image: a checkout
+/// has `firmware/master-rs` (the sources) at the root, which must not hide `dist/`.
+fn has_images(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|rd| rd.flatten().any(|e| e.path().join(ELF_FILE).is_file()))
+}
+
 /// Where the master images are: `firmware/` next to the program, then up the folders (a checkout
 /// runs from `target/<profile>`, the images are in `dist/CrabLogic/firmware`).
 pub fn firmware_dir() -> Option<PathBuf> {
@@ -106,7 +112,7 @@ pub fn firmware_dir() -> Option<PathBuf> {
             dir.join("dist").join("CrabLogic").join(FIRMWARE_DIR),
         ]
         .into_iter()
-        .find(|d| d.is_dir())
+        .find(|d| has_images(d))
     })
 }
 

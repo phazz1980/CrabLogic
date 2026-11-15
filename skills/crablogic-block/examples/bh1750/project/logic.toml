@@ -8,7 +8,9 @@ period = 500
 
 [[block]]
 id = "dark"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = 100.0
 
 [[block]]

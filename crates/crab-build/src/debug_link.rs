@@ -208,4 +208,36 @@ mod tests {
             Ok(Chosen::Serial("COM10".into()))
         );
     }
+
+    /// Two sheets joined into one module: one entry of the map, watching the outputs of both.
+    #[test]
+    fn a_joined_module_maps_the_outputs_of_all_its_sheets() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (lib, errors) = crab_core::Library::load(root.join("library")).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let mut project = crab_core::Project::load(root.join("examples/background")).unwrap();
+        project.logic.vars[0].retain = false;
+        for info in &mut project.layout.sheets {
+            info.background = false;
+        }
+        let separate = Program::build(&project, &lib).unwrap();
+        let table = crab_codegen::debug::debug_table(&separate);
+        let work = std::env::temp_dir();
+        let apart = debug_modules(&separate, &table, &work).unwrap();
+        assert_eq!(apart.len(), 2);
+
+        let mut joined = Program::build(&project, &lib).unwrap();
+        joined.auto_group_for_board(true).unwrap();
+        let maps = debug_modules(&joined, &table, &work).unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0].sheet, 1);
+        let slots = |m: &ModuleMap| {
+            let mut v: Vec<usize> = m.slots.iter().flatten().copied().collect();
+            v.sort_unstable();
+            v
+        };
+        let mut all: Vec<usize> = apart.iter().flat_map(slots).collect();
+        all.sort_unstable();
+        assert_eq!(slots(&maps[0]), all);
+    }
 }

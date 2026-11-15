@@ -1,6 +1,7 @@
 //! Main window: menu, toolbar, panels and global shortcuts.
 
 mod chrome;
+pub use chrome::MIN_WINDOW;
 mod debug;
 mod editing;
 mod jobs;
@@ -147,6 +148,17 @@ struct BoardCheck {
     /// Modification time of the memo file the lines were computed from.
     memo_time: Option<SystemTime>,
     lines: Vec<String>,
+    /// What the project will cost the board, one line for the status bar and the lines for its
+    /// hint; `None` while the schema has errors.
+    estimate: Option<EstimateText>,
+}
+
+/// The estimate of the project as the editor shows it.
+pub struct EstimateText {
+    pub summary: String,
+    /// The project does not fit the board.
+    pub over: bool,
+    pub details: Vec<String>,
 }
 
 pub struct EditorApp {
@@ -154,6 +166,8 @@ pub struct EditorApp {
     pub lib_dir: Option<PathBuf>,
     /// `crablogic-web` started from the "Конструктор веб-интерфейса" menu item.
     web_editor: Option<std::process::Child>,
+    /// The project file that `web_editor` was started for: another project needs a restart.
+    web_project: Option<PathBuf>,
     /// Web widgets of the project as last seen; a change is saved at once for the constructor.
     web_sig: String,
     lib_stamp: Option<SystemTime>,
@@ -291,6 +305,7 @@ impl EditorApp {
             lib: Library::default(),
             lib_dir: None,
             web_editor: None,
+            web_project: None,
             web_sig: String::new(),
             lib_stamp: None,
             lib_checked: Instant::now(),

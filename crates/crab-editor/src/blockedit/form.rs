@@ -184,6 +184,8 @@ pub(super) struct Form {
     pub(super) kind: String,
     pub(super) name: String,
     pub(super) symbol: String,
+    /// Kept as it is: the form does not edit it.
+    pub(super) symbol_param: Option<String>,
     /// Section and folders in the user library (`Раздел/Папка`), empty in the root.
     pub(super) group: String,
     pub(super) description: String,
@@ -207,6 +209,7 @@ impl Form {
             kind,
             name: crate::i18n::tr("Новый блок").into(),
             symbol: String::new(),
+            symbol_param: None,
             group,
             description: String::new(),
             memory: false,
@@ -232,6 +235,7 @@ impl Form {
             kind: info.kind.clone(),
             name: info.name.clone(),
             symbol: info.symbol.clone().unwrap_or_default(),
+            symbol_param: info.symbol_param.clone(),
             group: info.group.clone(),
             description: info.description.clone(),
             memory: info.memory,
@@ -263,6 +267,7 @@ impl Form {
                 kind: kind.clone(),
                 name: self.name.trim().to_owned(),
                 symbol: optional(&self.symbol),
+                symbol_param: self.symbol_param.clone(),
                 group: self.group.trim().to_owned(),
                 shared: String::new(),
                 description: self.description.trim().to_owned(),

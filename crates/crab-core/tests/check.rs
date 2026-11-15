@@ -161,7 +161,11 @@ fn int_feeds_float() {
 
         [[block]]
         id = "low"
-        type = "less"
+        type = "compare"
+        op = 2
+
+        [block.const]
+        b = 0.0
 
         [[link]]
         from = "adc.out"
@@ -247,7 +251,7 @@ init = true
 fn variables_order_writes_before_reads() {
     let src = format!(
         "{VARS}\n[[block]]\nid = \"r\"\ntype = \"var_get\"\nvar = \"t\"\n\
-         [[block]]\nid = \"hot\"\ntype = \"greater\"\nb = 30.0\n\
+         [[block]]\nid = \"hot\"\ntype = \"compare\"\nop = 4\n[block.const]\nb = 30.0\n\
          [[block]]\nid = \"on_r\"\ntype = \"var_get\"\nvar = \"on\"\n\
          [[block]]\nid = \"adc\"\ntype = \"analog_in\"\npin = 34\n\
          [[block]]\nid = \"w\"\ntype = \"var_set\"\nvar = \"t\"\n\

@@ -16,10 +16,10 @@ fn load_pump_example() {
     assert_eq!(p.config.board.fqbn, "esp32:esp32:esp32");
     assert_eq!(p.logic.blocks.len(), 5);
     assert_eq!(p.logic.links.len(), 4);
-    assert_eq!(
-        p.logic.block("low").unwrap().params["b"],
-        ParamValue::Float(2.0)
-    );
+    // The old threshold block `less` is read as the comparator with a constant on `b`.
+    let low = p.logic.block("low").unwrap();
+    assert_eq!(low.kind, "compare");
+    assert_eq!(low.consts["b"], ParamValue::Float(2.0));
     assert_eq!(p.logic.links[0].from, PortRef::new("sensor", "out"));
     assert_eq!(p.layout.blocks["pump"].sheet, 1);
 }

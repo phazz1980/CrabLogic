@@ -58,12 +58,24 @@ pub(super) fn label(block: &Block, def: Option<&BlockDef>) -> String {
     def.map_or_else(
         || block.kind.clone(),
         |d| {
-            d.info
-                .symbol
-                .clone()
-                .unwrap_or_else(|| crate::i18n::tr(&d.info.name).to_owned())
+            chosen_symbol(block, d).unwrap_or_else(|| {
+                d.info
+                    .symbol
+                    .clone()
+                    .unwrap_or_else(|| crate::i18n::tr(&d.info.name).to_owned())
+            })
         },
     )
+}
+
+/// The caption of the chosen value of the parameter named by `symbol_param` (`a > b`).
+fn chosen_symbol(block: &Block, def: &BlockDef) -> Option<String> {
+    let param = def
+        .params
+        .iter()
+        .find(|p| Some(&p.name) == def.info.symbol_param.as_ref())?;
+    let value = block.params.get(&param.name).or(param.default.as_ref())?;
+    Some(crate::i18n::tr(param.choice_label(value)?).to_owned())
 }
 
 pub(super) fn kind_of(block: &Block, def: Option<&BlockDef>) -> Kind {

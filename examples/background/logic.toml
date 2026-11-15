@@ -46,7 +46,9 @@ var = "Нажатий всего"
 
 [[block]]
 id = "reached"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 4.5
 
 [[block]]

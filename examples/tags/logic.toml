@@ -53,7 +53,9 @@ type = "sub"
 # Обогрев, если холоднее уставки больше чем на 1 °C.
 [[block]]
 id = "cold"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = -1.0
 
 [[block]]

@@ -20,7 +20,8 @@ use crab_core::{Library, Project};
 
 use listing::{CycleLine, ListAnswer, ModuleLine};
 use report::{
-    BenchReport, CycleResult, Meta, ModbusResult, RestartTimes, SheetsFit, StandResult, StepFigures,
+    BenchReport, CycleResult, Meta, ModbusResult, ProjectFit, RestartTimes, SheetsFit, StandResult,
+    StepFigures,
 };
 use secrets::Secrets;
 use stands::{Chip, Family, Mode, Stand};
@@ -176,7 +177,20 @@ fn run_inner(args: BenchArgs, library: Option<&Path>) -> Result<(), String> {
     for (i, stand) in selected.iter().enumerate() {
         println!("[{}/{}] {}", i + 1, selected.len(), stand.id);
         match stand.family {
-            Family::Sheets => report.sheets = Some(run_sheets(&mut ctx)),
+            Family::Sheets => {
+                report.sheets = Some(run_sheets(&mut ctx, true));
+                report.sheets_logic = Some(run_sheets(&mut ctx, false));
+            }
+            Family::Project | Family::ProjectNet => {
+                let fit = run_project(&mut ctx, stand);
+                println!("    {}", project_summary(&fit));
+                if fit.status == "skipped" {
+                    if let Some(reason) = &fit.reason {
+                        report.notes.push(format!("{}: {reason}", fit.id));
+                    }
+                }
+                report.projects.push(fit);
+            }
             Family::Restart => {
                 let (result, times) = run_restart(&mut ctx, stand);
                 println!("    {}", summary(&result));
@@ -333,12 +347,26 @@ fn format_utc(secs: u64) -> String {
 
 /// Check, then every sheet of the project as a WASM module.
 fn generate_modules(project: &Project, lib: &Library) -> Result<Vec<WasmModule>, String> {
+    modules_of(project, lib, false)
+}
+
+/// The modules the build makes of a whole project: sheets joined as `gen-wasm` joins them.
+fn generate_joined_modules(project: &Project, lib: &Library) -> Result<Vec<WasmModule>, String> {
+    modules_of(project, lib, true)
+}
+
+fn modules_of(project: &Project, lib: &Library, join: bool) -> Result<Vec<WasmModule>, String> {
     let report = crab_codegen::check_project(project, lib);
     if let Some(error) = report.errors().next() {
         return Err(format!("схема стенда с ошибкой: {}", error.message));
     }
     let project = crab_codegen::prepare(project, lib);
-    let program = Program::build(&project, lib).map_err(|e| e.to_string())?;
+    let mut program = Program::build(&project, lib).map_err(|e| e.to_string())?;
+    if join {
+        program
+            .auto_group_for_board(false)
+            .map_err(|e| e.to_string())?;
+    }
     program
         .sheets()
         .into_iter()
@@ -810,13 +838,48 @@ fn run_modbus(ctx: &mut Ctx, stand: &Stand) -> (StandResult, Option<ModbusResult
 
 // ---- memory and restarts --------------------------------------------------------------------
 
-/// Adds copies of a small sheet one by one until the board refuses or stops one.
-fn run_sheets(ctx: &mut Ctx) -> SheetsFit {
+/// Removes every module and resets the board by the RTS line (the EN pin of a dev board; DTR stays
+/// released so the board boots the program), so the next stand starts from the heap of a fresh
+/// boot, not from what earlier stands left. Returns the free heap once the master answers.
+fn fresh_board(ctx: &mut Ctx) -> Result<u32, String> {
+    // A master busy with Wi-Fi and MQTT may miss the first `list`: ask a few times.
+    let mut cleared = clear_board(ctx);
+    for _ in 0..3 {
+        if cleared.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+        cleared = clear_board(ctx);
+    }
+    cleared?;
+    let _ = ctx.serial.write_data_terminal_ready(false);
+    let _ = ctx.serial.write_request_to_send(true);
+    std::thread::sleep(Duration::from_millis(100));
+    let _ = ctx.serial.write_request_to_send(false);
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        if let Ok(list) = listing::query_list(&mut ctx.serial) {
+            if let Some(free) = list.free {
+                return Ok(free);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err("после сброса по RTS мастер не ответил за 20 с".to_owned())
+}
+
+/// Adds copies of a small sheet one by one until the board refuses or stops one. `mixed`: sheets
+/// of the 50/30/20 mix (logic, math, timers); otherwise logic only, as the stand was before.
+fn run_sheets(ctx: &mut Ctx, mixed: bool) -> SheetsFit {
     let mut fit = SheetsFit {
         tried: stands::MAX_SHEETS,
         ..SheetsFit::default()
     };
-    let project = stands::sheets_project(ctx.chip, stands::MAX_SHEETS);
+    let project = if mixed {
+        stands::sheets_project(ctx.chip, stands::MAX_SHEETS)
+    } else {
+        stands::sheets_project_logic(ctx.chip, stands::MAX_SHEETS)
+    };
     let modules = match generate_modules(&project, &ctx.lib) {
         Ok(modules) => modules,
         Err(e) => {
@@ -824,9 +887,22 @@ fn run_sheets(ctx: &mut Ctx) -> SheetsFit {
             return fit;
         }
     };
-    if let Err(e) = clear_board(ctx) {
-        fit.reason = Some(e);
-        return fit;
+    match fresh_board(ctx) {
+        Ok(free) => {
+            fit.fresh = true;
+            fit.free_before = Some(free);
+        }
+        Err(e) => {
+            // No reset on this board: go on from what the heap is, and say so in the report.
+            if let Err(clear) = clear_board(ctx) {
+                fit.reason = Some(clear);
+                return fit;
+            }
+            fit.free_before = listing::query_list(&mut ctx.serial)
+                .ok()
+                .and_then(|l| l.free);
+            eprintln!("    без сброса платы: {e}");
+        }
     }
     let mode = if ctx.info.takes_aot() {
         Mode::Aot
@@ -859,6 +935,114 @@ fn run_sheets(ctx: &mut Ctx) -> SheetsFit {
         fit.fit = running;
     }
     fit
+}
+
+/// Uploads a whole project of the 50/30/20 mix sheet by sheet to a fresh board, lets it run, and
+/// reads what is left: heap, the biggest block, the steps of every sheet. `Ok` only when every
+/// sheet runs and the master still has its reserve.
+fn run_project(ctx: &mut Ctx, stand: &Stand) -> ProjectFit {
+    let (sheets, per_sheet) = stands::project_layout(ctx.chip, stand.n);
+    let mut fit = ProjectFit {
+        id: stand.id.clone(),
+        status: "failed".into(),
+        work_blocks: sheets * per_sheet,
+        sheets,
+        per_sheet,
+        ..ProjectFit::default()
+    };
+    let built = match stands::build_project(stand, ctx.chip, ctx.secrets.as_ref()) {
+        Ok(built) => built,
+        Err(reason) => {
+            fit.status = "skipped".into();
+            fit.reason = Some(reason);
+            return fit;
+        }
+    };
+    let modules = match generate_joined_modules(&built.project, &ctx.lib) {
+        Ok(modules) => modules,
+        Err(e) => {
+            fit.reason = Some(e);
+            return fit;
+        }
+    };
+    fit.modules = modules.len();
+    match fresh_board(ctx) {
+        Ok(free) => {
+            fit.fresh = true;
+            fit.free_before = Some(free);
+        }
+        Err(e) => {
+            if let Err(clear) = clear_board(ctx) {
+                fit.reason = Some(clear);
+                return fit;
+            }
+            eprintln!("    без сброса платы: {e}");
+        }
+    }
+    for module in &modules {
+        match upload(ctx, module, stand.mode) {
+            Ok(_) => {}
+            Err(Outcome::Skipped(e) | Outcome::Failed(e)) => {
+                fit.reason = Some(format!("лист {}: {e}", module.name));
+                break;
+            }
+        }
+    }
+    std::thread::sleep(ctx.timing.warm);
+    let list = match listing::query_list(&mut ctx.serial) {
+        Ok(list) => list,
+        Err(e) => {
+            fit.reason.get_or_insert(e);
+            return fit;
+        }
+    };
+    fit.running = list.modules.iter().filter(|m| m.running).count();
+    fit.free_after = list.free;
+    fit.largest_after = list.largest;
+    let (mut avg, mut max, mut seen) = (0u32, 0u32, false);
+    for m in &list.modules {
+        if let (Some(us), true) = (m.us, m.steps > 0) {
+            avg = avg.saturating_add(us[3] / m.steps);
+            max = max.saturating_add(us[1]);
+            seen = true;
+        }
+    }
+    if seen {
+        fit.step_us = Some(avg);
+        fit.step_max_us = Some(max);
+    }
+    if fit.reason.is_none() && fit.running < modules.len() {
+        fit.reason = Some(format!(
+            "запущено {} из {} модулей",
+            fit.running,
+            modules.len()
+        ));
+    }
+    if fit.reason.is_none() {
+        fit.status = "ok".into();
+    }
+    fit
+}
+
+fn project_summary(fit: &ProjectFit) -> String {
+    match fit.status.as_str() {
+        "ok" => format!(
+            "{} блоков ({} × {}, модулей {}): влезло, свободно {} Б, шаг {} мкс",
+            fit.work_blocks,
+            fit.sheets,
+            fit.per_sheet,
+            fit.modules,
+            fit.free_after.unwrap_or(0),
+            fit.step_us.unwrap_or(0)
+        ),
+        _ => format!(
+            "{} блоков ({} × {}): {}",
+            fit.work_blocks,
+            fit.sheets,
+            fit.per_sheet,
+            fit.reason.as_deref().unwrap_or("не удалось")
+        ),
+    }
 }
 
 /// Time from the restart of the module, and from the reset of the board, to the module's first

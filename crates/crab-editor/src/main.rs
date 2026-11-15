@@ -66,7 +66,7 @@ fn main() -> eframe::Result {
                 height: 64,
             })
             .with_inner_size([1400.0, 860.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_min_inner_size(app::MIN_WINDOW),
         ..Default::default()
     };
     eframe::run_native(

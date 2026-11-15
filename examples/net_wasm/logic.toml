@@ -18,12 +18,16 @@ out_unix = true
 
 [[block]]
 id = "after8"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 7.5
 
 [[block]]
 id = "before20"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = 20.0
 
 [[block]]

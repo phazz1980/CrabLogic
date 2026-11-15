@@ -97,8 +97,12 @@ impl Context for FolderContext {
     fn live_values(&mut self) -> Result<Vec<(String, String, bool)>, String> {
         let board = &self.project.config.board;
         let link = crab_build::project_link(board)?;
-        let project = self.project.without_disabled();
-        let program = Program::build(&project, &self.lib).map_err(|e| e.to_string())?;
+        let store = LocalValues::open_default().map_err(|e| e.to_string())?;
+        let project = crab_codegen::prepare(&self.project.with_local(&self.lib, &store), &self.lib);
+        let mut program = Program::build(&project, &self.lib).map_err(|e| e.to_string())?;
+        program
+            .auto_group_for_board(true)
+            .map_err(|e| e.to_string())?;
         let table = crab_codegen::debug::debug_table(&program);
         let modules = crab_build::debug_modules(&program, &table, &project.work_dir())?;
         let connector = match link {

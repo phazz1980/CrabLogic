@@ -15,11 +15,13 @@ const = { b = -0.5 }
 # Выход инвертирован: светодиод горит, пока температура НЕ выше 25 °C.
 [[block]]
 id = "hot"
-type = "greater"
-b = 25.0
+type = "compare"
+op = 4
 invert = ["out"]
 
 # Встроенный светодиод DevKit.
+[block.const]
+b = 25.0
 [[block]]
 id = "led"
 type = "digital_out"

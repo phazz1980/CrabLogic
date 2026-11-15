@@ -37,6 +37,35 @@ pub struct DebugState {
     pub logged_status: String,
     /// The restart after a crash was already written to the messages in this session.
     pub reset_logged: bool,
+    /// `address` outputs of the Wi-Fi blocks and the variables they are written to: the master
+    /// reports its address itself (`ip=`), so these show it without a text frame.
+    ip_ports: Vec<PortRef>,
+    ip_vars: Vec<String>,
+}
+
+/// The `address` outputs of the Wi-Fi blocks and the variables written from them.
+fn wifi_address_targets(project: &Project) -> (Vec<PortRef>, Vec<String>) {
+    let ports: Vec<PortRef> = project
+        .logic
+        .blocks
+        .iter()
+        .filter(|b| b.kind == "wifi")
+        .map(|b| PortRef::new(&b.id, "address"))
+        .collect();
+    let vars = project
+        .logic
+        .links
+        .iter()
+        .filter(|l| ports.contains(&l.from))
+        .filter_map(|l| {
+            project
+                .logic
+                .block(&l.to.block)?
+                .var_name()
+                .map(str::to_owned)
+        })
+        .collect();
+    (ports, vars)
 }
 
 /// One cycle time report with the time it arrived (seconds since the session start).
@@ -58,9 +87,13 @@ impl DebugState {
         link: &crab_build::Chosen,
         ctx: &egui::Context,
     ) -> Result<Self, String> {
-        let project = &project.without_disabled();
-        let program = Program::build(project, lib).map_err(|e| e.to_string())?;
+        let project = &crab_codegen::prepare(project, lib);
+        let mut program = Program::build(project, lib).map_err(|e| e.to_string())?;
+        program
+            .auto_group_for_board(true)
+            .map_err(|e| e.to_string())?;
         let table = crab_codegen::debug::debug_table(&program);
+        let (ip_ports, ip_vars) = wifi_address_targets(project);
         let inputs = input_ports(project, lib, &table);
         let modules = crab_build::debug_modules(&program, &table, &project.work_dir())?;
         let (connector, port) = match link {
@@ -96,6 +129,8 @@ impl DebugState {
             hash_asked: false,
             logged_status: String::new(),
             reset_logged: false,
+            ip_ports,
+            ip_vars,
         })
     }
 
@@ -195,6 +230,9 @@ impl DebugState {
         if !self.online() {
             return None;
         }
+        if self.ip_ports.contains(port) {
+            return self.live.address.as_deref().filter(|a| !a.is_empty());
+        }
         let i = self.table.text_output_index(port)?;
         self.live.texts[i].as_deref()
     }
@@ -219,6 +257,9 @@ impl DebugState {
     pub fn text_var(&self, name: &str) -> Option<&str> {
         if !self.online() {
             return None;
+        }
+        if self.ip_vars.iter().any(|v| v == name) {
+            return self.live.address.as_deref().filter(|a| !a.is_empty());
         }
         let i = self.table.text_var_index(name)?;
         self.live.texts[i].as_deref()
@@ -325,28 +366,39 @@ pub fn value_menu(ui: &mut Ui, dbg: &mut DebugState, index: usize) {
             }
         }
         SignalType::Int | SignalType::Float => {
-            let value = ui
-                .horizontal(|ui| {
-                    ui.label(crate::i18n::tr("Значение"));
-                    number_edit(ui, dbg, index, "menu")
-                })
-                .inner;
-            if ui.button(crate::i18n::tr("Форсировать")).clicked() {
-                dbg.send(Command::Force {
-                    index,
-                    value: Some(value),
+            // A click in the number field must not close the menu: the field lives in a submenu
+            // that closes only on a click outside (or after an action).
+            let config = egui::containers::menu::MenuConfig::new()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            egui::containers::menu::SubMenuButton::new(crate::i18n::tr("Задать значение"))
+                .config(config)
+                .ui(ui, |ui| {
+                    ui.set_min_width(200.0);
+                    let value = ui
+                        .horizontal(|ui| {
+                            ui.label(crate::i18n::tr("Значение"));
+                            number_edit(ui, dbg, index, "menu")
+                        })
+                        .inner;
+                    if ui.button(crate::i18n::tr("Форсировать")).clicked() {
+                        dbg.send(Command::Force {
+                            index,
+                            value: Some(value),
+                        });
+                        ui.close();
+                    }
+                    if is_var
+                        && ui
+                            .button(crate::i18n::tr("Записать один раз"))
+                            .on_hover_text(crate::i18n::tr(
+                                "Уставка: значение остаётся, пока его не перезапишет схема",
+                            ))
+                            .clicked()
+                    {
+                        dbg.send(Command::Set { index, value });
+                        ui.close();
+                    }
                 });
-            }
-            if is_var
-                && ui
-                    .button(crate::i18n::tr("Записать один раз"))
-                    .on_hover_text(crate::i18n::tr(
-                        "Уставка: значение остаётся, пока его не перезапишет схема",
-                    ))
-                    .clicked()
-            {
-                dbg.send(Command::Set { index, value });
-            }
         }
         // Not in the debug table.
         SignalType::String | SignalType::Any | SignalType::Number | SignalType::Same => {}

@@ -208,20 +208,6 @@ pub fn behavior(kind: &str) -> Option<Box<dyn Behavior>> {
             let (x, y) = (t.input(0, c.input(0)), t.input(1, c.input(1)));
             o[0] = b(num::compare(x, y, c.param(0) as i64));
         }),
-        "greater" => typed(|c, t, o| {
-            o[0] = b(num::compare(
-                t.input(0, c.input(0)),
-                t.param(0, c.param(0)),
-                4,
-            ));
-        }),
-        "less" => typed(|c, t, o| {
-            o[0] = b(num::compare(
-                t.input(0, c.input(0)),
-                t.param(0, c.param(0)),
-                2,
-            ));
-        }),
         "add" => {
             typed(|c, t, o| o[0] = num::add(t.input(0, c.input(0)), t.input(1, c.input(1))).out())
         }

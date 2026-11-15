@@ -4,7 +4,9 @@
 //! Exports of a module: `abi_version() -> i32` (must be 5), `step(dt_ms: i32)`; optional
 //! `init()`, `alloc(len: i32) -> i32` (where the host puts message bytes) and
 //! `on_message(topic_ptr, topic_len, ptr, len)`, `period_ms() -> i32` (scan period the project
-//! asks for: 1, 2, 5 or 10; none or another value — 10, `specs/fast-cycle`).
+//! asks for: 1, 2, 5 or 10; none or another value — 10, `specs/fast-cycle`) and
+//! `outputs() -> i32` (how many output slots the module reports with `output_i/f`: the host keeps
+//! that many values; without the export — [`DEFAULT_OUTPUTS`]).
 //!
 //! ABI 4 adds `crab.yield() -> i32`: a module counts its work (one unit per `step` and per loop
 //! pass) and calls it when the count runs out; the host may suspend the module there until its
@@ -28,6 +30,8 @@ pub const MODULE: &str = "crab";
 
 /// Scan period of a module without the optional `period_ms() -> i32` export, milliseconds.
 pub const DEFAULT_PERIOD_MS: u32 = 10;
+/// Output slots of a module without the optional `outputs() -> i32` export.
+pub const DEFAULT_OUTPUTS: usize = 128;
 /// Periods a module may ask for (`specs/fast-cycle`).
 pub const PERIODS_MS: [u32; 4] = [1, 2, 5, 10];
 

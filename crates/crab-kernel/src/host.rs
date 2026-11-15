@@ -117,6 +117,9 @@ pub trait Host {
     /// `import` is the position in [`crate::abi::IMPORTS`]; `args` match its parameters. Returns
     /// the result for imports that have one.
     fn call(&mut self, import: usize, args: &[Val], mem: Mem<'_>) -> Option<Val>;
+
+    /// The module declares `n` output slots (its `outputs()` export); called once at load.
+    fn set_outputs(&mut self, _n: usize) {}
 }
 
 /// The hardware of a board as modules see it.
@@ -286,6 +289,13 @@ fn slot(slots: &[Word], i: i32) -> Word {
 }
 
 impl<D: Devices> Host for ModuleHost<D> {
+    fn set_outputs(&mut self, n: usize) {
+        self.outputs.resize(n, Word::default());
+        self.forced.resize(n, None);
+        self.outputs.shrink_to_fit();
+        self.forced.shrink_to_fit();
+    }
+
     // On the board in IRAM with the rest of the step: from flash its speed depended on how the
     // build happened to lay out code in the small flash cache (2x on the ESP32).
     #[cfg_attr(target_os = "espidf", link_section = ".iram1.crab_host_call")]
@@ -641,6 +651,19 @@ mod tests {
         assert_eq!(h.outputs[0], Word::float(2.5));
         h.unforce(0);
         assert_eq!(out_f(&mut h, 0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn the_module_sets_the_number_of_outputs() {
+        let mut h = host(128);
+        h.set_outputs(0);
+        assert!(h.outputs.is_empty());
+        assert_eq!(out_i(&mut h, 0, 5), 5);
+        h.set_outputs(3);
+        assert!(h.force(2, Word::int(9)));
+        assert!(!h.force(3, Word::int(9)));
+        assert_eq!(out_i(&mut h, 2, 1), 9);
+        assert_eq!(h.outputs.len(), 3);
     }
 
     #[test]

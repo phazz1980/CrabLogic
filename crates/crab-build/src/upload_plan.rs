@@ -101,6 +101,18 @@ impl CrabmodSpace {
         self.free.saturating_add(replaced)
     }
 
+    /// Names of the stored modules that are not among `keep`, ascending: the ones an upload of
+    /// `keep` has to remove (a sheet renamed, deleted or joined into another module).
+    pub fn stale(&self, keep: &[&str]) -> Vec<String> {
+        let names: std::collections::BTreeSet<&str> = self
+            .areas
+            .iter()
+            .map(|a| a.name.as_str())
+            .filter(|n| !keep.contains(n))
+            .collect();
+        names.into_iter().map(str::to_owned).collect()
+    }
+
     /// The running area of a module: the one with the highest generation.
     fn running(&self, name: &str) -> Option<&StoredArea> {
         self.areas
@@ -364,7 +376,7 @@ pub struct StopReport {
 }
 
 /// Rough time of writing an image of `bytes` bytes, seconds (constants, not measured).
-fn stop_seconds(bytes: usize) -> f64 {
+pub fn stop_seconds(bytes: usize) -> f64 {
     0.5 + bytes as f64 / 40_000.0
 }
 
@@ -900,6 +912,21 @@ mod tests {
         // Two sectors needed: the stale one cannot be reclaimed.
         let err = replacement_plan(&space, &[("a", 5000)]).unwrap_err();
         assert_eq!(err.largest, 4096);
+    }
+
+    #[test]
+    fn modules_out_of_the_upload_are_stale() {
+        let space = space_of(
+            4 * 4096,
+            vec![
+                area("a", 0, 100, 1),
+                area("b", 4096, 100, 1),
+                area("b", 8192, 100, 2),
+                area("c", 12288, 100, 1),
+            ],
+        );
+        assert_eq!(space.stale(&["a"]), vec!["b", "c"]);
+        assert!(space.stale(&["a", "b", "c", "d"]).is_empty());
     }
 
     #[test]

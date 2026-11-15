@@ -15,7 +15,9 @@ out_max = 10.0
 
 [[block]]
 id = "low"
-type = "less"
+type = "compare"
+op = 2
+[block.const]
 b = 2.0
 
 [[block]]

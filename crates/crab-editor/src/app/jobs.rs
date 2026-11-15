@@ -102,14 +102,20 @@ impl EditorApp {
             project: doc.project.path.clone(),
             memo_time: memo.as_ref().map(|(_, t)| *t),
             lines: Vec::new(),
-        };
-        let Some((memo, time)) = memo else {
-            return check;
+            estimate: None,
         };
         if doc.report.errors().next().is_some() {
             return check;
         }
         let project = doc.project.with_local(&self.lib, &self.local);
+        // The estimate needs no board; the upload time needs the sizes of the built modules.
+        let lens: Vec<usize> = crate::job::build_sheets(&project, &self.lib, false)
+            .map(|(_, modules, _)| modules.iter().map(|m| m.wasm.len()).collect())
+            .unwrap_or_default();
+        check.estimate = crate::job::estimate_text(&project, &self.lib, &lens);
+        let Some((memo, time)) = memo else {
+            return check;
+        };
         // A build error is not repeated here: the schema check reports it.
         let Ok((project, modules, numbers)) = crate::job::build_sheets(&project, &self.lib, false)
         else {

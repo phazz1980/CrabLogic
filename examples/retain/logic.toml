@@ -57,7 +57,9 @@ type = "sub"
 
 [[block]]
 id = "reached"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = -0.5
 
 [[block]]

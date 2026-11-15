@@ -75,7 +75,9 @@ pin = 25
 
 [[block]]
 id = "hot"
-type = "greater"
+type = "compare"
+op = 4
+[block.const]
 b = 30.0
 
 [[block]]

@@ -66,6 +66,32 @@ impl Fb {
         }
     }
 
+    /// An ellipse inside the box `w` x `h`: filled, or only its one-pixel outline. Integer maths
+    /// (the box is at most 64 pixels each way; a bigger or a tiny one is drawn as a rectangle).
+    pub fn ellipse(&mut self, x: i32, y: i32, w: i32, h: i32, filled: bool) {
+        if !(3..=64).contains(&w) || !(3..=64).contains(&h) {
+            if filled {
+                self.fill_rect(x, y, w, h, true);
+            } else {
+                self.rect(x, y, w, h);
+            }
+            return;
+        }
+        // The centre of pixel (dx, dy) against the ellipse of the box (ow, oh) shifted by (sx, sy).
+        let inside = |dx: i32, dy: i32, ow: i32, oh: i32| {
+            let (u, v) = (2 * dx + 1 - ow, 2 * dy + 1 - oh);
+            u * u * oh * oh + v * v * ow * ow <= ow * ow * oh * oh
+        };
+        for dy in 0..h {
+            for dx in 0..w {
+                let on = inside(dx, dy, w, h) && (filled || !inside(dx - 1, dy - 1, w - 2, h - 2));
+                if on {
+                    self.pixel(x + dx, y + dy, true);
+                }
+            }
+        }
+    }
+
     /// Draws the set pixels of a glyph with `on`, magnified by `scale`.
     pub fn glyph(&mut self, x: i32, y: i32, rows: &[u8; 8], scale: i32, on: bool) {
         for (r, &bits) in rows.iter().enumerate() {

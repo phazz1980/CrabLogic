@@ -76,8 +76,6 @@ const RUNTIME_STACK: usize = 32 * 1024;
 const CHUNK: usize = 1024;
 /// How long the next chunk of an upload is waited for.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(5);
-/// Watched signals per module, as in the C++ master.
-const OUTPUTS: usize = 128;
 /// Largest linear memory of one module, bytes.
 const MAX_MEMORY: usize = 128 * 1024;
 /// Most steps one `tick` runs.
@@ -342,7 +340,7 @@ impl Master {
             max_memory: MAX_MEMORY,
             ..Limits::default()
         };
-        let host = ModuleHost::new(BoardDevices::default(), OUTPUTS);
+        let host = ModuleHost::new(BoardDevices::default(), 0);
         let module = self
             .wamr
             .load_image(image, memory, &area.allow_list(), limits, host)?;

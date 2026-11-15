@@ -983,3 +983,35 @@ fn menu_16px_items_end_above_the_hint_bar() {
     assert!(l.first_y + 2 * l.pitch + 16 <= 56);
     assert!(l.first_y >= 8 + 2); // a free row between the title line and the first item
 }
+
+#[test]
+fn oled_init_stops_scrolling_left_by_a_previous_program() {
+    use crate::oled::init_commands;
+    for kind in [
+        DisplayKind::Ssd1306_128x64,
+        DisplayKind::Ssd1306_128x32,
+        DisplayKind::Sh1106_128x64,
+    ] {
+        let mut buf = [0u8; 32];
+        let n = init_commands(kind, &mut buf);
+        assert!(n <= 32);
+        // Scrolling goes off while the display is still off, before anything is drawn.
+        assert_eq!(&buf[1..3], &[0xAE, 0x2E]);
+    }
+}
+
+#[test]
+fn oled_led_is_round() {
+    let mut fb = Fb::new();
+    fb.pages = 8;
+    fb.ellipse(0, 0, 8, 8, true);
+    let on =
+        |fb: &Fb, x: i32, y: i32| fb.buf[(y as usize / 8) * 128 + x as usize] >> (y % 8) & 1 == 1;
+    assert!(!on(&fb, 0, 0) && !on(&fb, 7, 7), "corners stay dark");
+    assert!(on(&fb, 3, 3) && on(&fb, 4, 4) && on(&fb, 3, 0) && on(&fb, 0, 4));
+    // The outline is hollow.
+    let mut ring = Fb::new();
+    ring.pages = 8;
+    ring.ellipse(0, 0, 8, 8, false);
+    assert!(!on(&ring, 3, 3) && on(&ring, 3, 0) && on(&ring, 0, 4));
+}

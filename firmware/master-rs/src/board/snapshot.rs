@@ -163,6 +163,11 @@ pub fn answer_list() {
     println!("modcaps={MODCAPS}");
     // The Rust master is not built per project: the editor reads this prefix as "current".
     println!("id=rs-{}", env!("CARGO_PKG_VERSION"));
+    // The address of the Wi-Fi client, once it has one: the editor shows it on the Wi-Fi block.
+    let ip = super::net::wifi_ip().to_le_bytes();
+    if ip != [0; 4] {
+        println!("ip={}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+    }
     // Safe mode after a boot loop: the editor warns that the stored modules do not run.
     if boot_guard::safe(bad_boots) {
         println!("safe={bad_boots}");

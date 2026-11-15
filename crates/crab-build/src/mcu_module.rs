@@ -401,7 +401,12 @@ pub fn wait_for_master_info<P: Read + Write>(
     within: Duration,
 ) -> Result<MasterInfo, ModuleUploadError> {
     const PING_ANSWER: Duration = Duration::from_millis(700);
+    // An answer without `id=` may be the tail of an earlier one (the port was opened in the middle
+    // of a reply): ask again a few times before taking the board for a master that has no id.
+    const BARE_ANSWERS: u32 = 3;
     let started = Instant::now();
+    let mut bare: Option<MasterInfo> = None;
+    let mut bare_count = 0;
     while started.elapsed() < within {
         port.write_all(b"stats\n")?;
         port.flush()?;
@@ -409,14 +414,24 @@ pub fn wait_for_master_info<P: Read + Write>(
         let mut info = MasterInfo::default();
         while ping.elapsed() < PING_ANSWER {
             match read_line_within(port, PING_ANSWER) {
-                Ok(line) if line == "end" => return Ok(info),
+                Ok(line) if line == "end" => {
+                    if info.id.is_some() {
+                        return Ok(info);
+                    }
+                    bare_count += 1;
+                    bare = Some(info);
+                    if bare_count >= BARE_ANSWERS {
+                        return Ok(bare.unwrap_or_default());
+                    }
+                    break;
+                }
                 Ok(line) => info.take_line(&line),
                 Err(ModuleUploadError::Timeout) => {}
                 Err(e) => return Err(e),
             }
         }
     }
-    Err(ModuleUploadError::NoMaster)
+    bare.ok_or(ModuleUploadError::NoMaster)
 }
 
 /// Reads and drops whatever is waiting on the port. Stops after a moment even if the
@@ -671,6 +686,26 @@ end
             wait_for_master_info(&mut old, Duration::from_secs(2)).unwrap(),
             MasterInfo::default()
         );
+    }
+
+    #[test]
+    fn the_tail_of_an_earlier_answer_does_not_hide_the_id() {
+        // The port is opened in the middle of a reply: the first `end` is not ours.
+        let mut port = StatsMaster {
+            answer: b"id=rs-2.0.0
+free=1 largest=1
+end
+"
+            .to_vec(),
+            out: b"cycle period=1000 steps=1
+end
+"
+            .iter()
+            .copied()
+            .collect(),
+        };
+        let info = wait_for_master_info(&mut port, Duration::from_secs(5)).unwrap();
+        assert_eq!(info.id.as_deref(), Some("rs-2.0.0"));
     }
 
     #[test]

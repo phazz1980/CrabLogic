@@ -221,7 +221,7 @@ impl Program<'_> {
 }
 
 /// Watched signals per module the master firmware keeps (`kMaxOutputs`).
-const MAX_WATCHED: usize = 128;
+pub(crate) const MAX_WATCHED: usize = 128;
 
 /// An expander chip (`pcf8574`, `pcf8575`) with blocks on it: the pins as last read and the
 /// levels the blocks want, written once at the end of the step.
@@ -1123,9 +1123,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
         // import `k` comes after it.
         let groups = group_count(self.cuts.len());
         let append_fn = first + 3 + self.cuts.len() as u32 + groups as u32;
-        // `period_ms` comes right after the append function.
+        // `period_ms` comes right after the append function, then `outputs`.
         let period_fn = append_fn + u32::from(self.uses_append);
-        let wrap_base = period_fn + 1;
+        let outputs_fn = period_fn + 1;
+        let wrap_base = period_fn + 2;
         // Blocks with their own `block.wasm` come last: per use, its shims, then its functions.
         let mut cursor = wrap_base + if aot { import_types.len() as u32 } else { 0 };
         let mut type_cursor = FIXED_TYPES;
@@ -1190,6 +1191,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             funcs.function(11);
         }
         funcs.function(4); // period_ms
+        funcs.function(4); // outputs
         if aot {
             for &ty in &import_types {
                 funcs.function(ty);
@@ -1265,6 +1267,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
         exports.export("step", ExportKind::Func, first + 1);
         exports.export("init", ExportKind::Func, first + 2);
         exports.export("period_ms", ExportKind::Func, period_fn);
+        exports.export("outputs", ExportKind::Func, outputs_fn);
 
         let mut abi = Function::new([]);
         abi.instruction(&I::I32Const(ABI_VERSION))
@@ -1459,6 +1462,13 @@ impl<'a, 'p> Emitter<'a, 'p> {
             .instruction(&I::I32Const(period_ms as i32))
             .instruction(&I::End);
         code.function(&period);
+        // The slots of `output_i/f` the module uses (none in a build without `watch`): the master
+        // keeps that many output values and no more.
+        let mut outputs = Function::new([]);
+        outputs
+            .instruction(&I::I32Const(self.watched.len() as i32))
+            .instruction(&I::End);
+        code.function(&outputs);
         if aot {
             for (k, &ty) in import_types.iter().enumerate() {
                 let nparams = match ty {
