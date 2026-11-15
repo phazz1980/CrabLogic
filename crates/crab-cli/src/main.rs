@@ -63,7 +63,8 @@ enum Command {
         /// Файл проекта .crab (или папка с ним)
         project: PathBuf,
     },
-    /// Прочитать проект из прошивки на плате (нужна отладочная прошивка) и сохранить в файл .crab
+    /// Прочитать проект с платы (недоступно с мастер-прошивкой: она не хранит копию проекта)
+    #[command(hide = true)]
     Pull {
         /// Куда сохранить проект (файл .crab)
         output: PathBuf,
@@ -500,6 +501,22 @@ fn run_block(action: BlockAction, library: Option<&Path>) -> ExitCode {
                     if block.dir.starts_with(user.join(&folder)) {
                         println!("  {} — {}", block.def.info.kind, block.def.info.name);
                     }
+                }
+            }
+            // Blocks copied by hand into a folder without `pack.toml` still load: show them too.
+            let packed: Vec<PathBuf> = pack::list(&user)
+                .into_iter()
+                .map(|(folder, _)| user.join(folder))
+                .collect();
+            let loose: Vec<_> = lib
+                .iter()
+                .filter(|b| lib.is_user(&b.def.info.kind))
+                .filter(|b| b.dir.starts_with(&user) && !packed.iter().any(|p| b.dir.starts_with(p)))
+                .collect();
+            if !loose.is_empty() {
+                println!("без набора (нет pack.toml):");
+                for block in loose {
+                    println!("  {} — {}", block.def.info.kind, block.def.info.name);
                 }
             }
             Ok(())
@@ -1299,73 +1316,19 @@ fn run_gen_wasm(
 
 /// Prints live values every half second until Ctrl+C.
 /// Reads the project out of the board's flash and saves it as `output`.
+/// `pull` read the project copy from the old debug firmware (binary protocol); the Rust master
+/// keeps no copy of the project, so there is nothing to read.
 fn run_pull(
-    output: &Path,
-    port: &str,
-    password: &str,
-    force: bool,
-    library: Option<&Path>,
+    _output: &Path,
+    _port: &str,
+    _password: &str,
+    _force: bool,
+    _library: Option<&Path>,
 ) -> ExitCode {
-    if output.exists() && !force {
-        eprintln!(
-            "ошибка: файл {} уже есть; укажите --force, чтобы заменить его",
-            output.display()
-        );
-        return ExitCode::FAILURE;
-    }
-    let mut transport = match crab_debug::transport::serial(port)() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("ошибка: не удалось открыть порт {port}: {e}");
-            return ExitCode::from(EXIT_BUILD_FAILED);
-        }
-    };
-    println!("Чтение проекта с платы ({port})...");
-    let pulled = match crab_debug::read_project(transport.as_mut(), password, |got, total| {
-        eprint!("\r{got} из {total} байт");
-    }) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("\nошибка: {e}");
-            return ExitCode::from(EXIT_BUILD_FAILED);
-        }
-    };
-    eprintln!();
-    let archive = match crab_core::protect::open(&pulled.data, password) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("ошибка: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let project = match Project::from_archive_bytes(&archive, output) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("ошибка: {e}");
-            return ExitCode::from(EXIT_LOAD_FAILED);
-        }
-    };
-    if let Err(e) = project.save() {
-        eprintln!("ошибка: {e}");
-        return ExitCode::from(EXIT_LOAD_FAILED);
-    }
-    println!("Проект сохранён: {}", output.display());
-    // The firmware must have been built from this very schema.
-    if let (Some(fp), Some(lib)) = (pulled.fingerprint, load_library(output, library)) {
-        let project = project.without_disabled();
-        match Program::build(&project, &lib) {
-            Ok(program) => {
-                let same = crab_codegen::debug::debug_table(&program).fingerprint() == fp;
-                if same {
-                    println!("Отпечаток схемы совпадает с прошивкой.");
-                } else {
-                    println!("Внимание: отпечаток схемы не совпадает с прошивкой.");
-                }
-            }
-            Err(e) => eprintln!("предупреждение: отпечаток не проверен: {e}"),
-        }
-    }
-    ExitCode::SUCCESS
+    eprintln!(
+        "ошибка: чтение проекта с платы недоступно: мастер-прошивка не хранит копию проекта          (это умела только удалённая отладочная прошивка на C++)"
+    );
+    ExitCode::FAILURE
 }
 
 fn run_monitor(

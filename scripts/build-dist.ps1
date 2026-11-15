@@ -53,7 +53,11 @@ if ($editors.Count -gt 0) {
 $releaseDir = Join-Path $root 'target\release'
 Get-ChildItem $releaseDir -Filter '*.exe.old*' -ErrorAction SilentlyContinue |
     ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch {} }
-foreach ($bin in $bins) {
+Get-ChildItem (Join-Path $releaseDir 'deps') -Filter '*.exe.old*' -ErrorAction SilentlyContinue |
+    ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch {} }
+# cargo keeps a hard link of each exe in deps\ (with `_` for `-`): a running exe locks both.
+$locked = $bins + ($bins | ForEach-Object { Join-Path 'deps' ($_ -replace '-', '_') })
+foreach ($bin in $locked) {
     $path = Join-Path $releaseDir $bin
     if (-not (Test-Path $path)) { continue }
     try {

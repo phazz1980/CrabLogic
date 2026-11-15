@@ -286,29 +286,24 @@ impl EditorApp {
         }
     }
 
-    /// "Project in the board": keep a copy in the firmware and protect it with a password.
+    /// "Project password": the source of the network key (upload and debugging over the network).
+    /// The old "copy of the project in the firmware" (`embed`) needs the removed debug firmware,
+    /// so it is not offered any more; the field stays in the project file.
     pub(super) fn board_copy_menu(&mut self, ui: &mut egui::Ui) {
         let Some(doc) = &self.doc else { return };
         let info = doc.project.config.project.clone();
         let lib = self.lib.clone();
-        let (mut embed, mut password) = (info.embed, info.password.clone());
-        ui.menu_button(
-            crate::i18n::tr("Проект в памяти платы"),
-            |ui| {
-                ui.checkbox(&mut embed, crate::i18n::tr("Хранить копию в прошивке"))
-                    .on_hover_text(crate::i18n::tr(
-                        "Тогда проект можно прочитать с платы (Файл → Открыть проект с платы)",
-                    ));
-                ui.add_enabled_ui(embed, |ui| {
-                    ui.label(crate::i18n::tr("Пароль (пусто — не шифровать):"));
-                    ui.add(egui::TextEdit::singleline(&mut password).password(true));
-                });
-            },
-        );
-        if embed != info.embed || password != info.password {
+        let mut password = info.password.clone();
+        ui.menu_button(crate::i18n::tr("Пароль проекта"), |ui| {
+            ui.label(crate::i18n::tr("Пароль (для заливки и отладки по сети):"));
+            ui.add(egui::TextEdit::singleline(&mut password).password(true));
+            ui.weak(crate::i18n::tr(
+                "После смены пароля запишите ключ на плату заново: Проект → Записать ключ для заливки по сети",
+            ));
+        });
+        if password != info.password {
             if let Some(doc) = &mut self.doc {
-                let _ = doc.edit(&lib, Some("project_copy".into()), |p| {
-                    p.config.project.embed = embed;
+                let _ = doc.edit(&lib, Some("project_password".into()), |p| {
                     p.config.project.password = password;
                     Ok::<(), String>(())
                 });
@@ -381,13 +376,6 @@ impl EditorApp {
             }
             if ui.button(crate::i18n::tr("Открыть...")).clicked() {
                 self.pick_project();
-            }
-            if ui
-                .button(crate::i18n::tr("Открыть проект с платы..."))
-                .on_hover_text(crate::i18n::tr("Прочитать проект из памяти платы (нужна прошивка с отладкой)"))
-                .clicked()
-            {
-                self.pull = Some(crate::pullview::PullWindow::new(self.board_port().unwrap_or_default()));
             }
             let has_doc = self.doc.is_some();
             if ui

@@ -81,6 +81,7 @@ const OUTPUTS: usize = 128;
 /// Largest linear memory of one module, bytes.
 const MAX_MEMORY: usize = 128 * 1024;
 /// Most steps one `tick` runs.
+#[cfg(feature = "selftest")]
 const MAX_TICKS: u32 = 100_000;
 /// What modules may use, as `modcaps=` names it, and the CPU the AOT images must be built for.
 /// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
@@ -806,6 +807,8 @@ impl Master {
         println!("end");
     }
 
+    /// `tick`: steps a module by hand (test builds only).
+    #[cfg(feature = "selftest")]
     fn tick(&mut self, name: &str, count: u32, dt_ms: u32) {
         let Some(index) = self.slot(name) else {
             println!("err no such module");
@@ -882,7 +885,13 @@ impl Master {
             // Answered by `crab-io`; here only if handed over anyway.
             Ok(Command::List) => snapshot::answer_list(),
             Ok(Command::Info) => snapshot::answer_info(),
+            // Test hooks that run steps and replace inputs by hand: test builds only (`selftest`).
+            #[cfg(feature = "selftest")]
             Ok(Command::Tick { name, count, dt_ms }) => self.tick(&name, count, dt_ms),
+            #[cfg(not(feature = "selftest"))]
+            Ok(Command::Tick { .. } | Command::SetInput { .. }) => {
+                println!("err selftest is not in this build")
+            }
             Ok(Command::Delete { name }) => self.delete(&name),
             Ok(Command::Swap { name }) => self.restart(&name),
             Ok(Command::ResetMax) => {
@@ -893,6 +902,7 @@ impl Master {
                 self.cycle.reset_stats();
                 println!("ok");
             }
+            #[cfg(feature = "selftest")]
             Ok(Command::SetInput { name, index, word }) => self.set_word(&name, index, word, false),
             Ok(Command::SetParam { name, index, word }) => self.set_word(&name, index, word, true),
             Ok(Command::Outputs { name, count }) => snapshot::answer_outputs(&name, count),

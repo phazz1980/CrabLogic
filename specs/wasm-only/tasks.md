@@ -12,10 +12,10 @@
 ## Этап 2. Блоки с железом
 - [x] 2.1 Датчики 1-Wire/DHT (мастер: задача опроса и `sensor_read`; тест и `examples/sensors`; на плате опрос не проверен)  
 - [x] 2.2 PCF8574 на I²C (мастер: задача чтения/записи, права `pcf_read`/`pcf_write`; тест `wasm_pcf`; на плате не проверено; право `perms` заполнило 8 бит)
-- [ ] 2.3 UART/Modbus
-- [ ] 2.4 Сеть/MQTT/NTP/веб
+- [x] 2.3 UART/Modbus (сделано: firmware/master-rs/src/board/uart.rs, modbus.rs; коммит 4a9e753)
+- [x] 2.4 Сеть/MQTT/NTP/веб (сделано: board/net.rs, mqtt.rs, web.rs в мастере; коммиты e0da4ab, 1c4eaec, e9263ef)
 (по каждому: драйвер в мастере, WASM-вывод, тест, пример, docs.md)
 
 ## Этап 3. Удаление C++
-- [ ] 3.1 Убрать `ArduinoCpp` и шаблоны  - [ ] 3.2 Убрать compile/direct из `crab-build`
-- [ ] 3.3 Убрать старый `crab-debug`  - [ ] 3.4 CLI, меню, кнопки, примеры, справка, архитектура
+- [x] 3.1 Убрать `ArduinoCpp` и шаблоны (сделано: коммит 7e6bba3)  - [x] 3.2 Убрать compile/direct из `crab-build` (сделано: 7e6bba3, direct.rs удалён)
+- [x] 3.3 Убрать старый `crab-debug` (сделано: 7e6bba3)  - [x] 3.4 CLI, меню, кнопки, примеры, справка, архитектура (сделано: 7e6bba3)

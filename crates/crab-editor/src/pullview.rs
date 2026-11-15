@@ -30,6 +30,9 @@ pub struct PullWindow {
 }
 
 impl PullWindow {
+    /// Not opened in 2.0: the Rust master keeps no copy of the project (the window spoke the
+    /// protocol of the removed debug firmware). Kept for a master-side copy later.
+    #[allow(dead_code)]
     pub fn new(port: String) -> Self {
         Self {
             port,

@@ -39,7 +39,6 @@ description = "Вывод SDA шины I²C"
 [[param]]
 name = "scl"
 type = "pin"
-mode = "out"
 default = 22
 bus = "i2c-scl"
 description = "Вывод SCL шины I²C"

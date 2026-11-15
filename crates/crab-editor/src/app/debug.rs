@@ -286,12 +286,10 @@ impl EditorApp {
         }
         if d.same_project == Some(false) && !d.hash_asked {
             d.hash_asked = true;
-            let port = d.port.clone();
             self.info(
                 LogLevel::Warning,
-                crate::i18n::tr("На плате другая версия проекта: её можно скачать (Файл → Открыть проект с платы)"),
+                crate::i18n::tr("На плате другая версия проекта"),
             );
-            self.pull = Some(crate::pullview::PullWindow::new(port));
             return;
         }
         // Publish values for the AI assistant.
