@@ -420,6 +420,11 @@ pub struct ParamDef {
     /// instead of a field (`[[param.choice]]` in `block.toml`).
     #[serde(rename = "choice", default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<Choice>,
+    /// For `string` parameters that name another block (the modem of a LoRa partner): the type of
+    /// the blocks to choose from. The properties show a drop-down list of the project blocks of
+    /// this type (`of_block = "lora_e220"` in `block.toml`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub of_block: String,
 }
 
 /// One value of a parameter with a list of values.
@@ -751,6 +756,13 @@ impl BlockDef {
                 return Err(format!(
                     "вариант «{}» параметра «{}» не подходит к его типу",
                     c.label, p.name
+                ));
+            }
+            if !p.of_block.is_empty() && (p.kind != ParamKind::Text || !is_valid_ident(&p.of_block))
+            {
+                return Err(format!(
+                    "параметр «{}» с of_block должен быть строковым, а of_block — типом блока",
+                    p.name
                 ));
             }
             let resource = matches!(p.bus.as_str(), BUS_I2C_ADDRESS | BUS_UART_PORT);

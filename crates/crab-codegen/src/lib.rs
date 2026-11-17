@@ -21,6 +21,7 @@ pub use rust_master::{
     block_has_cpp, check_project, has_cpp_code, rust_master_diagnostics, CPP_BLOCK_HINT,
 };
 pub use sheet::{GroupError, LocalVar, SheetError, SheetModule, Tag, TagKind, TagUse};
+pub use wasm::display::DisplaySimPlan;
 pub use wasm::{WasmError, WasmModule, MASTER_CAPS, MAX_BLOCK_CONFIG};
 
 pub mod program;

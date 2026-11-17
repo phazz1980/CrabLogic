@@ -100,6 +100,8 @@ pub(super) struct ParamRow {
     pub(super) static_only: bool,
     /// Bus of a pin, kept as it was (set in `block.toml`).
     pub(super) bus: String,
+    /// Drop-down of project blocks of this type (text parameters only).
+    pub(super) of_block: String,
 }
 
 impl ParamRow {
@@ -120,6 +122,7 @@ impl ParamRow {
             shared: false,
             static_only: false,
             bus: String::new(),
+            of_block: String::new(),
         }
     }
 
@@ -141,6 +144,7 @@ impl ParamRow {
             shared: p.shared,
             static_only: p.static_only,
             bus: p.bus.clone(),
+            of_block: p.of_block.clone(),
         }
     }
 
@@ -172,6 +176,11 @@ impl ParamRow {
             runtime: false,
             static_only: self.static_only,
             choices: self.choices.clone(),
+            of_block: if self.kind == ParamKind::Text {
+                self.of_block.clone()
+            } else {
+                String::new()
+            },
         })
     }
 }

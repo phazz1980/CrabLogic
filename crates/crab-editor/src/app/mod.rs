@@ -172,6 +172,8 @@ pub struct EditorApp {
     web_sig: String,
     lib_stamp: Option<SystemTime>,
     lib_checked: Instant,
+    /// Result of a library folder scan running in the background (it walks hundreds of files).
+    lib_scan: Option<std::sync::mpsc::Receiver<Option<SystemTime>>>,
     /// Session folder with the user blocks of the open project that are not in the user
     /// library; deleted when the project is closed (see `restore_packed_blocks`).
     pub project_blocks: Option<PathBuf>,
@@ -309,6 +311,7 @@ impl EditorApp {
             web_sig: String::new(),
             lib_stamp: None,
             lib_checked: Instant::now(),
+            lib_scan: None,
             project_blocks: None,
             disk_stamp: None,
             disk_checked: Instant::now(),

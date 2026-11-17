@@ -1,0 +1,18 @@
+[package]
+name = "lora_e220"
+version = "0.1.0"
+edition = "2021"
+description = "LoRa E220 (433 MHz) driver: frame of the star network, master/slave automata, module setup"
+
+# `cdylib` is the block.wasm of library/lora_e220 (entry.rs, wasm32 only); the rlib serves tests and the generator.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+strip = true
+codegen-units = 1
+
+[workspace]

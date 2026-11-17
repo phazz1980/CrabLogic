@@ -15,6 +15,7 @@ use crab_core::{BlockDef, ParamKind, SignalType};
 
 use crate::builtin::{self, Behavior, Ctx};
 use crate::display::{DisplayDevice, DisplayView};
+use crate::display_run::{DisplayDrive, DisplayRun, Feed, MenuRun};
 use crate::SimModule;
 
 /// Who computes the outputs of a block.
@@ -189,6 +190,11 @@ pub struct Simulation {
     /// Display chips of the `oled` / `lcd` blocks: what a driver writes to the stub I²C bus
     /// (see [`Simulation::display_write`]) ends up in their picture.
     displays: Vec<DisplayDevice>,
+    /// Display drivers running on the host, one per display block that was handed over with
+    /// [`Simulation::drive_display`].
+    display_runs: Vec<DisplayRun>,
+    /// Variable each block's `in` port is bound to (widgets read their value from it).
+    binds: HashMap<String, String>,
 }
 
 fn number(v: &ParamValue, kind: ParamKind) -> f64 {
@@ -288,15 +294,17 @@ impl Simulation {
                     Err(e) => notes.push(format!("{}: {e}", block.id)),
                 }
             }
-            // A driver block shows the `sim` values of its outputs until the module runs.
-            let sim_values = if driver {
-                def.outputs
-                    .iter()
-                    .map(|o| o.sim.as_ref().map(plain_number))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            // A driver block shows the `sim` values of its outputs until the module runs; so does a
+            // block without any code here whose driver serves it (the partners of a LoRa modem).
+            let sim_values =
+                if driver || (wasm.is_none() && builtin::behavior(&def.info.kind).is_none()) {
+                    def.outputs
+                        .iter()
+                        .map(|o| o.sim.as_ref().map(plain_number))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
             let types = Types {
                 ins: def
                     .inputs
@@ -417,8 +425,15 @@ impl Simulation {
                 DisplayDevice::for_block(&n.def.info.kind, model, &n.id, address as i64)
             })
             .collect();
+        let binds = logic
+            .blocks
+            .iter()
+            .filter_map(|b| Some((b.id.clone(), b.bound.get("in")?.clone())))
+            .collect();
         Ok(Self {
             displays,
+            display_runs: Vec::new(),
+            binds,
             nodes,
             index,
             order: report.order,
@@ -454,6 +469,108 @@ impl Simulation {
         }
     }
 
+    /// Runs the driver of display block `id` in the simulation: the screens, the widgets and the
+    /// menu with its buttons then work as on the board.
+    pub fn drive_display(&mut self, id: &str, drive: &DisplayDrive) -> Result<(), String> {
+        let node = *self.index.get(id).ok_or(format!("нет блока «{id}»"))?;
+        let def = &self.nodes[node].def;
+        let own = (def.inputs.len(), def.outputs.len());
+        let feed = |block: &String| Feed {
+            node: self.index.get(block).copied(),
+            var: self.binds.get(block).cloned(),
+        };
+        let menu = drive.menu.as_ref().and_then(|(block, vars)| {
+            let n = *self.index.get(block)?;
+            let d = &self.nodes[n].def;
+            let inp = |name: &str| d.inputs.iter().position(|p| p.name == name);
+            let out = |name: &str| d.outputs.iter().position(|p| p.name == name);
+            Some(MenuRun {
+                node: n,
+                keys: ["up", "down", "ok", "back"].map(inp),
+                outs: ["open", "item", "changed"].map(out),
+                vars: vars.clone(),
+            })
+        });
+        let run = DisplayRun::new(
+            id,
+            node,
+            own,
+            &drive.config,
+            drive.widgets.iter().map(feed).collect(),
+            drive.string_widgets.iter().map(feed).collect(),
+            menu,
+        );
+        self.display_runs.retain(|r| r.id != id);
+        self.display_runs.push(run);
+        Ok(())
+    }
+
+    /// One scan of every display driver: gathers its input cells, runs it, hands the I²C writes
+    /// to the chip model and the outputs back to the schema.
+    fn run_displays(&mut self, dt_ms: u32) {
+        let mut runs = std::mem::take(&mut self.display_runs);
+        for run in &mut runs {
+            let mut involved = vec![run.node];
+            involved.extend(
+                run.widgets
+                    .iter()
+                    .chain(&run.strings)
+                    .filter_map(|f| f.node),
+            );
+            involved.extend(run.menu.as_ref().map(|m| m.node));
+            for n in involved {
+                self.read_inputs(n);
+            }
+            let node = &self.nodes[run.node];
+            let mut cells = node.inputs.clone();
+            let mut texts = node.texts_in.clone();
+            for feed in run.widgets.iter().chain(&run.strings) {
+                let w = feed.node.map(|n| &self.nodes[n]);
+                let var = feed.var.as_ref();
+                let number = var
+                    .and_then(|v| self.vars.get(v).copied())
+                    .or_else(|| w.and_then(|w| w.inputs.first().copied()));
+                let text = var
+                    .and_then(|v| self.var_texts.get(v).cloned())
+                    .or_else(|| w.and_then(|w| w.texts_in.first().cloned()));
+                cells.push(number.unwrap_or(0.0));
+                texts.push(text.unwrap_or_default());
+            }
+            if let Some(menu) = &run.menu {
+                let inputs = &self.nodes[menu.node].inputs;
+                for key in menu.keys {
+                    cells.push(key.and_then(|k| inputs.get(k).copied()).unwrap_or(0.0));
+                    texts.push(String::new());
+                }
+                for (name, _) in &menu.vars {
+                    cells.push(self.vars.get(name).copied().unwrap_or(0.0));
+                    texts.push(String::new());
+                }
+            }
+            texts.resize(cells.len(), String::new());
+            let out = run.run(dt_ms, &cells, &texts);
+            if let Some(d) = self.displays.iter_mut().find(|d| d.id == run.id) {
+                out.writes.iter().for_each(|w| d.write(w));
+            }
+            for (i, v) in out.own {
+                if let Some(slot) = self.nodes[run.node].outputs.get_mut(i) {
+                    *slot = v;
+                }
+            }
+            if let Some(menu) = &run.menu {
+                for (pos, v) in out.menu_outs {
+                    if let Some(slot) = self.nodes[menu.node].outputs.get_mut(pos) {
+                        *slot = v;
+                    }
+                }
+            }
+            for (name, v) in out.vars {
+                self.vars.insert(name, v);
+            }
+        }
+        self.display_runs = runs;
+    }
+
     /// Simulated time since the start.
     pub fn time_ms(&self) -> u64 {
         self.time_ms
@@ -466,6 +583,7 @@ impl Simulation {
         self.var_texts = self.var_text_init.clone();
         self.bench.clear_driven();
         self.displays.iter_mut().for_each(DisplayDevice::reset);
+        self.display_runs.iter_mut().for_each(DisplayRun::restart);
         for node in &mut self.nodes {
             node.pulse_ms = 0;
             node.outputs.iter_mut().for_each(|v| *v = 0.0);
@@ -569,6 +687,7 @@ impl Simulation {
                 }
             }
         }
+        self.run_displays(dt_ms);
         Ok(())
     }
 

@@ -1,0 +1,217 @@
+[block]
+type = "lora_e220"
+name = "LoRa E220 (433 МГц)"
+symbol = "LoRa"
+group = "Радио"
+description = "Радиомодуль EBYTE E220-400T22D на UART: связь центра с ведомыми платами. Сам настраивает модуль при старте. Значения обмена задают блоки lora_point (на центре) и lora_centre (на ведомом) на том же листе."
+memory = true
+single = true
+
+[[output]]
+name = "ready"
+label = "Модем готов"
+type = "bool"
+sim = true
+description = "true, когда модуль настроен и обмен идёт; пока false, выходы блоков обмена в безопасном состоянии"
+
+[[output]]
+name = "rssi"
+label = "Уровень сигнала"
+type = "int"
+sim = 0
+description = "Байт RSSI последнего принятого кадра (мощность в дБм = байт − 256)"
+
+[[output]]
+name = "bad"
+label = "Битых кадров"
+type = "int"
+sim = 0
+description = "Счётчик отброшенных кадров (ошибка контрольной суммы, обрыв, чужие типы значений). Много ошибок и ни одного верного кадра — проверьте, что типы значений у обоих концов совпадают"
+
+[[param]]
+name = "role"
+label = "Роль"
+type = "int"
+default = 0
+min = 0
+max = 1
+description = "Центр опрашивает ведомых, ведомый только отвечает"
+
+[[param.choice]]
+value = 0
+label = "Центр"
+
+[[param.choice]]
+value = 1
+label = "Ведомый"
+
+[[param]]
+name = "node"
+label = "Адрес ведомого"
+type = "int"
+default = 0
+min = 0
+max = 14
+when = "role == 1"
+description = "Адрес этого ведомого 0…14; тот же адрес указывают в блоке lora_point на стороне центра"
+
+[[param]]
+name = "channel"
+label = "Канал"
+type = "int"
+default = 18
+min = 0
+max = 83
+description = "Канал 0…83: частота 410,125 МГц + канал. У всех узлов сети один канал; в вашей стране проверьте разрешённый диапазон"
+
+[[param]]
+name = "air"
+label = "Скорость в эфире"
+type = "int"
+default = 2
+min = 2
+max = 7
+description = "Скорость обмена по радио: ниже — дальше, но дольше кадр. У всех узлов одинаковая"
+
+[[param.choice]]
+value = 2
+label = "2,4 кбит/с"
+
+[[param.choice]]
+value = 3
+label = "4,8 кбит/с"
+
+[[param.choice]]
+value = 4
+label = "9,6 кбит/с"
+
+[[param.choice]]
+value = 5
+label = "19,2 кбит/с"
+
+[[param.choice]]
+value = 6
+label = "38,4 кбит/с"
+
+[[param.choice]]
+value = 7
+label = "62,5 кбит/с"
+
+[[param]]
+name = "power"
+label = "Мощность"
+type = "int"
+default = 3
+min = 0
+max = 3
+description = "Мощность передатчика; по умолчанию 10 дБм. Правила диапазона 433 МГц зависят от страны"
+
+[[param.choice]]
+value = 3
+label = "10 дБм"
+
+[[param.choice]]
+value = 2
+label = "13 дБм"
+
+[[param.choice]]
+value = 1
+label = "17 дБм"
+
+[[param.choice]]
+value = 0
+label = "22 дБм"
+
+[[param]]
+name = "net_name"
+label = "Имя сети"
+type = "string"
+default = "lora"
+description = "Имя сети для ключа шифрования: ключ хранится в программе отдельно для каждой сети"
+
+[[param]]
+name = "key"
+label = "Ключ шифрования"
+type = "string"
+runtime = true
+default = ""
+show = "secret"
+local = "net_name"
+description = "Ключ шифрования радиообмена; пустой — без шифрования. Хранится в программе, в файл проекта не попадает. Смена ключа меняет и адрес сети: узлы с разными ключами друг друга не слышат"
+
+[[param]]
+name = "uart"
+label = "UART"
+type = "int"
+default = 2
+min = 1
+max = 2
+bus = "uart-port"
+description = "Номер UART платы: 1 или 2 (на ESP32-C3 только 1). Скорость модуля 9600, 8N1"
+
+[[param]]
+name = "tx"
+label = "Вывод TX платы"
+type = "pin"
+default = -1
+min = -1
+description = "Вывод платы, соединённый с RXD модуля"
+
+[[param]]
+name = "rx"
+label = "Вывод RX платы"
+type = "pin"
+default = -1
+min = -1
+description = "Вывод платы, соединённый с TXD модуля"
+
+[[param]]
+name = "m0"
+label = "Вывод M0"
+type = "pin"
+default = -1
+min = -1
+description = "Вывод платы, соединённый с M0 модуля"
+
+[[param]]
+name = "m1"
+label = "Вывод M1"
+type = "pin"
+default = -1
+min = -1
+description = "Вывод платы, соединённый с M1 модуля; -1 — M1 соединён с M0 (один вывод платы на оба)"
+
+[[param]]
+name = "aux"
+label = "Вывод AUX"
+type = "pin"
+default = -1
+min = -1
+description = "Вывод платы, соединённый с AUX модуля; -1 — не подключён (тогда вместо ожидания AUX стоят паузы)"
+
+[[param]]
+name = "reply_timeout"
+label = "Ожидание ответа"
+type = "duration"
+default = "800ms"
+min = 100
+when = "role == 0"
+description = "Сколько центр ждёт ответ ведомого до повтора. Для коротких кадров на 2,4 кбит/с хватает 300–500 мс"
+
+[[param]]
+name = "retries"
+label = "Повторов"
+type = "int"
+default = 2
+min = 0
+max = 5
+when = "role == 0"
+description = "Сколько раз повторить запрос, если ответа нет"
+
+[[param]]
+name = "offline"
+label = "Время до «нет связи»"
+type = "duration"
+default = "10s"
+min = 1000
+description = "Тишина дольше этого времени: «не на связи» (центр, по каждому ведомому) или «нет связи с центром» (ведомый)"

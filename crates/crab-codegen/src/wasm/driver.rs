@@ -215,8 +215,20 @@ pub(super) fn parse(wasm: &[u8]) -> Result<Driver, String> {
                     funcs.push(t.map_err(perr)?);
                 }
             }
-            Payload::TableSection(_) => {
-                return Err("block.wasm: таблицы и косвенные вызовы (call_indirect) не поддерживаются в драйвере".into())
+            Payload::TableSection(r) => {
+                // rustc since 1.99 puts an empty `funcref` table of one slot into every module,
+                // used or not. Nothing can call through it (`call_indirect` and the `table.*`
+                // operators are refused, there is no element section), so that one is harmless.
+                for t in r {
+                    let t = t.map_err(perr)?.ty;
+                    let empty_slot = t.element_type == wasmparser::RefType::FUNCREF
+                        && !t.table64
+                        && t.initial <= 1
+                        && t.maximum == Some(1);
+                    if !empty_slot {
+                        return Err("block.wasm: таблицы и косвенные вызовы (call_indirect) не поддерживаются в драйвере".into());
+                    }
+                }
             }
             Payload::ElementSection(_) => {
                 return Err(
@@ -226,9 +238,10 @@ pub(super) fn parse(wasm: &[u8]) -> Result<Driver, String> {
             Payload::TagSection(_) => {
                 return Err("block.wasm: исключения (tag) не поддерживаются в драйвере".into())
             }
-            Payload::StartSection { .. } => {
-                return Err("block.wasm: стартовая функция (start) не поддерживается: используйте экспорт init".into())
-            }
+            Payload::StartSection { .. } => return Err(
+                "block.wasm: стартовая функция (start) не поддерживается: используйте экспорт init"
+                    .into(),
+            ),
             Payload::MemorySection(r) => {
                 for m in r {
                     let m = m.map_err(perr)?;
@@ -276,9 +289,10 @@ pub(super) fn parse(wasm: &[u8]) -> Result<Driver, String> {
                 for d in r {
                     let d = d.map_err(perr)?;
                     match d.kind {
-                        DataKind::Passive => {
-                            return Err("block.wasm: пассивные сегменты данных не поддерживаются в драйвере".into())
-                        }
+                        DataKind::Passive => return Err(
+                            "block.wasm: пассивные сегменты данных не поддерживаются в драйвере"
+                                .into(),
+                        ),
                         DataKind::Active {
                             memory_index,
                             offset_expr,
@@ -286,11 +300,13 @@ pub(super) fn parse(wasm: &[u8]) -> Result<Driver, String> {
                             if memory_index != 0 {
                                 return Err("block.wasm: сегмент данных не в памяти 0".into());
                             }
-                            let off = match const_expr(&offset_expr, "смещение сегмента данных")? {
+                            let off = match const_expr(&offset_expr, "смещение сегмента данных")?
+                            {
                                 ConstVal::I32(v) => v as u32,
-                                _ => {
-                                    return Err("block.wasm: смещение сегмента данных должно быть i32.const".into())
-                                }
+                                _ => return Err(
+                                    "block.wasm: смещение сегмента данных должно быть i32.const"
+                                        .into(),
+                                ),
                             };
                             data.push((off, d.data.to_vec()));
                         }
@@ -886,6 +902,32 @@ mod tests {
             Ok(_) => panic!("expected error"),
             Err(e) => e,
         }
+    }
+
+    #[test]
+    fn accepts_the_empty_table_of_rustc() {
+        // rustc 1.99 adds `(table 1 1 funcref)` to every module; nothing calls through it.
+        parse(
+            &wat::parse_str(
+                r#"(module (table 1 1 funcref) (memory 1)
+               (global $hb i32 (i32.const 1024))
+               (func $step (param i32))
+               (export "__heap_base" (global $hb))
+               (export "step" (func $step)))"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_a_bigger_table() {
+        let e = err_of(
+            r#"(module (table 4 4 funcref) (memory 1)
+               (func $step (param i32))
+               (export "step" (func $step)))"#,
+        );
+        assert!(e.contains("таблицы"), "{e}");
     }
 
     #[test]

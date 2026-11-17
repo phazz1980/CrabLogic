@@ -47,13 +47,16 @@ fn modules(project: &Project, lib: &Library) -> Result<usize, String> {
 fn every_library_block_builds_a_module() {
     let lib = library();
     let root = std::env::temp_dir().join(format!("crab_lib_modules_{}", std::process::id()));
-    // Screen widgets, menu items and the menu only exist next to a display: alone they fail the
-    // schema check by design; `examples/display_menu` covers them below.
+    // Screen widgets, menu items and the menu only exist next to a display, the LoRa modem needs
+    // pins and partner blocks: alone they fail the schema check by design; `examples/display_menu`
+    // and `tests/lora_config.rs` (both ends build into modules) cover them.
     let mut blocks: Vec<_> = lib
         .iter()
         .filter(|b| {
             let kind = b.def.info.kind.as_str();
-            !crab_core::project::is_screen_kind(kind) && kind != "menu"
+            !crab_core::project::is_screen_kind(kind)
+                && kind != "menu"
+                && !matches!(kind, "lora_e220" | "lora_point" | "lora_centre")
         })
         .collect();
     blocks.sort_by(|a, b| a.def.info.kind.cmp(&b.def.info.kind));

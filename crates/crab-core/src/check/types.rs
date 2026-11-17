@@ -58,6 +58,8 @@ pub enum DiagKind {
     MenuDisplay,
     /// The variable of a menu item is missing or of a wrong type.
     MenuItemVar,
+    /// A LoRa modem or its partner blocks are set up wrongly (pins, modem link, role, addresses).
+    Lora,
     /// The cycle period of the project is not 1, 2, 5 or 10 ms.
     CyclePeriod,
     /// The estimated step of a sheet is over 70 % of the cycle period.
@@ -105,6 +107,7 @@ impl DiagKind {
         DiagKind::DisplayCyrillic,
         DiagKind::MenuDisplay,
         DiagKind::MenuItemVar,
+        DiagKind::Lora,
         DiagKind::CyclePeriod,
         DiagKind::StepOverPeriod,
     ];
@@ -151,6 +154,7 @@ impl DiagKind {
             DiagKind::DisplayCyrillic => "display-cyrillic",
             DiagKind::MenuDisplay => "menu-display",
             DiagKind::MenuItemVar => "menu-item-var",
+            DiagKind::Lora => "lora",
             DiagKind::CyclePeriod => "cycle-period",
             DiagKind::StepOverPeriod => "step-over-period",
         }

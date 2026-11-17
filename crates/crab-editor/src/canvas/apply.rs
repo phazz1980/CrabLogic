@@ -46,7 +46,7 @@ pub(super) fn apply_edits(
                 } else {
                     format!("move:{id}")
                 };
-                let _ = doc.edit(lib, Some(key), |p| p.move_block(&id, moved));
+                let _ = doc.edit_layout(key, |p| p.move_block(&id, moved));
             }
         }
         let group_end = drag_end.as_ref().and_then(|id| {
@@ -78,7 +78,7 @@ pub(super) fn apply_edits(
         }
         if let Some((to, bend)) = wire_edit {
             let key = format!("wire:{}.{}", to.block, to.port);
-            let _ = doc.edit(lib, Some(key), |p| {
+            let _ = doc.edit_layout(key, |p| {
                 p.set_wire_bend(&to, bend);
                 Ok::<_, crab_core::EditError>(())
             });

@@ -4,7 +4,8 @@
 //! Rust that also builds for the host (tests); only `entry` talks to the master.
 //! Input/output index contract: specs/display/plan.md, «Договорённость генератора и драйвера».
 
-#![cfg_attr(not(test), no_std)]
+// no_std on the board; on the host (tests, the simulator) a normal library.
+#![cfg_attr(all(not(test), target_arch = "wasm32"), no_std)]
 
 pub mod driver;
 pub mod fb;

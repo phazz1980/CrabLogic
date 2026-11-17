@@ -348,8 +348,11 @@ impl Emitter<'_, '_> {
             return Err(self.unsupported(inst, &e));
         }
         let display = self.display_extras(inst)?;
-        let extra_in = display.as_ref().map_or(0, |d| d.n_in());
-        let extra_out = display.as_ref().map_or(0, |d| d.n_out());
+        let lora = self.lora_extras(inst)?;
+        let extra_in =
+            display.as_ref().map_or(0, |d| d.n_in()) + lora.as_ref().map_or(0, |l| l.n_in());
+        let extra_out =
+            display.as_ref().map_or(0, |d| d.n_out()) + lora.as_ref().map_or(0, |l| l.n_out());
         let n_in = def.inputs.len() as u32 + extra_in;
         let n_param = def.params.len() as u32;
         let n_out = def.outputs.len() as u32 + extra_out;
@@ -432,6 +435,9 @@ impl Emitter<'_, '_> {
         if let Some(d) = &display {
             self.display_inputs(d, cells_in + cell * def.inputs.len() as u32);
         }
+        if let Some(l) = &lora {
+            self.lora_inputs(l, cells_in + cell * def.inputs.len() as u32);
+        }
         let k = self.drivers.len() as u32;
         self.op(I::LocalGet(0));
         self.op(I::Call(DRIVER_STEP + k));
@@ -451,6 +457,9 @@ impl Emitter<'_, '_> {
         }
         if let Some(d) = &display {
             self.display_outputs(d, cells_out + cell * def.outputs.len() as u32);
+        }
+        if let Some(l) = &lora {
+            self.lora_outputs(l, cells_out + cell * def.outputs.len() as u32);
         }
         self.drivers.push(DriverUse {
             driver: d,
@@ -474,7 +483,7 @@ impl Emitter<'_, '_> {
 
 impl Emitter<'_, '_> {
     /// Stores the value of type `ty` on the stack (below it the address) into a v2 cell.
-    fn store_cell(&mut self, ty: Ty) {
+    pub(super) fn store_cell(&mut self, ty: Ty) {
         self.op(match ty {
             Ty::I => I::I32Store(Self::mem_arg(0, 2)),
             Ty::F => I::F32Store(Self::mem_arg(0, 2)),
@@ -507,7 +516,8 @@ impl Emitter<'_, '_> {
         type PortTy = Option<Ty>;
         let def = &inst.lib.def;
         // Ports of a display's extra slots have no type in `block.toml`: the display checks them.
-        let display = self.program.display_plan(&inst.block.id).is_some();
+        let display = self.program.display_plan(&inst.block.id).is_some()
+            || self.program.lora_plan(&inst.block.id).is_some();
         let in_tys: Vec<PortTy> = (0..def.inputs.len())
             .map(|i| (def.inputs[i].ty != SignalType::String).then(|| self.input_ty(inst, i)))
             .collect();

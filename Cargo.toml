@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# The drivers are separate crates (their own workspace, built for wasm); `display` is also used by
+# the simulator as a path dependency; `lora_e220` gives the generator its config format.
+exclude = ["drivers/display", "drivers/lora_e220"]
 
 [workspace.package]
 version = "2.0.1"

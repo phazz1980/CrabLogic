@@ -125,7 +125,7 @@ pub(super) fn block_settings(
                 let as_input = d.param_in.contains(&p.name);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(!as_input, |ui| {
-                        param_editor(ui, p, d, def, &app.local, &pins);
+                        param_editor(ui, p, d, def, &app.local, &pins, &doc.project.logic);
                     });
                 });
                 if p.name == "wifi_mode" {
@@ -275,6 +275,54 @@ pub(super) fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
     response
 }
 
+/// Drop-down list of the project blocks of type `of_block` for a text parameter that names a
+/// block (the modem of a LoRa partner); the value is the id of the chosen block.
+fn block_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_core::Logic) {
+    let ids: Vec<&str> = logic
+        .blocks
+        .iter()
+        .filter(|b| b.tag.is_none() && b.kind == p.of_block)
+        .map(|b| b.id.as_str())
+        .collect();
+    let current = match d.values.get(&p.name) {
+        Some(Some(ParamValue::Text(t))) => t.clone(),
+        _ => String::new(),
+    };
+    if ids.is_empty() {
+        ui.colored_label(
+            Color32::from_rgb(186, 74, 66),
+            crate::i18n::fmt("в проекте нет блока {0}", &[&p.of_block]),
+        );
+        return;
+    }
+    // A single modem is the obvious choice: take it without a click.
+    let current = if current.is_empty() && ids.len() == 1 {
+        let only = ids[0].to_owned();
+        d.texts.insert(p.name.clone(), only.clone());
+        d.values
+            .insert(p.name.clone(), Some(ParamValue::Text(only.clone())));
+        only
+    } else {
+        current
+    };
+    let shown = if current.is_empty() {
+        crate::i18n::tr("не выбран").to_owned()
+    } else {
+        current.clone()
+    };
+    egui::ComboBox::from_id_salt(("param_block", &p.name))
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for id in ids {
+                if ui.selectable_label(current == id, id).clicked() {
+                    d.texts.insert(p.name.clone(), id.to_owned());
+                    d.values
+                        .insert(p.name.clone(), Some(ParamValue::Text(id.to_owned())));
+                }
+            }
+        });
+}
+
 /// Edits one buffered parameter of the block dialog.
 pub(super) fn param_editor(
     ui: &mut Ui,
@@ -283,6 +331,7 @@ pub(super) fn param_editor(
     def: &BlockDef,
     local: &LocalValues,
     pins: &Pins,
+    logic: &crab_core::Logic,
 ) {
     let current = d
         .values
@@ -327,6 +376,10 @@ pub(super) fn param_editor(
             _ => None,
         };
         pin_list_combo(ui, p, d, def, pins, current);
+        return;
+    }
+    if !p.of_block.is_empty() {
+        block_combo(ui, p, d, logic);
         return;
     }
     if !p.choices.is_empty() {

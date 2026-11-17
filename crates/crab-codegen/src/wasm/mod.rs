@@ -20,10 +20,11 @@ use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 
 mod block;
 mod block_emit;
-mod display;
+pub mod display;
 mod driver;
 mod expander;
 mod hardware;
+mod lora;
 mod modbus;
 mod mqtt;
 mod net;
@@ -206,6 +207,7 @@ impl Program<'_> {
         em.watch = watch;
         // The configs of the displays come from the project; explicit ones win.
         em.configs = self.display_configs();
+        em.configs.extend(self.lora_configs());
         em.configs
             .extend(configs.iter().map(|(k, v)| (k.clone(), v.clone())));
         em.step_body()?;

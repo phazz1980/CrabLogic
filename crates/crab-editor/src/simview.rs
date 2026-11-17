@@ -38,7 +38,31 @@ pub struct SimState {
 }
 
 fn build(project: &Project, lib: &Library) -> Result<Simulation, String> {
-    Simulation::new(&project.without_disabled().logic, lib)
+    let project = project.without_disabled();
+    let mut sim = Simulation::new(&project.logic, lib)?;
+    // The display drivers run in the simulation too: screens, widgets and the menu.
+    if sim.has_displays() {
+        match crab_codegen::Program::build(&project, lib) {
+            Ok(program) => {
+                for id in program.display_configs().keys() {
+                    let Some(plan) = program.display_sim_plan(id) else {
+                        continue;
+                    };
+                    let drive = crab_sim::DisplayDrive {
+                        config: plan.config,
+                        widgets: plan.widgets,
+                        string_widgets: plan.string_widgets,
+                        menu: plan.menu,
+                    };
+                    if let Err(e) = sim.drive_display(id, &drive) {
+                        sim.notes.push(format!("дисплей «{id}»: {e}"));
+                    }
+                }
+            }
+            Err(e) => sim.notes.push(format!("дисплеи не запущены: {e}")),
+        }
+    }
+    Ok(sim)
 }
 
 impl SimState {
@@ -116,7 +140,8 @@ impl SimState {
             }
             // Time the window could not play is dropped, not piled up.
             self.pending_ms = self.pending_ms.min(f64::from(SCAN_MS));
-            ctx.request_repaint_after(Duration::from_millis(16));
+            // About 30 frames a second are enough to follow the values; 60 doubled the load of the canvas.
+            ctx.request_repaint_after(Duration::from_millis(33));
         } else {
             ctx.request_repaint_after(RELOAD_POLL);
         }
@@ -395,15 +420,24 @@ pub fn port_menu(ui: &mut Ui, sim: &mut SimState, port: &PortRef) {
                 ui.close();
             }
         }
-    } else if ui
-        .add(egui::DragValue::new(&mut v).speed(if ty == SignalType::Int { 1.0 } else { 0.1 }))
-        .changed()
-    {
-        let v = if ty == SignalType::Int { v.round() } else { v };
-        match &var {
-            Some(var) => sim.sim.set_var(var, v),
-            None => sim.sim.set_output(&port.block, &port.port, v),
-        };
+    } else {
+        // A click in the number field must not close the menu: the field lives in a submenu that
+        // closes only on a click outside.
+        let config = egui::containers::menu::MenuConfig::new()
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::SubMenuButton::new(crate::i18n::tr("Значение"))
+            .config(config)
+            .ui(ui, |ui| {
+                ui.set_min_width(140.0);
+                let speed = if ty == SignalType::Int { 1.0 } else { 0.1 };
+                if ui.add(egui::DragValue::new(&mut v).speed(speed)).changed() {
+                    let v = if ty == SignalType::Int { v.round() } else { v };
+                    match &var {
+                        Some(var) => sim.sim.set_var(var, v),
+                        None => sim.sim.set_output(&port.block, &port.port, v),
+                    };
+                }
+            });
     }
 }
 

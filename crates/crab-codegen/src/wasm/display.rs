@@ -382,6 +382,36 @@ impl Program<'_> {
     pub fn display_config(&self, id: &str) -> Option<Config> {
         self.display_plan(id).map(|p| p.config)
     }
+
+    /// What the simulator needs to run the driver of display block `id` on the host: the
+    /// `crab.config` blob and which blocks feed the extra input slots (see the layout above).
+    pub fn display_sim_plan(&self, id: &str) -> Option<DisplaySimPlan> {
+        let plan = self.display_plan(id)?;
+        Some(DisplaySimPlan {
+            config: plan.config.encode(),
+            widgets: plan.widgets,
+            string_widgets: plan.string_widgets,
+            menu: plan.menu.map(|m| {
+                (
+                    m.block,
+                    m.vars.into_iter().map(|v| (v.name, v.action)).collect(),
+                )
+            }),
+        })
+    }
+}
+
+/// A display block as the simulator drives it: the config blob and the sources of the driver's
+/// extra input slots, in slot order (numeric widgets, string widgets, the menu with its variables).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplaySimPlan {
+    pub config: Vec<u8>,
+    /// Numeric widget blocks that have an input, in slot order.
+    pub widgets: Vec<String>,
+    /// String widget blocks, in slot order after the numeric ones.
+    pub string_widgets: Vec<String>,
+    /// The `menu` block and its variables `(name, action)`, if the display has a menu.
+    pub menu: Option<(String, Vec<(String, bool)>)>,
 }
 
 /// Blocks of the display constructor that emit no code: widgets and menu items are read by

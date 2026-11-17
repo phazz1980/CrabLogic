@@ -9,6 +9,7 @@ crab-blocks = { path = "../crab-blocks" }
 crab-core = { path = "../crab-core" }
 crab-debug = { path = "../crab-debug" }
 crab-ui-format = { path = "../crab-ui-format" }
+lora_e220 = { path = "../../drivers/lora_e220" }
 thiserror.workspace = true
 wasm-encoder = { version = "0.263.0", features = ["wasmparser"] }
 wasmparser = "0.263"

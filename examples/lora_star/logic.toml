@@ -1,0 +1,81 @@
+# Центр звезды LoRa. Модуль E220: TX платы -> RXD модуля, RX платы <- TXD, M0, M1, AUX на свободные выводы.
+[[block]]
+id = "modem"
+type = "lora_e220"
+role = 0
+channel = 18
+uart = 2
+tx = 17
+rx = 16
+m0 = 25
+m1 = 27
+aux = 33
+
+# Ведомый 0: команда включить насос (бит) и уставка (целое), в ответ давление (целое) и «насос работает» (бит).
+[[block]]
+id = "pump_node"
+type = "lora_point"
+modem = "modem"
+node = 0
+n_cmd = 2
+t_cmd0 = 0
+t_cmd1 = 1
+n_ans = 2
+t_ans0 = 1
+t_ans1 = 0
+
+# Ведомый 1: ничего не получает, отдаёт температуру (дробное).
+[[block]]
+id = "tank_node"
+type = "lora_point"
+modem = "modem"
+node = 1
+n_cmd = 0
+n_ans = 1
+t_ans0 = 2
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 4
+
+[[block]]
+id = "setpoint"
+type = "constant"
+value = 150.0
+
+[[block]]
+id = "setpoint_int"
+type = "float_to_int"
+
+[[block]]
+id = "hot"
+type = "compare"
+op = 4
+[block.const]
+b = 40.0
+
+[[block]]
+id = "fan"
+type = "digital_out"
+pin = 26
+
+[[link]]
+from = "button.out"
+to   = "pump_node.cmd0b"
+
+[[link]]
+from = "setpoint.out"
+to   = "setpoint_int.in"
+
+[[link]]
+from = "setpoint_int.out"
+to   = "pump_node.cmd1i"
+
+[[link]]
+from = "tank_node.ans0f"
+to   = "hot.a"
+
+[[link]]
+from = "hot.out"
+to   = "fan.in"

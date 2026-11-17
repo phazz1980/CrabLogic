@@ -361,6 +361,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                         runtime: false,
                         static_only: false,
                         choices: Vec::new(),
+                        of_block: String::new(),
                     }];
                     if !get {
                         params.push(ParamDef {
@@ -381,6 +382,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                             runtime: false,
                             static_only: false,
                             choices: Vec::new(),
+                            of_block: String::new(),
                         });
                     }
                     params

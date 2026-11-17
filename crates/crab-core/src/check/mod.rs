@@ -19,6 +19,7 @@ mod cycle;
 mod display;
 mod flow;
 mod graph;
+mod lora;
 mod retain;
 #[cfg(test)]
 mod tests;
@@ -50,6 +51,7 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
     check_pin_conflicts(&pin_uses(logic, lib), &mut report);
     check_expanders(logic, lib, &mut report);
     display::check_displays(logic, &mut report);
+    lora::check_lora(logic, &mut report);
     order_blocks(logic, &defs, &edges, &mut report);
     if !report.has_errors() {
         check_number_flow(logic, &defs, &mut report);

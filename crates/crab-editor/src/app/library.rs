@@ -53,15 +53,32 @@ impl EditorApp {
 
     /// Hot reload: new or changed block folders are picked up without restart.
     pub(super) fn watch_library(&mut self) {
+        // The folder walk runs off the UI thread: on the UI thread it froze frames every 2 s.
+        if let Some(rx) = &self.lib_scan {
+            match rx.try_recv() {
+                Ok(stamp) => {
+                    self.lib_scan = None;
+                    self.lib_checked = Instant::now();
+                    if stamp != self.lib_stamp {
+                        self.reload_library();
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(_) => self.lib_scan = None,
+            }
+            return;
+        }
         if self.lib_checked.elapsed() < Duration::from_secs(2) {
             return;
         }
-        self.lib_checked = Instant::now();
-        let Some(dir) = &self.lib_dir else { return };
-        let stamp = library_stamp(dir);
-        if stamp != self.lib_stamp {
-            self.reload_library();
-        }
+        let Some(dir) = self.lib_dir.clone() else {
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.lib_scan = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(library_stamp(&dir));
+        });
     }
 
     pub(super) fn project_stamp(&self) -> Option<SystemTime> {

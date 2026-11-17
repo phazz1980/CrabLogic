@@ -11,10 +11,14 @@ $variants = @{ display = @('oled', 'lcd') }
 if (-not $Names) {
     $Names = Get-ChildItem $here -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'Cargo.toml') } |
         ForEach-Object Name
+    # A driver without its block in library\ is still being written (e.g. lora_e220): skipped.
+    $Names = $Names | Where-Object { $variants.ContainsKey($_) -or (Test-Path (Join-Path $library $_)) }
 }
-$env:RUSTFLAGS = '-C target-cpu=mvp -C link-arg=-zstack-size=4096 -C link-arg=--export=__heap_base'
+$stacks = @{ lora_e220 = 8192 }  # init() builds the master (2 KB) on the stack
 try {
     foreach ($name in $Names) {
+        $stack = if ($stacks.ContainsKey($name)) { $stacks[$name] } else { 4096 }
+        $env:RUSTFLAGS = "-C target-cpu=mvp -C link-arg=-zstack-size=$stack -C link-arg=--export=__heap_base"
         # (library block, cargo features) pairs of this crate
         # (appended one by one: an `if` expression would unroll a single pair into two items)
         $targets = @()

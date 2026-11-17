@@ -58,6 +58,7 @@ pub fn error_anchor(kind: DiagKind) -> &'static str {
         DiagKind::DisplayCyrillic => crate::i18n::tr("много-русских-букв-на-lcd"),
         DiagKind::MenuDisplay => crate::i18n::tr("меню-без-дисплея"),
         DiagKind::MenuItemVar => crate::i18n::tr("переменная-пункта-меню"),
+        DiagKind::Lora => crate::i18n::tr("настройка-lora"),
         DiagKind::CyclePeriod => crate::i18n::tr("период-цикла"),
         DiagKind::StepOverPeriod => crate::i18n::tr("шаг-листа-больше-периода"),
     }
@@ -81,6 +82,7 @@ const FILES: &[(&str, &str)] = &[
     ("boards", include_str!("../../../help/11-boards.md")),
     ("drivers", include_str!("../../../help/12-drivers.md")),
     ("displays", include_str!("../../../help/13-displays.md")),
+    ("lora", include_str!("../../../help/16-lora.md")),
     ("build", include_str!("../../../help/05-build.md")),
     ("debug", include_str!("../../../help/06-debug.md")),
     ("ai", include_str!("../../../help/07-ai.md")),

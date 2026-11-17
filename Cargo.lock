@@ -1186,6 +1186,7 @@ dependencies = [
  "crab-core",
  "crab-debug",
  "crab-ui-format",
+ "lora_e220",
  "thiserror 2.0.21",
  "toml 0.8.23",
  "wasm-encoder",
@@ -1310,6 +1311,7 @@ dependencies = [
  "crab-codegen",
  "crab-core",
  "crab-kernel",
+ "display",
  "serde",
  "toml 0.8.23",
  "wasmi 2.0.0",
@@ -1545,6 +1547,13 @@ dependencies = [
  "block2 0.6.2",
  "libc",
  "objc2 0.6.5",
+]
+
+[[package]]
+name = "display"
+version = "0.1.0"
+dependencies = [
+ "crab-ui-format",
 ]
 
 [[package]]
@@ -3341,6 +3350,10 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "lora_e220"
+version = "0.1.0"
 
 [[package]]
 name = "mach2"

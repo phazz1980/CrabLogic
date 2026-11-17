@@ -537,12 +537,13 @@ impl Project {
                 block.tag = Some(new.to_owned());
             }
         }
-        // Screen widgets and menus name their display, menu and parent item by id.
+        // Screen widgets, menus and LoRa partner blocks name their display, menu, parent item or modem by id.
         for block in &mut self.logic.blocks {
             let refs: &[&str] = match block.kind.as_str() {
                 "menu" => &["display"],
                 "menu_item" => &["menu", "parent"],
                 k if k.starts_with("disp_") => &["display"],
+                "lora_point" | "lora_centre" => &["modem"],
                 _ => &[],
             };
             for name in refs {

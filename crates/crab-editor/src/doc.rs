@@ -29,6 +29,25 @@ pub struct Doc {
 
 const UNDO_LIMIT: usize = 200;
 
+/// Whether the edit left everything a build depends on as it was: only the coordinates of
+/// blocks and the routes of wires may differ.
+fn same_build(
+    before: &Snapshot,
+    now: &Project,
+    config_before: &crab_core::project::ProjectConfig,
+) -> bool {
+    before.logic == now.logic
+        && *config_before == now.config
+        && before.layout.sheets == now.layout.sheets
+        && before.layout.blocks.len() == now.layout.blocks.len()
+        && before
+            .layout
+            .blocks
+            .iter()
+            .zip(&now.layout.blocks)
+            .all(|(a, b)| a.0 == b.0 && a.1.sheet == b.1.sheet)
+}
+
 impl Doc {
     pub fn open(path: &Path, lib: &Library) -> crab_core::Result<Self> {
         let mut project = Project::load(path)?;
@@ -58,10 +77,12 @@ impl Doc {
         f: impl FnOnce(&mut Project) -> Result<T, E>,
     ) -> Result<T, E> {
         let before = self.snapshot();
+        let config_before = self.project.config.clone();
         let merge = key.is_some() && key == self.last_key;
         match f(&mut self.project) {
             Ok(value) => {
                 self.project.logic.sync_tags();
+                let moved_only = same_build(&before, &self.project, &config_before);
                 if !merge {
                     self.undo.push(before);
                     if self.undo.len() > UNDO_LIMIT {
@@ -71,8 +92,12 @@ impl Doc {
                 self.redo.clear();
                 self.last_key = key;
                 self.dirty = true;
-                self.revision += 1;
-                self.recheck(lib);
+                // Dragging a block only moves it on the sheet: nothing is rebuilt (the check,
+                // the simulation and the background modules wait for a real change).
+                if !moved_only {
+                    self.revision += 1;
+                    self.recheck(lib);
+                }
                 Ok(value)
             }
             Err(e) => {
@@ -80,6 +105,30 @@ impl Doc {
                 Err(e)
             }
         }
+    }
+
+    /// An edit that only moves things on the sheets (block coordinates, wire bends) and keeps
+    /// every block on its sheet: the fast path of dragging, run every frame. It copies nothing
+    /// when it continues an edit of the same `key`, and it does not bump the revision or
+    /// recheck: nothing a build depends on changes.
+    pub fn edit_layout<T, E>(
+        &mut self,
+        key: String,
+        f: impl FnOnce(&mut Project) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let merge = self.last_key.as_deref() == Some(key.as_str());
+        let before = (!merge).then(|| self.snapshot());
+        let value = f(&mut self.project)?;
+        if let Some(before) = before {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last_key = Some(key);
+        self.dirty = true;
+        Ok(value)
     }
 
     /// Takes the web page (the `web_*` blocks) from `other`, the project as another program
