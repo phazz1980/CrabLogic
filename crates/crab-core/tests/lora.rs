@@ -177,3 +177,13 @@ fn the_modem_of_a_partner_is_chosen_from_a_list_of_blocks() {
         assert_eq!(p.of_block, "lora_e220", "{kind}");
     }
 }
+
+#[test]
+fn the_modem_is_a_device_not_a_tag_and_is_deleted_with_its_block() {
+    let lib = library();
+    let mut project = crab_core::Project::load(root().join("examples/lora_star")).unwrap();
+    assert!(!project.is_tag(&lib, "modem"));
+    project.remove_block("modem").unwrap();
+    assert!(project.logic.block("modem").is_none());
+    assert!(!project.layout.blocks.contains_key("modem"));
+}

@@ -26,6 +26,8 @@ pub enum DisplayAction {
     },
     Designer(String),
     Focus(String),
+    /// Deletes the display with its menu blocks.
+    Remove(String),
 }
 
 pub fn is_display(kind: &str) -> bool {
@@ -169,6 +171,13 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
                 {
                     actions.push(DisplayAction::Focus(b.id.clone()));
                 }
+                if ui
+                    .button(crate::i18n::tr("Удалить дисплей"))
+                    .on_hover_text(crate::i18n::tr("Дисплей и его блок меню удаляются из проекта"))
+                    .clicked()
+                {
+                    actions.push(DisplayAction::Remove(b.id.clone()));
+                }
             });
     });
 }
@@ -226,6 +235,20 @@ pub fn apply(app: &mut EditorApp, actions: Vec<DisplayAction>) {
         let lib = app.lib.clone();
         match action {
             DisplayAction::Focus(id) => app.focus_block(&id),
+            DisplayAction::Remove(id) => {
+                let Some(doc) = &mut app.doc else { return };
+                let result = doc.edit(&lib, None, |p| {
+                    let mut ids: Vec<String> = menus_of(&p.logic, &id)
+                        .iter()
+                        .map(|b| b.id.clone())
+                        .collect();
+                    ids.push(id.clone());
+                    ids.iter().try_for_each(|i| p.remove_block(i))
+                });
+                if let Err(e) = result {
+                    app.info(LogLevel::Error, e.to_string());
+                }
+            }
             DisplayAction::Designer(id) => app.open_web_designer(&format!("/screens?display={id}")),
             DisplayAction::Add(kind) => {
                 let pos = crate::panels::free_spot(app);

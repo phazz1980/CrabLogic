@@ -32,6 +32,7 @@ mod netpanel;
 mod panels;
 mod pictures;
 mod pullview;
+mod radiopanel;
 mod report;
 mod selfupdate;
 mod simview;

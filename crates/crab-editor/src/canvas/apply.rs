@@ -112,6 +112,7 @@ pub(super) fn apply_edits(
                         || p.logic.block(&tag).is_some_and(|b| {
                             // A display has pins but is not a tag: it has no copies.
                             !crate::displaypanel::is_display(&b.kind)
+                                && !crab_core::project::is_device_kind(&b.kind)
                                 && lib.resolve(&p.logic, b).is_some_and(|l| {
                                     l.def
                                         .params

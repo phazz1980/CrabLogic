@@ -674,12 +674,17 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut remove_tag: Option<String> = None;
     let mut net_actions = Vec::new();
     let mut display_actions = Vec::new();
+    let mut radio_actions = Vec::new();
 
     // Tags: blocks with a pin, split by direction.
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     // Copies of a tag share its row.
-    for b in logic.blocks.iter().filter(|b| b.tag.is_none()) {
+    for b in logic
+        .blocks
+        .iter()
+        .filter(|b| b.tag.is_none() && !crab_core::project::is_device_kind(&b.kind))
+    {
         let Some(lib) = app.lib.resolve(logic, b) else {
             continue;
         };
@@ -708,6 +713,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             .params
             .iter()
             .any(|p| p.kind == ParamKind::Pin && !p.fixed)
+            || crab_core::project::is_device_kind(&b.def.info.kind)
             || !b.def.info.fits_board(model)
         {
             continue;
@@ -907,6 +913,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                 });
             });
             display_actions = crate::displaypanel::show(app, ui);
+            radio_actions = crate::radiopanel::show(app, ui);
             net_actions = crate::netpanel::show(app, ui);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
@@ -991,6 +998,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     }
     crate::netpanel::apply(app, net_actions);
     crate::displaypanel::apply(app, display_actions);
+    crate::radiopanel::apply(app, radio_actions);
     if new_var {
         app.dialog = Dialog::for_var(app, None);
     }
@@ -1157,6 +1165,8 @@ const IO_GROUP: &str = "Входы и выходы";
 const WEB_GROUP: &str = "Веб-интерфейс";
 /// Displays are added from the «Дисплеи» section of the left panel (with their menu).
 const DISPLAY_GROUP: &str = "Дисплеи";
+/// Radio blocks are added from the «Радио» section of the left panel.
+const RADIO_GROUP: &str = "Радио";
 
 fn library(app: &mut EditorApp, ui: &mut Ui) {
     let filter_id = Id::unique("library_filter");
@@ -1194,6 +1204,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
             || info.group == IO_GROUP
             || info.group == WEB_GROUP
             || info.group == DISPLAY_GROUP
+            || info.group == RADIO_GROUP
             || crab_core::project::is_screen_kind(&info.kind)
             || info.hidden
             || !info.fits_board(model)

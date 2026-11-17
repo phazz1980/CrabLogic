@@ -47,6 +47,16 @@ pub fn is_screen_kind(kind: &str) -> bool {
     kind.starts_with("disp_") || kind == "menu_item"
 }
 
+/// Radio blocks (LoRa): added and removed from the «Радио» section of the left panel, not from
+/// the library or the tag tree. The modem has pins but is a device, not an input or an output.
+pub const RADIO_KINDS: [&str; 3] = ["lora_e220", "lora_point", "lora_centre"];
+
+/// A block with pins that is a device and not a tag: no row in the tag tree, no copies, it is
+/// deleted with the block, not just taken off the sheet.
+pub fn is_device_kind(kind: &str) -> bool {
+    kind == "lora_e220"
+}
+
 /// A widget of the web page or of a display screen: it waits in the project tree, its
 /// place is set in the constructor and the sheets only show images of it.
 pub fn is_widget_kind(kind: &str) -> bool {

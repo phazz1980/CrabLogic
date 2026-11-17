@@ -224,9 +224,10 @@ fn place_unplaced(project: &mut Project, lib: &Library) {
         // A web widget waits in the project tree; the page designer made it, not the sheet.
         .filter(|b| !crab_core::project::is_widget_kind(&b.kind))
         .filter(|b| {
-            let tag = lib
-                .resolve(&project.logic, b)
-                .is_some_and(|r| r.def.params.iter().any(|p| p.kind == ParamKind::Pin));
+            let tag = !crab_core::project::is_device_kind(&b.kind)
+                && lib
+                    .resolve(&project.logic, b)
+                    .is_some_and(|r| r.def.params.iter().any(|p| p.kind == ParamKind::Pin));
             !tag
         })
         .map(|b| b.id.clone())

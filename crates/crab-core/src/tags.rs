@@ -51,6 +51,7 @@ impl Project {
     pub fn is_tag(&self, lib: &Library, id: &str) -> bool {
         self.logic.block(id).is_some_and(|b| {
             b.tag.is_none()
+                && !crate::project::is_device_kind(&b.kind)
                 && lib
                     .resolve(&self.logic, b)
                     .is_some_and(|l| l.def.params.iter().any(|p| p.kind == ParamKind::Pin))
