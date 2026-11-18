@@ -1,9 +1,9 @@
 [block]
 type = "lora_centre"
-name = "LoRa: центр"
-symbol = "LoRa-центр"
+name = "LoRa: мастер"
+symbol = "LoRa-мастер"
 group = "Радио"
-description = "Центр LoRa на стороне ведомого: выходы — полученные команды, входы — значения, которые уйдут центру в ответ. Схема ведомого работает и без связи."
+description = "Мастер LoRa на стороне слэйва: выходы — полученные команды, входы — значения, которые уйдут мастеру в ответ. Схема слэйва работает и без связи."
 memory = true
 
 [[param]]
@@ -12,7 +12,7 @@ label = "Модем"
 type = "string"
 default = ""
 of_block = "lora_e220"
-description = "Идентификатор блока lora_e220 (роль «ведомый»), через который идёт обмен"
+description = "Идентификатор блока lora_e220 (роль «слэйв»), через который идёт обмен"
 
 [[input]]
 name = "ans0b"
@@ -20,7 +20,7 @@ label = "ответ 0"
 type = "bool"
 default = false
 when = "n_ans > 0 and t_ans0 == 0"
-description = "Значение для центра, значение 0 (бит)"
+description = "Значение для мастера, значение 0 (бит)"
 
 [[input]]
 name = "ans0i"
@@ -28,7 +28,7 @@ label = "ответ 0"
 type = "int"
 default = 0
 when = "n_ans > 0 and t_ans0 == 1"
-description = "Значение для центра, значение 0 (целое)"
+description = "Значение для мастера, значение 0 (целое)"
 
 [[input]]
 name = "ans0f"
@@ -36,7 +36,7 @@ label = "ответ 0"
 type = "float"
 default = 0.0
 when = "n_ans > 0 and t_ans0 == 2"
-description = "Значение для центра, значение 0 (дробное)"
+description = "Значение для мастера, значение 0 (дробное)"
 
 [[input]]
 name = "ans1b"
@@ -44,7 +44,7 @@ label = "ответ 1"
 type = "bool"
 default = false
 when = "n_ans > 1 and t_ans1 == 0"
-description = "Значение для центра, значение 1 (бит)"
+description = "Значение для мастера, значение 1 (бит)"
 
 [[input]]
 name = "ans1i"
@@ -52,7 +52,7 @@ label = "ответ 1"
 type = "int"
 default = 0
 when = "n_ans > 1 and t_ans1 == 1"
-description = "Значение для центра, значение 1 (целое)"
+description = "Значение для мастера, значение 1 (целое)"
 
 [[input]]
 name = "ans1f"
@@ -60,7 +60,7 @@ label = "ответ 1"
 type = "float"
 default = 0.0
 when = "n_ans > 1 and t_ans1 == 2"
-description = "Значение для центра, значение 1 (дробное)"
+description = "Значение для мастера, значение 1 (дробное)"
 
 [[input]]
 name = "ans2b"
@@ -68,7 +68,7 @@ label = "ответ 2"
 type = "bool"
 default = false
 when = "n_ans > 2 and t_ans2 == 0"
-description = "Значение для центра, значение 2 (бит)"
+description = "Значение для мастера, значение 2 (бит)"
 
 [[input]]
 name = "ans2i"
@@ -76,7 +76,7 @@ label = "ответ 2"
 type = "int"
 default = 0
 when = "n_ans > 2 and t_ans2 == 1"
-description = "Значение для центра, значение 2 (целое)"
+description = "Значение для мастера, значение 2 (целое)"
 
 [[input]]
 name = "ans2f"
@@ -84,7 +84,7 @@ label = "ответ 2"
 type = "float"
 default = 0.0
 when = "n_ans > 2 and t_ans2 == 2"
-description = "Значение для центра, значение 2 (дробное)"
+description = "Значение для мастера, значение 2 (дробное)"
 
 [[input]]
 name = "ans3b"
@@ -92,7 +92,7 @@ label = "ответ 3"
 type = "bool"
 default = false
 when = "n_ans > 3 and t_ans3 == 0"
-description = "Значение для центра, значение 3 (бит)"
+description = "Значение для мастера, значение 3 (бит)"
 
 [[input]]
 name = "ans3i"
@@ -100,7 +100,7 @@ label = "ответ 3"
 type = "int"
 default = 0
 when = "n_ans > 3 and t_ans3 == 1"
-description = "Значение для центра, значение 3 (целое)"
+description = "Значение для мастера, значение 3 (целое)"
 
 [[input]]
 name = "ans3f"
@@ -108,7 +108,7 @@ label = "ответ 3"
 type = "float"
 default = 0.0
 when = "n_ans > 3 and t_ans3 == 2"
-description = "Значение для центра, значение 3 (дробное)"
+description = "Значение для мастера, значение 3 (дробное)"
 
 [[input]]
 name = "ans4b"
@@ -116,7 +116,7 @@ label = "ответ 4"
 type = "bool"
 default = false
 when = "n_ans > 4 and t_ans4 == 0"
-description = "Значение для центра, значение 4 (бит)"
+description = "Значение для мастера, значение 4 (бит)"
 
 [[input]]
 name = "ans4i"
@@ -124,7 +124,7 @@ label = "ответ 4"
 type = "int"
 default = 0
 when = "n_ans > 4 and t_ans4 == 1"
-description = "Значение для центра, значение 4 (целое)"
+description = "Значение для мастера, значение 4 (целое)"
 
 [[input]]
 name = "ans4f"
@@ -132,7 +132,7 @@ label = "ответ 4"
 type = "float"
 default = 0.0
 when = "n_ans > 4 and t_ans4 == 2"
-description = "Значение для центра, значение 4 (дробное)"
+description = "Значение для мастера, значение 4 (дробное)"
 
 [[input]]
 name = "ans5b"
@@ -140,7 +140,7 @@ label = "ответ 5"
 type = "bool"
 default = false
 when = "n_ans > 5 and t_ans5 == 0"
-description = "Значение для центра, значение 5 (бит)"
+description = "Значение для мастера, значение 5 (бит)"
 
 [[input]]
 name = "ans5i"
@@ -148,7 +148,7 @@ label = "ответ 5"
 type = "int"
 default = 0
 when = "n_ans > 5 and t_ans5 == 1"
-description = "Значение для центра, значение 5 (целое)"
+description = "Значение для мастера, значение 5 (целое)"
 
 [[input]]
 name = "ans5f"
@@ -156,7 +156,7 @@ label = "ответ 5"
 type = "float"
 default = 0.0
 when = "n_ans > 5 and t_ans5 == 2"
-description = "Значение для центра, значение 5 (дробное)"
+description = "Значение для мастера, значение 5 (дробное)"
 
 [[input]]
 name = "ans6b"
@@ -164,7 +164,7 @@ label = "ответ 6"
 type = "bool"
 default = false
 when = "n_ans > 6 and t_ans6 == 0"
-description = "Значение для центра, значение 6 (бит)"
+description = "Значение для мастера, значение 6 (бит)"
 
 [[input]]
 name = "ans6i"
@@ -172,7 +172,7 @@ label = "ответ 6"
 type = "int"
 default = 0
 when = "n_ans > 6 and t_ans6 == 1"
-description = "Значение для центра, значение 6 (целое)"
+description = "Значение для мастера, значение 6 (целое)"
 
 [[input]]
 name = "ans6f"
@@ -180,7 +180,7 @@ label = "ответ 6"
 type = "float"
 default = 0.0
 when = "n_ans > 6 and t_ans6 == 2"
-description = "Значение для центра, значение 6 (дробное)"
+description = "Значение для мастера, значение 6 (дробное)"
 
 [[input]]
 name = "ans7b"
@@ -188,7 +188,7 @@ label = "ответ 7"
 type = "bool"
 default = false
 when = "n_ans > 7 and t_ans7 == 0"
-description = "Значение для центра, значение 7 (бит)"
+description = "Значение для мастера, значение 7 (бит)"
 
 [[input]]
 name = "ans7i"
@@ -196,7 +196,7 @@ label = "ответ 7"
 type = "int"
 default = 0
 when = "n_ans > 7 and t_ans7 == 1"
-description = "Значение для центра, значение 7 (целое)"
+description = "Значение для мастера, значение 7 (целое)"
 
 [[input]]
 name = "ans7f"
@@ -204,7 +204,7 @@ label = "ответ 7"
 type = "float"
 default = 0.0
 when = "n_ans > 7 and t_ans7 == 2"
-description = "Значение для центра, значение 7 (дробное)"
+description = "Значение для мастера, значение 7 (дробное)"
 
 [[input]]
 name = "ans8b"
@@ -212,7 +212,7 @@ label = "ответ 8"
 type = "bool"
 default = false
 when = "n_ans > 8 and t_ans8 == 0"
-description = "Значение для центра, значение 8 (бит)"
+description = "Значение для мастера, значение 8 (бит)"
 
 [[input]]
 name = "ans8i"
@@ -220,7 +220,7 @@ label = "ответ 8"
 type = "int"
 default = 0
 when = "n_ans > 8 and t_ans8 == 1"
-description = "Значение для центра, значение 8 (целое)"
+description = "Значение для мастера, значение 8 (целое)"
 
 [[input]]
 name = "ans8f"
@@ -228,7 +228,7 @@ label = "ответ 8"
 type = "float"
 default = 0.0
 when = "n_ans > 8 and t_ans8 == 2"
-description = "Значение для центра, значение 8 (дробное)"
+description = "Значение для мастера, значение 8 (дробное)"
 
 [[input]]
 name = "ans9b"
@@ -236,7 +236,7 @@ label = "ответ 9"
 type = "bool"
 default = false
 when = "n_ans > 9 and t_ans9 == 0"
-description = "Значение для центра, значение 9 (бит)"
+description = "Значение для мастера, значение 9 (бит)"
 
 [[input]]
 name = "ans9i"
@@ -244,7 +244,7 @@ label = "ответ 9"
 type = "int"
 default = 0
 when = "n_ans > 9 and t_ans9 == 1"
-description = "Значение для центра, значение 9 (целое)"
+description = "Значение для мастера, значение 9 (целое)"
 
 [[input]]
 name = "ans9f"
@@ -252,7 +252,7 @@ label = "ответ 9"
 type = "float"
 default = 0.0
 when = "n_ans > 9 and t_ans9 == 2"
-description = "Значение для центра, значение 9 (дробное)"
+description = "Значение для мастера, значение 9 (дробное)"
 
 [[output]]
 name = "cmd0b"
@@ -260,7 +260,7 @@ label = "команда 0"
 type = "bool"
 sim = false
 when = "n_cmd > 0 and t_cmd0 == 0"
-description = "Команда от центра, значение 0 (бит)"
+description = "Команда от мастера, значение 0 (бит)"
 
 [[output]]
 name = "cmd0i"
@@ -268,7 +268,7 @@ label = "команда 0"
 type = "int"
 sim = 0
 when = "n_cmd > 0 and t_cmd0 == 1"
-description = "Команда от центра, значение 0 (целое)"
+description = "Команда от мастера, значение 0 (целое)"
 
 [[output]]
 name = "cmd0f"
@@ -276,7 +276,7 @@ label = "команда 0"
 type = "float"
 sim = 0.0
 when = "n_cmd > 0 and t_cmd0 == 2"
-description = "Команда от центра, значение 0 (дробное)"
+description = "Команда от мастера, значение 0 (дробное)"
 
 [[output]]
 name = "cmd1b"
@@ -284,7 +284,7 @@ label = "команда 1"
 type = "bool"
 sim = false
 when = "n_cmd > 1 and t_cmd1 == 0"
-description = "Команда от центра, значение 1 (бит)"
+description = "Команда от мастера, значение 1 (бит)"
 
 [[output]]
 name = "cmd1i"
@@ -292,7 +292,7 @@ label = "команда 1"
 type = "int"
 sim = 0
 when = "n_cmd > 1 and t_cmd1 == 1"
-description = "Команда от центра, значение 1 (целое)"
+description = "Команда от мастера, значение 1 (целое)"
 
 [[output]]
 name = "cmd1f"
@@ -300,7 +300,7 @@ label = "команда 1"
 type = "float"
 sim = 0.0
 when = "n_cmd > 1 and t_cmd1 == 2"
-description = "Команда от центра, значение 1 (дробное)"
+description = "Команда от мастера, значение 1 (дробное)"
 
 [[output]]
 name = "cmd2b"
@@ -308,7 +308,7 @@ label = "команда 2"
 type = "bool"
 sim = false
 when = "n_cmd > 2 and t_cmd2 == 0"
-description = "Команда от центра, значение 2 (бит)"
+description = "Команда от мастера, значение 2 (бит)"
 
 [[output]]
 name = "cmd2i"
@@ -316,7 +316,7 @@ label = "команда 2"
 type = "int"
 sim = 0
 when = "n_cmd > 2 and t_cmd2 == 1"
-description = "Команда от центра, значение 2 (целое)"
+description = "Команда от мастера, значение 2 (целое)"
 
 [[output]]
 name = "cmd2f"
@@ -324,7 +324,7 @@ label = "команда 2"
 type = "float"
 sim = 0.0
 when = "n_cmd > 2 and t_cmd2 == 2"
-description = "Команда от центра, значение 2 (дробное)"
+description = "Команда от мастера, значение 2 (дробное)"
 
 [[output]]
 name = "cmd3b"
@@ -332,7 +332,7 @@ label = "команда 3"
 type = "bool"
 sim = false
 when = "n_cmd > 3 and t_cmd3 == 0"
-description = "Команда от центра, значение 3 (бит)"
+description = "Команда от мастера, значение 3 (бит)"
 
 [[output]]
 name = "cmd3i"
@@ -340,7 +340,7 @@ label = "команда 3"
 type = "int"
 sim = 0
 when = "n_cmd > 3 and t_cmd3 == 1"
-description = "Команда от центра, значение 3 (целое)"
+description = "Команда от мастера, значение 3 (целое)"
 
 [[output]]
 name = "cmd3f"
@@ -348,7 +348,7 @@ label = "команда 3"
 type = "float"
 sim = 0.0
 when = "n_cmd > 3 and t_cmd3 == 2"
-description = "Команда от центра, значение 3 (дробное)"
+description = "Команда от мастера, значение 3 (дробное)"
 
 [[output]]
 name = "cmd4b"
@@ -356,7 +356,7 @@ label = "команда 4"
 type = "bool"
 sim = false
 when = "n_cmd > 4 and t_cmd4 == 0"
-description = "Команда от центра, значение 4 (бит)"
+description = "Команда от мастера, значение 4 (бит)"
 
 [[output]]
 name = "cmd4i"
@@ -364,7 +364,7 @@ label = "команда 4"
 type = "int"
 sim = 0
 when = "n_cmd > 4 and t_cmd4 == 1"
-description = "Команда от центра, значение 4 (целое)"
+description = "Команда от мастера, значение 4 (целое)"
 
 [[output]]
 name = "cmd4f"
@@ -372,7 +372,7 @@ label = "команда 4"
 type = "float"
 sim = 0.0
 when = "n_cmd > 4 and t_cmd4 == 2"
-description = "Команда от центра, значение 4 (дробное)"
+description = "Команда от мастера, значение 4 (дробное)"
 
 [[output]]
 name = "cmd5b"
@@ -380,7 +380,7 @@ label = "команда 5"
 type = "bool"
 sim = false
 when = "n_cmd > 5 and t_cmd5 == 0"
-description = "Команда от центра, значение 5 (бит)"
+description = "Команда от мастера, значение 5 (бит)"
 
 [[output]]
 name = "cmd5i"
@@ -388,7 +388,7 @@ label = "команда 5"
 type = "int"
 sim = 0
 when = "n_cmd > 5 and t_cmd5 == 1"
-description = "Команда от центра, значение 5 (целое)"
+description = "Команда от мастера, значение 5 (целое)"
 
 [[output]]
 name = "cmd5f"
@@ -396,7 +396,7 @@ label = "команда 5"
 type = "float"
 sim = 0.0
 when = "n_cmd > 5 and t_cmd5 == 2"
-description = "Команда от центра, значение 5 (дробное)"
+description = "Команда от мастера, значение 5 (дробное)"
 
 [[output]]
 name = "cmd6b"
@@ -404,7 +404,7 @@ label = "команда 6"
 type = "bool"
 sim = false
 when = "n_cmd > 6 and t_cmd6 == 0"
-description = "Команда от центра, значение 6 (бит)"
+description = "Команда от мастера, значение 6 (бит)"
 
 [[output]]
 name = "cmd6i"
@@ -412,7 +412,7 @@ label = "команда 6"
 type = "int"
 sim = 0
 when = "n_cmd > 6 and t_cmd6 == 1"
-description = "Команда от центра, значение 6 (целое)"
+description = "Команда от мастера, значение 6 (целое)"
 
 [[output]]
 name = "cmd6f"
@@ -420,7 +420,7 @@ label = "команда 6"
 type = "float"
 sim = 0.0
 when = "n_cmd > 6 and t_cmd6 == 2"
-description = "Команда от центра, значение 6 (дробное)"
+description = "Команда от мастера, значение 6 (дробное)"
 
 [[output]]
 name = "cmd7b"
@@ -428,7 +428,7 @@ label = "команда 7"
 type = "bool"
 sim = false
 when = "n_cmd > 7 and t_cmd7 == 0"
-description = "Команда от центра, значение 7 (бит)"
+description = "Команда от мастера, значение 7 (бит)"
 
 [[output]]
 name = "cmd7i"
@@ -436,7 +436,7 @@ label = "команда 7"
 type = "int"
 sim = 0
 when = "n_cmd > 7 and t_cmd7 == 1"
-description = "Команда от центра, значение 7 (целое)"
+description = "Команда от мастера, значение 7 (целое)"
 
 [[output]]
 name = "cmd7f"
@@ -444,7 +444,7 @@ label = "команда 7"
 type = "float"
 sim = 0.0
 when = "n_cmd > 7 and t_cmd7 == 2"
-description = "Команда от центра, значение 7 (дробное)"
+description = "Команда от мастера, значение 7 (дробное)"
 
 [[output]]
 name = "cmd8b"
@@ -452,7 +452,7 @@ label = "команда 8"
 type = "bool"
 sim = false
 when = "n_cmd > 8 and t_cmd8 == 0"
-description = "Команда от центра, значение 8 (бит)"
+description = "Команда от мастера, значение 8 (бит)"
 
 [[output]]
 name = "cmd8i"
@@ -460,7 +460,7 @@ label = "команда 8"
 type = "int"
 sim = 0
 when = "n_cmd > 8 and t_cmd8 == 1"
-description = "Команда от центра, значение 8 (целое)"
+description = "Команда от мастера, значение 8 (целое)"
 
 [[output]]
 name = "cmd8f"
@@ -468,7 +468,7 @@ label = "команда 8"
 type = "float"
 sim = 0.0
 when = "n_cmd > 8 and t_cmd8 == 2"
-description = "Команда от центра, значение 8 (дробное)"
+description = "Команда от мастера, значение 8 (дробное)"
 
 [[output]]
 name = "cmd9b"
@@ -476,7 +476,7 @@ label = "команда 9"
 type = "bool"
 sim = false
 when = "n_cmd > 9 and t_cmd9 == 0"
-description = "Команда от центра, значение 9 (бит)"
+description = "Команда от мастера, значение 9 (бит)"
 
 [[output]]
 name = "cmd9i"
@@ -484,7 +484,7 @@ label = "команда 9"
 type = "int"
 sim = 0
 when = "n_cmd > 9 and t_cmd9 == 1"
-description = "Команда от центра, значение 9 (целое)"
+description = "Команда от мастера, значение 9 (целое)"
 
 [[output]]
 name = "cmd9f"
@@ -492,33 +492,33 @@ label = "команда 9"
 type = "float"
 sim = 0.0
 when = "n_cmd > 9 and t_cmd9 == 2"
-description = "Команда от центра, значение 9 (дробное)"
+description = "Команда от мастера, значение 9 (дробное)"
 
 [[output]]
 name = "linked"
-label = "Связь с центром"
+label = "Связь с мастером"
 type = "bool"
 sim = true
-description = "true, пока центр слышен (тишина не дольше заданной в модеме)"
+description = "true, пока мастер слышен (тишина не дольше заданной в модеме)"
 
 [[param]]
 name = "n_cmd"
-label = "Число значений: команды центра → ведомому"
+label = "Число значений: команды мастера → слэйву"
 type = "int"
 default = 2
 min = 0
 max = 10
-description = "Сколько значений (команды центра → ведомому) в обмене, 0…10; у обоих концов связи одинаково"
+description = "Сколько значений (команды мастера → слэйву) в обмене, 0…10; у обоих концов связи одинаково"
 
 [[param]]
 name = "t_cmd0"
-label = "Тип значения 0 (команды центра → ведомому)"
+label = "Тип значения 0 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 0"
-description = "Тип значения 0: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 0: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -534,13 +534,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd1"
-label = "Тип значения 1 (команды центра → ведомому)"
+label = "Тип значения 1 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 1"
-description = "Тип значения 1: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 1: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -556,13 +556,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd2"
-label = "Тип значения 2 (команды центра → ведомому)"
+label = "Тип значения 2 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 2"
-description = "Тип значения 2: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 2: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -578,13 +578,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd3"
-label = "Тип значения 3 (команды центра → ведомому)"
+label = "Тип значения 3 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 3"
-description = "Тип значения 3: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 3: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -600,13 +600,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd4"
-label = "Тип значения 4 (команды центра → ведомому)"
+label = "Тип значения 4 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 4"
-description = "Тип значения 4: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 4: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -622,13 +622,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd5"
-label = "Тип значения 5 (команды центра → ведомому)"
+label = "Тип значения 5 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 5"
-description = "Тип значения 5: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 5: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -644,13 +644,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd6"
-label = "Тип значения 6 (команды центра → ведомому)"
+label = "Тип значения 6 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 6"
-description = "Тип значения 6: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 6: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -666,13 +666,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd7"
-label = "Тип значения 7 (команды центра → ведомому)"
+label = "Тип значения 7 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 7"
-description = "Тип значения 7: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 7: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -688,13 +688,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd8"
-label = "Тип значения 8 (команды центра → ведомому)"
+label = "Тип значения 8 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 8"
-description = "Тип значения 8: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 8: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -710,13 +710,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd9"
-label = "Тип значения 9 (команды центра → ведомому)"
+label = "Тип значения 9 (команды мастера → слэйву)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 9"
-description = "Тип значения 9: команды центра → ведомому; у обоих концов связи одинаковый"
+description = "Тип значения 9: команды мастера → слэйву; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -732,22 +732,22 @@ label = "float (дробное)"
 
 [[param]]
 name = "n_ans"
-label = "Число значений: ответы ведомого → центру"
+label = "Число значений: ответы слэйва → мастеру"
 type = "int"
 default = 2
 min = 0
 max = 10
-description = "Сколько значений (ответы ведомого → центру) в обмене, 0…10; у обоих концов связи одинаково"
+description = "Сколько значений (ответы слэйва → мастеру) в обмене, 0…10; у обоих концов связи одинаково"
 
 [[param]]
 name = "t_ans0"
-label = "Тип значения 0 (ответы ведомого → центру)"
+label = "Тип значения 0 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 0"
-description = "Тип значения 0: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 0: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -763,13 +763,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans1"
-label = "Тип значения 1 (ответы ведомого → центру)"
+label = "Тип значения 1 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 1"
-description = "Тип значения 1: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 1: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -785,13 +785,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans2"
-label = "Тип значения 2 (ответы ведомого → центру)"
+label = "Тип значения 2 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 2"
-description = "Тип значения 2: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 2: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -807,13 +807,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans3"
-label = "Тип значения 3 (ответы ведомого → центру)"
+label = "Тип значения 3 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 3"
-description = "Тип значения 3: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 3: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -829,13 +829,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans4"
-label = "Тип значения 4 (ответы ведомого → центру)"
+label = "Тип значения 4 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 4"
-description = "Тип значения 4: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 4: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -851,13 +851,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans5"
-label = "Тип значения 5 (ответы ведомого → центру)"
+label = "Тип значения 5 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 5"
-description = "Тип значения 5: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 5: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -873,13 +873,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans6"
-label = "Тип значения 6 (ответы ведомого → центру)"
+label = "Тип значения 6 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 6"
-description = "Тип значения 6: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 6: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -895,13 +895,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans7"
-label = "Тип значения 7 (ответы ведомого → центру)"
+label = "Тип значения 7 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 7"
-description = "Тип значения 7: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 7: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -917,13 +917,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans8"
-label = "Тип значения 8 (ответы ведомого → центру)"
+label = "Тип значения 8 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 8"
-description = "Тип значения 8: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 8: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -939,13 +939,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans9"
-label = "Тип значения 9 (ответы ведомого → центру)"
+label = "Тип значения 9 (ответы слэйва → мастеру)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 9"
-description = "Тип значения 9: ответы ведомого → центру; у обоих концов связи одинаковый"
+description = "Тип значения 9: ответы слэйва → мастеру; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0

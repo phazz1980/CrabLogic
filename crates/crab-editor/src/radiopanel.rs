@@ -7,11 +7,13 @@ use eframe::egui::{self, Id, Ui};
 
 use crate::app::{EditorApp, LogLevel};
 use crate::canvas::DragItem;
+use crate::dialogs::Dialog;
 
 pub enum RadioAction {
     Add(&'static str),
     Focus(String),
     Remove(String),
+    Settings(String),
 }
 
 /// What the «+» buttons add: (kind, caption, hint).
@@ -19,17 +21,17 @@ const ADD: [(&str, &str, &str); 3] = [
     (
         "lora_e220",
         "+ Модем",
-        "Радиомодуль E220: в проекте он один (роль «центр» или «ведомый» задаётся в его свойствах)",
+        "Радиомодуль E220: в проекте он один (роль «мастер» или «слэйв» задаётся в его свойствах)",
     ),
     (
         "lora_point",
-        "+ Ведомый",
-        "Блок «LoRa: ведомый» на стороне центра: команды ведомому и его ответы",
+        "+ Слэйв",
+        "Блок «LoRa: слэйв» на стороне мастера: команды слэйву и его ответы",
     ),
     (
         "lora_centre",
-        "+ Центр",
-        "Блок «LoRa: центр» на стороне ведомого: команды центра и значения в ответ",
+        "+ Мастер",
+        "Блок «LoRa: мастер» на стороне слэйва: команды мастера и значения в ответ",
     ),
 ];
 
@@ -103,6 +105,16 @@ fn row(app: &EditorApp, ui: &mut Ui, b: &crab_core::Block, actions: &mut Vec<Rad
         {
             actions.push(RadioAction::Focus(b.id.clone()));
         }
+        if b.kind == "lora_e220"
+            && ui
+                .button(crate::i18n::tr("Настройки..."))
+                .on_hover_text(crate::i18n::tr(
+                    "Роль, канал, скорость, ключ, UART и выводы модема",
+                ))
+                .clicked()
+        {
+            actions.push(RadioAction::Settings(b.id.clone()));
+        }
         if ui
             .add(egui::Button::new("🗑").small())
             .on_hover_text(crate::i18n::tr("Удалить из проекта"))
@@ -118,6 +130,7 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
         let lib = app.lib.clone();
         match action {
             RadioAction::Focus(id) => app.focus_block(&id),
+            RadioAction::Settings(id) => app.dialog = Dialog::for_block(app, &id),
             RadioAction::Add(kind) => {
                 let pos = crate::panels::free_spot(app);
                 let Some(doc) = &mut app.doc else { return };

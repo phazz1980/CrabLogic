@@ -3,7 +3,7 @@ type = "lora_e220"
 name = "LoRa E220 (433 МГц)"
 symbol = "LoRa"
 group = "Радио"
-description = "Радиомодуль EBYTE E220-400T22D на UART: связь центра с ведомыми платами. Сам настраивает модуль при старте. Значения обмена задают блоки lora_point (на центре) и lora_centre (на ведомом) на том же листе."
+description = "Радиомодуль EBYTE E220-400T22D на UART: связь мастера с платами-слэйвами. Сам настраивает модуль при старте. Значения обмена задают блоки lora_point (на мастере) и lora_centre (на слэйве) на том же листе."
 memory = true
 single = true
 
@@ -35,25 +35,25 @@ type = "int"
 default = 0
 min = 0
 max = 1
-description = "Центр опрашивает ведомых, ведомый только отвечает"
+description = "Мастер опрашивает слэйвов, слэйв только отвечает"
 
 [[param.choice]]
 value = 0
-label = "Центр"
+label = "Мастер"
 
 [[param.choice]]
 value = 1
-label = "Ведомый"
+label = "Слэйв"
 
 [[param]]
 name = "node"
-label = "Адрес ведомого"
+label = "Адрес слэйва"
 type = "int"
 default = 0
 min = 0
 max = 14
 when = "role == 1"
-description = "Адрес этого ведомого 0…14; тот же адрес указывают в блоке lora_point на стороне центра"
+description = "Адрес этого слэйва 0…14; тот же адрес указывают в блоке lora_point на стороне мастера"
 
 [[param]]
 name = "channel"
@@ -147,7 +147,15 @@ default = 2
 min = 1
 max = 2
 bus = "uart-port"
-description = "Номер UART платы: 1 или 2 (на ESP32-C3 только 1). Скорость модуля 9600, 8N1"
+description = "Какой UART платы занять: UART1 или UART2 (на ESP32-C3 есть только UART1). Скорость модуля 9600, 8N1"
+
+[[param.choice]]
+value = 1
+label = "UART1"
+
+[[param.choice]]
+value = 2
+label = "UART2 (нет на ESP32-C3)"
 
 [[param]]
 name = "tx"
@@ -196,7 +204,7 @@ type = "duration"
 default = "800ms"
 min = 100
 when = "role == 0"
-description = "Сколько центр ждёт ответ ведомого до повтора. Для коротких кадров на 2,4 кбит/с хватает 300–500 мс"
+description = "Сколько мастер ждёт ответ слэйва до повтора. Для коротких кадров на 2,4 кбит/с хватает 300–500 мс"
 
 [[param]]
 name = "retries"
@@ -214,4 +222,4 @@ label = "Время до «нет связи»"
 type = "duration"
 default = "10s"
 min = 1000
-description = "Тишина дольше этого времени: «не на связи» (центр, по каждому ведомому) или «нет связи с центром» (ведомый)"
+description = "Тишина дольше этого времени: «не на связи» (мастер, по каждому слэйву) или «нет связи с мастером» (слэйв)"

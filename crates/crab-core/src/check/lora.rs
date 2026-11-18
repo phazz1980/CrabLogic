@@ -71,9 +71,9 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
         let (centre_block, centre_modem) = (block.kind == "lora_point", is_centre(modem));
         if centre_block != centre_modem {
             let (want, have) = if centre_block {
-                ("«центр»", "«ведомый»")
+                ("«мастер»", "«слэйв»")
             } else {
-                ("«ведомый»", "«центр»")
+                ("«слэйв»", "«мастер»")
             };
             report.block_error(
                 DiagKind::Lora,
@@ -94,7 +94,7 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
                 report.block_error(
                     DiagKind::Lora,
                     id,
-                    format!("модем «{id}» (центр): нет ни одного блока «LoRa: ведомый»"),
+                    format!("модем «{id}» (мастер): нет ни одного блока «LoRa: слэйв»"),
                 );
             }
             if partners.len() > MAX_SLAVES {
@@ -102,7 +102,7 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
                     DiagKind::Lora,
                     id,
                     format!(
-                        "модем «{id}»: ведомых {} при пределе {MAX_SLAVES}",
+                        "модем «{id}»: слэйвов {} при пределе {MAX_SLAVES}",
                         partners.len()
                     ),
                 );
@@ -115,7 +115,7 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
                         DiagKind::Lora,
                         &p.id,
                         format!(
-                            "блок «{}»: адрес ведомого {node} уже занят блоком «{first}»",
+                            "блок «{}»: адрес слэйва {node} уже занят блоком «{first}»",
                             p.id
                         ),
                     );
@@ -125,13 +125,13 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
             report.block_error(
                 DiagKind::Lora,
                 id,
-                format!("модем «{id}» (ведомый): нет блока «LoRa: центр»"),
+                format!("модем «{id}» (слэйв): нет блока «LoRa: мастер»"),
             );
         } else if partners.len() > 1 {
             report.block_error(
                 DiagKind::Lora,
                 id,
-                format!("модем «{id}» (ведомый): блок «LoRa: центр» должен быть один"),
+                format!("модем «{id}» (слэйв): блок «LoRa: мастер» должен быть один"),
             );
         }
     }
