@@ -85,6 +85,10 @@ impl EditorApp {
                     ids.sort_by_key(|id| p.logic.block(id).is_none_or(|b| b.tag.is_none()));
                     // An input or output leaves the sheet but stays in the project tree.
                     ids.iter().try_for_each(|id| {
+                        // Already gone with its display.
+                        if p.logic.block(id).is_none() {
+                            return Ok(());
+                        }
                         let kind = p.logic.block(id).map(|b| b.kind.as_str());
                         if matches!(
                             kind,
@@ -101,6 +105,17 @@ impl EditorApp {
                         } else if p.is_tag(&self.lib, p.logic.tag_of(id)) || p.is_widget(id) {
                             p.take_off_board(id)
                         } else {
+                            // A display takes its menu blocks with it.
+                            let menus: Vec<String> =
+                                if kind.is_some_and(crate::displaypanel::is_display) {
+                                    crate::displaypanel::menus_of(&p.logic, id)
+                                        .iter()
+                                        .map(|b| b.id.clone())
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
+                            menus.iter().try_for_each(|m| p.remove_block(m))?;
                             p.remove_block(id)
                         }
                     })?;

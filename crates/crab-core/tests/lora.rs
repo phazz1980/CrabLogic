@@ -66,7 +66,7 @@ fn slave_addresses_must_differ() {
     let src = centre(&(point("a", "m", 2) + &point("b", "m", 2)));
     let errors = lora_errors(&run(&src));
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("адрес слэйва 2 уже занят"));
+    assert!(errors[0].contains("адрес slave 2 уже занят"));
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn the_role_of_the_modem_must_fit_the_block() {
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("нужен модем с ролью «слэйв»")),
+            .any(|e| e.contains("нужен модем с ролью «slave»")),
         "{errors:?}"
     );
     let slave = format!(
@@ -115,7 +115,7 @@ fn the_role_of_the_modem_must_fit_the_block() {
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("нужен модем с ролью «мастер»")),
+            .any(|e| e.contains("нужен модем с ролью «master»")),
         "{errors:?}"
     );
 }

@@ -1264,3 +1264,98 @@ fn analog_out_clamps_the_code_and_asks_for_the_dac_capability() {
         .unwrap();
     assert_eq!(built.needs, ["abi5", "dac"]);
 }
+
+#[test]
+fn slave_table_sizes_come_from_the_tags() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/modbus_wifi")).unwrap();
+    // A float at holding register 0 takes two registers, an int at register 10 takes eleven.
+    let tags: crab_core::Logic = toml::from_str(
+        r#"
+[[block]]
+id = "hold_f"
+type = "modbus_write"
+table = "holding"
+kind = "float"
+reg = 0
+
+[block.const]
+in_f = 0.0
+
+[[block]]
+id = "hold_i"
+type = "modbus_write"
+table = "holding"
+kind = "int"
+reg = 10
+
+[block.const]
+in = 0
+"#,
+    )
+    .unwrap();
+    project.logic.blocks.extend(tags.blocks);
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    let io = module.io();
+    // Holding (8) from the tags, then input (2, the temperature), coil (1) and discrete (2).
+    assert!(
+        io.modbus_cfg.contains(&(8, 11)),
+        "holding is the farthest tag"
+    );
+    assert!(io.modbus_cfg.contains(&(9, 2)), "input");
+    assert!(io.modbus_cfg.contains(&(10, 1)), "coil");
+    assert!(io.modbus_cfg.contains(&(11, 2)), "discrete");
+}
+
+#[test]
+fn float_write_with_swap_sets_bit_ten() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/modbus_wifi")).unwrap();
+    let tags: crab_core::Logic = toml::from_str(
+        r#"
+[[block]]
+id = "swapped"
+type = "modbus_write"
+table = "holding"
+kind = "float"
+reg = 0
+swap = true
+
+[block.const]
+in_f = 0.0
+
+[[block]]
+id = "plain"
+type = "modbus_write"
+table = "holding"
+kind = "float"
+reg = 2
+
+[block.const]
+in_f = 0.0
+"#,
+    )
+    .unwrap();
+    project.logic.blocks.extend(tags.blocks);
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    let io = module.io();
+    // Holding (0), float (1 << 4), TCP (bit 9), and bit 10 for the swapped words.
+    let tcp = 1 << 4 | 1 << 9;
+    assert!(
+        io.modbus_out.contains_key(&(0, tcp | 1 << 10, 0)),
+        "swap bit"
+    );
+    assert!(
+        io.modbus_out.contains_key(&(0, tcp, 2)),
+        "no swap bit without swap"
+    );
+    assert!(!io.modbus_out.contains_key(&(0, tcp, 0)));
+}

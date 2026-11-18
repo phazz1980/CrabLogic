@@ -300,3 +300,12 @@ pub fn answer_events(name: &str) {
         None => println!("err no such module"),
     }
 }
+
+/// The XOR of the CRCs of the modules that are on the board, `None` without modules: the short
+/// program hash of the board search (the editor computes the same from the built modules).
+pub fn program_crc() -> Option<u32> {
+    let s = snap();
+    let mut modules = s.modules.iter();
+    let first = modules.next()?.crc;
+    Some(modules.fold(first, |acc, m| acc ^ m.crc))
+}

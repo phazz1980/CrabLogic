@@ -1,4 +1,4 @@
-# Слэйв LoRa (адрес 0): те же типы значений, что у блока pump_node мастера.
+# Slave LoRa (адрес 0): те же типы значений, что у блока pump_node master.
 [[block]]
 id = "modem"
 type = "lora_e220"

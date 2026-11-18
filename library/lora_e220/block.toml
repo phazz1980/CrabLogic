@@ -3,7 +3,7 @@ type = "lora_e220"
 name = "LoRa E220 (433 МГц)"
 symbol = "LoRa"
 group = "Радио"
-description = "Радиомодуль EBYTE E220-400T22D на UART: связь мастера с платами-слэйвами. Сам настраивает модуль при старте. Значения обмена задают блоки lora_point (на мастере) и lora_centre (на слэйве) на том же листе."
+description = "Радиомодуль EBYTE E220-400T22D на UART: связь master с платами-slave. Сам настраивает модуль при старте. Значения обмена задают блоки lora_point (на master) и lora_centre (на slave) на том же листе."
 memory = true
 single = true
 
@@ -16,10 +16,10 @@ description = "true, когда модуль настроен и обмен ид
 
 [[output]]
 name = "rssi"
-label = "Уровень сигнала"
+label = "Уровень сигнала, дБм"
 type = "int"
 sim = 0
-description = "Байт RSSI последнего принятого кадра (мощность в дБм = байт − 256)"
+description = "Мощность последнего принятого кадра в дБм (например, −85; чем ближе к 0, тем сильнее сигнал). 0 — кадров ещё не было"
 
 [[output]]
 name = "bad"
@@ -35,25 +35,25 @@ type = "int"
 default = 0
 min = 0
 max = 1
-description = "Мастер опрашивает слэйвов, слэйв только отвечает"
+description = "Master опрашивает slave, slave только отвечает"
 
 [[param.choice]]
 value = 0
-label = "Мастер"
+label = "Master"
 
 [[param.choice]]
 value = 1
-label = "Слэйв"
+label = "Slave"
 
 [[param]]
 name = "node"
-label = "Адрес слэйва"
+label = "Адрес slave"
 type = "int"
 default = 0
 min = 0
 max = 14
 when = "role == 1"
-description = "Адрес этого слэйва 0…14; тот же адрес указывают в блоке lora_point на стороне мастера"
+description = "Адрес этого slave 0…14; тот же адрес указывают в блоке lora_point на стороне master"
 
 [[param]]
 name = "channel"
@@ -204,7 +204,7 @@ type = "duration"
 default = "800ms"
 min = 100
 when = "role == 0"
-description = "Сколько мастер ждёт ответ слэйва до повтора. Для коротких кадров на 2,4 кбит/с хватает 300–500 мс"
+description = "Сколько master ждёт ответ slave до повтора. Для коротких кадров на 2,4 кбит/с хватает 300–500 мс"
 
 [[param]]
 name = "retries"
@@ -222,4 +222,22 @@ label = "Время до «нет связи»"
 type = "duration"
 default = "10s"
 min = 1000
-description = "Тишина дольше этого времени: «не на связи» (мастер, по каждому слэйву) или «нет связи с мастером» (слэйв)"
+description = "Тишина дольше этого времени: «не на связи» (master, по каждому slave) или «нет связи с master» (slave)"
+
+[[param]]
+name = "hold"
+label = "При потере связи со slave"
+type = "int"
+default = 0
+min = 0
+max = 1
+when = "role == 0"
+description = "Что показывают ответы slave, когда он молчит дольше времени «Время до «нет связи»»: обнулить (схема не работает с устаревшими данными) или держать последние полученные. Флаг «на связи» (online) в обоих случаях честно показывает потерю связи"
+
+[[param.choice]]
+value = 0
+label = "Обнулять ответы"
+
+[[param.choice]]
+value = 1
+label = "Держать последние"

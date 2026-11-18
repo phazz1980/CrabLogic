@@ -51,10 +51,24 @@ pub fn is_screen_kind(kind: &str) -> bool {
 /// the library or the tag tree. The modem has pins but is a device, not an input or an output.
 pub const RADIO_KINDS: [&str; 3] = ["lora_e220", "lora_point", "lora_centre"];
 
+/// Modbus blocks: added and removed from the «Сеть → Modbus» folder of the left panel, not from the
+/// library.
+pub const MODBUS_KINDS: [&str; 8] = [
+    "modbus_rtu_master",
+    "modbus_rtu_slave",
+    "modbus_tcp_master",
+    "modbus_tcp_slave",
+    "modbus_master_read",
+    "modbus_master_write",
+    "modbus_read",
+    "modbus_write",
+];
+
 /// A block with pins that is a device and not a tag: no row in the tag tree, no copies, it is
-/// deleted with the block, not just taken off the sheet.
+/// deleted with the block, not just taken off the sheet. The modem and the displays (their
+/// sections of the left panel list them).
 pub fn is_device_kind(kind: &str) -> bool {
-    kind == "lora_e220"
+    matches!(kind, "lora_e220" | "oled" | "lcd")
 }
 
 /// A widget of the web page or of a display screen: it waits in the project tree, its
@@ -184,6 +198,16 @@ pub struct Project {
 }
 
 impl Project {
+    /// The name the user sees: the file (or folder) name. The `name` inside `project.toml` goes
+    /// stale when a file is copied or renamed outside the editor, so it is only the fallback.
+    pub fn display_name(&self) -> String {
+        self.path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| self.config.project.name.clone(), str::to_owned)
+    }
+
     /// Cycle period of the sheets in milliseconds (`[run] period_ms`, 10 by default).
     pub fn period_ms(&self) -> u32 {
         self.config.run.period_ms

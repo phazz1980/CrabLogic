@@ -39,7 +39,7 @@ pub struct SimState {
 
 fn build(project: &Project, lib: &Library) -> Result<Simulation, String> {
     let project = project.without_disabled();
-    let mut sim = Simulation::new(&project.logic, lib)?;
+    let mut sim = Simulation::for_project(&project, lib)?;
     // The display drivers run in the simulation too: screens, widgets and the menu.
     if sim.has_displays() {
         match crab_codegen::Program::build(&project, lib) {

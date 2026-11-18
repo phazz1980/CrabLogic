@@ -13,7 +13,10 @@ net = ["dep:sha2", "dep:hmac"]
 
 [dependencies]
 crab-core = { path = "../crab-core" }
+crab-netfind = { path = "../crab-netfind" }
 thiserror.workspace = true
 serialport = { version = "4", optional = true, default-features = false }
 sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
+# Lists the IPv4 adapters of this computer for the board search (`find`).
+if-addrs = "0.13"

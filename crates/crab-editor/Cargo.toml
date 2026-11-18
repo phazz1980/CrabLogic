@@ -23,6 +23,7 @@ crab-sim = { path = "../crab-sim" }
 serialport = { version = "4", default-features = false }
 crab-mcp = { path = "../crab-mcp" }
 crab-debug = { path = "../crab-debug", features = ["serial"] }
+crab-netfind = { path = "../crab-netfind" }
 rfd = "0.17"
 ureq = { version = "2", features = ["json"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }

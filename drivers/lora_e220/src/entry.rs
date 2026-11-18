@@ -46,6 +46,7 @@ const P_AUX: i32 = 12;
 const P_REPLY: i32 = 13;
 const P_RETRIES: i32 = 14;
 const P_OFFLINE: i32 = 15;
+const P_HOLD: i32 = 16;
 
 // Own outputs: ready, rssi, bad; the extra output cells come after them. No own inputs.
 const OUT_READY: i32 = 0;
@@ -121,6 +122,8 @@ struct Core {
     link: Link<BusHal>,
     role: Role,
     now: u32,
+    /// Centre: the answers of an offline slave stay as they were (otherwise they read zero).
+    hold: bool,
 }
 
 static mut CFG: [u8; CFG_CAP] = [0; CFG_CAP];
@@ -216,6 +219,7 @@ pub extern "C" fn init() {
             cfg,
             role,
             now: 0,
+            hold: param_i(P_HOLD) == 1,
         });
     }
 }
@@ -247,6 +251,16 @@ fn write_cells(first: i32, types: &[Ty], cells: &[u32; MAX_VALUES]) {
     }
 }
 
+/// Power of the last frame in dBm from the module's RSSI byte (dBm = byte - 256); 0 until a frame
+/// was heard.
+fn rssi_dbm(byte: u8) -> i32 {
+    if byte == 0 {
+        0
+    } else {
+        i32::from(byte) - 256
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn step(dt_ms: i32) {
     let Some(core) = (unsafe { &mut *core::ptr::addr_of_mut!(CORE) }) else {
@@ -258,7 +272,7 @@ pub extern "C" fn step(dt_ms: i32) {
     let ready = core.link.ready();
     unsafe {
         output_i(OUT_READY, i32::from(ready));
-        output_i(OUT_RSSI, i32::from(core.link.rssi()));
+        output_i(OUT_RSSI, rssi_dbm(core.link.rssi()));
     }
     let (mut at_in, mut at_out) = (0i32, OWN_OUT);
     let mut bad = core.link.dropped();
@@ -277,9 +291,11 @@ pub extern "C" fn step(dt_ms: i32) {
             for (i, p) in core.cfg.peers().enumerate() {
                 let Some(peer) = master.peer(i) else { continue };
                 bad = bad.wrapping_add(peer.stats.bad_crc);
-                // An offline slave shows zeros and `online = false`, never stale answers.
+                // An offline slave shows zeros and `online = false`, never stale answers, unless
+                // the modem is set to hold the last ones (`online` still tells the truth).
                 let live = ready && peer.online;
-                write_cells(at_out, p.rx.types(), if live { &peer.rx } else { &zero });
+                let show = live || core.hold;
+                write_cells(at_out, p.rx.types(), if show { &peer.rx } else { &zero });
                 at_out += p.rx.len() as i32;
                 unsafe { output_i(at_out, i32::from(live)) };
                 at_out += 1;

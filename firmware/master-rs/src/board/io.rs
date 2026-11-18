@@ -142,6 +142,13 @@ fn handle(event: Event, from_net: bool) {
                     println!("err nvs")
                 };
             }
+            Ok(Command::Name(name)) => {
+                return if super::netfind::set_name(name.as_deref()) {
+                    println!("ok")
+                } else {
+                    println!("err nvs")
+                };
+            }
             Ok(Command::List) => return snapshot::answer_list(),
             Ok(Command::Info) => return snapshot::answer_info(),
             Ok(Command::Outputs { name, count }) => return snapshot::answer_outputs(&name, count),

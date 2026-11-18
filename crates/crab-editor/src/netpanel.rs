@@ -3,12 +3,14 @@
 //! the settings are its parameters, and every port or text/number parameter can
 //! be taken out to the board as a variable (a binding stored in the block).
 
+use crab_core::project::MODBUS_KINDS;
 use crab_core::{bindable_type, ParamKind, ParamValue, SignalType, Var, VarType};
 use eframe::egui::{self, Id, Ui};
 
 use crate::app::{EditorApp, LogLevel};
 use crate::canvas::DragItem;
 use crate::dialogs::{value_text, Dialog};
+use crate::radiopanel::RadioAction;
 
 const NETWORKS: [(&str, &str); 2] = [("wifi", "Wi-Fi"), ("ethernet", "Ethernet")];
 const WEB_UI: &str = "web_ui";
@@ -41,7 +43,9 @@ pub enum NetAction {
     BenchBrokerDown(bool),
 }
 
-pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<NetAction> {
+/// The «Сеть» folder: Wi-Fi, Ethernet, the web interface, MQTT and the «Modbus» folder (whose
+/// actions go to `modbus`, they are the radio ones).
+pub fn show(app: &EditorApp, ui: &mut Ui, modbus: &mut Vec<RadioAction>) -> Vec<NetAction> {
     let mut actions = Vec::new();
     let Some(doc) = &app.doc else {
         return actions;
@@ -50,22 +54,35 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<NetAction> {
     let has_net = NETWORKS
         .iter()
         .any(|(kind, _)| logic.blocks.iter().any(|b| b.kind == *kind));
-    for (kind, title) in NETWORKS {
-        service(app, ui, kind, title, true, &mut actions);
-    }
-    // The web interface and MQTT ride on a network service: their sections appear with one.
-    if has_net {
-        service(
-            app,
-            ui,
-            WEB_UI,
-            crate::i18n::tr("Веб-интерфейс"),
-            true,
-            &mut actions,
-        );
-        service(app, ui, MQTT, "MQTT", true, &mut actions);
-        bench_section(app, ui, &mut actions);
-    }
+    let used = has_net
+        || logic
+            .blocks
+            .iter()
+            .any(|b| MODBUS_KINDS.contains(&b.kind.as_str()));
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new(egui::RichText::new(crate::i18n::tr("Сеть")).strong())
+        .id_salt("network_folder")
+        .default_open(used)
+        .show(ui, |ui| {
+            for (kind, title) in NETWORKS {
+                service(app, ui, kind, title, true, &mut actions);
+            }
+            // The web interface and MQTT ride on a network service: their sections appear with one.
+            if has_net {
+                service(
+                    app,
+                    ui,
+                    WEB_UI,
+                    crate::i18n::tr("Веб-интерфейс"),
+                    true,
+                    &mut actions,
+                );
+                service(app, ui, MQTT, "MQTT", true, &mut actions);
+                bench_section(app, ui, &mut actions);
+            }
+            crate::modbuspanel::show(app, ui, modbus);
+        });
+    ui.separator();
     actions
 }
 
@@ -136,9 +153,13 @@ fn service(
                 }
             }
             if kind == WEB_UI
-                && ui
-                    .button(crate::i18n::tr("Конструктор страницы..."))
-                    .clicked()
+                && crate::iconbtn::icon_button(
+                    ui,
+                    true,
+                    crate::iconbtn::Icon::Designer,
+                    crate::i18n::tr("Конструктор страницы..."),
+                )
+                .clicked()
             {
                 actions.push(NetAction::Designer);
             }
@@ -212,7 +233,14 @@ fn topics_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
                     if let Some(lib) = &lib {
                         topic_ports(ui, b, &lib.def);
                     }
-                    if ui.button(crate::i18n::tr("Удалить")).clicked() {
+                    if crate::iconbtn::icon_button(
+                        ui,
+                        true,
+                        crate::iconbtn::Icon::Delete,
+                        crate::i18n::tr("Удалить"),
+                    )
+                    .clicked()
+                    {
                         actions.push(NetAction::Remove(b.id.clone()));
                     }
                 });
@@ -520,14 +548,25 @@ fn settings(
             }
         });
     }
-    if ui.button(crate::i18n::tr("Настройки...")).clicked() {
+    if crate::iconbtn::icon_button(
+        ui,
+        true,
+        crate::iconbtn::Icon::Settings,
+        crate::i18n::tr("Настройки..."),
+    )
+    .clicked()
+    {
         actions.push(NetAction::Settings(b.id.clone()));
     }
     if kind == WEB_UI {
         pages_section(app, ui, actions);
-        if ui
-            .button(crate::i18n::tr("Конструктор страницы..."))
-            .clicked()
+        if crate::iconbtn::icon_button(
+            ui,
+            true,
+            crate::iconbtn::Icon::Designer,
+            crate::i18n::tr("Конструктор страницы..."),
+        )
+        .clicked()
         {
             actions.push(NetAction::Designer);
         }

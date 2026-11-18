@@ -13,10 +13,6 @@ gateway = "192.168.1.1"
 id = "slave"
 type = "modbus_tcp_slave"
 net = "ethernet"
-holding = 0
-input = 2
-coils = 2
-discrete = 2
 
 [[block]]
 id = "button"

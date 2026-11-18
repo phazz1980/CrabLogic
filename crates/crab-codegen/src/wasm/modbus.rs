@@ -111,8 +111,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 }
             } else {
                 settings.push((7, self.named_param(inst, "address")?));
-                for (t, name) in tables.iter().enumerate() {
-                    settings.push((8 + t as i32, self.named_param(inst, name)?));
+                // Table sizes come from the tags of the project, see `Logic::modbus_table_sizes`.
+                let sizes = self.program.project.logic.modbus_table_sizes();
+                for (t, size) in sizes.iter().enumerate() {
+                    settings.push((8 + t as i32, *size as i32));
                 }
             }
             let done = self.state_i();
@@ -156,7 +158,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
             "bool" => 2,
             _ => 0,
         };
-        let b = table | k << 4 | i32::from(master) << 8 | i32::from(tcp) << 9;
+        // Bit 10 asks the master for float words in CDAB order ("Слова наоборот").
+        let swap = !master && k == 1 && self.named_param(inst, "swap")? != 0;
+        let b =
+            table | k << 4 | i32::from(master) << 8 | i32::from(tcp) << 9 | i32::from(swap) << 10;
         let reg = self.named_param(inst, "reg")?;
         let port = ["", "_f", "_b"][k as usize];
         if writing {

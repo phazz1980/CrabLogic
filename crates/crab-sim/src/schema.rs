@@ -220,12 +220,32 @@ fn plain_number(v: &ParamValue) -> f64 {
 impl Simulation {
     /// Builds the simulation of a schema that passes the check.
     pub fn new(logic: &Logic, lib: &Library) -> Result<Self, String> {
+        Self::build(logic, lib, &[])
+    }
+
+    /// [`Simulation::new`] with the editor's rules for empty inputs: an unused tag waiting in
+    /// the project tree and a widget of the web page are not fed, so their empty inputs are no
+    /// error (they read their defaults). `project` must have its disabled links dropped.
+    pub fn for_project(project: &crab_core::Project, lib: &Library) -> Result<Self, String> {
+        let mut skip = project.unused_tags(lib);
+        skip.extend(
+            project
+                .logic
+                .blocks
+                .iter()
+                .filter(|b| project.is_widget(&b.id))
+                .map(|b| b.id.clone()),
+        );
+        Self::build(&project.logic, lib, &skip)
+    }
+
+    fn build(logic: &Logic, lib: &Library, skip_empty: &[String]) -> Result<Self, String> {
         let report = check(logic, lib, None);
-        if let Some(e) = report
-            .diagnostics
-            .iter()
-            .find(|d| d.severity == Severity::Error)
-        {
+        if let Some(e) = report.diagnostics.iter().find(|d| {
+            d.severity == Severity::Error
+                && !(d.kind == crab_core::DiagKind::InputEmpty
+                    && d.block.as_ref().is_some_and(|b| skip_empty.contains(b)))
+        }) {
             return Err(format!("в схеме есть ошибка: {}", e.message));
         }
 

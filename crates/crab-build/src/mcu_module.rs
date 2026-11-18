@@ -99,6 +99,48 @@ fn check_name_and_allow(name: &str, allow: &[String]) -> Result<(), ModuleUpload
     Ok(())
 }
 
+/// Longest board name the master takes, bytes.
+pub const BOARD_NAME_MAX: usize = 40;
+
+/// Tells the master the project name it shows in the network search (`name <text>`; an empty
+/// name clears it). The name is cut to [`BOARD_NAME_MAX`] bytes on a char boundary and control
+/// characters become spaces. A master that does not know the command answers `err`: returned as
+/// `false`, not as a failure, so callers can ignore it.
+pub fn set_board_name<P: Read + Write>(
+    port: &mut P,
+    name: &str,
+) -> Result<bool, ModuleUploadError> {
+    let mut text = String::new();
+    for word in name.split_whitespace() {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.extend(word.chars().filter(|c| !c.is_control()));
+    }
+    while text.len() > BOARD_NAME_MAX {
+        text.pop();
+    }
+    let text = text.trim_end();
+    let command = if text.is_empty() {
+        "name -\n".to_owned()
+    } else {
+        format!("name {text}\n")
+    };
+    port.write_all(command.as_bytes())?;
+    port.flush()?;
+    // The board may print log lines before it answers.
+    for _ in 0..16 {
+        match read_line_within(port, Duration::from_millis(700)) {
+            Ok(line) if line == "ok" => return Ok(true),
+            Ok(line) if line.starts_with("err") => return Ok(false),
+            Ok(_) => {}
+            Err(ModuleUploadError::Timeout) => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
+}
+
 /// Sends `wasm` to the master as module `name` with the hardware rights in `allow`.
 pub fn upload_module<P: Read + Write>(
     port: &mut P,

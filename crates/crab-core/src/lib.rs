@@ -17,6 +17,7 @@ pub mod layout;
 pub mod library;
 pub mod local;
 pub mod logic;
+pub mod modbus_map;
 pub mod modbus_tags;
 pub mod pack;
 pub mod packed;

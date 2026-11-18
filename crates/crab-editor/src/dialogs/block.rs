@@ -123,7 +123,9 @@ pub(super) fn block_settings(
                 ui.label(crate::i18n::tr(p.title()))
                     .on_hover_text(crate::i18n::tr(hint.trim()));
                 let as_input = d.param_in.contains(&p.name);
-                ui.horizontal(|ui| {
+                // Top-aligned: a tall editor (the duration's four radio rows) centred on a
+                // one-line row would stick out above and below it and overlap its neighbours.
+                ui.horizontal_top(|ui| {
                     ui.add_enabled_ui(!as_input, |ui| {
                         param_editor(ui, p, d, def, &app.local, &pins, &doc.project.logic);
                     });

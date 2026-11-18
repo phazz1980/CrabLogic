@@ -45,11 +45,39 @@ type = "string"
 default = "input"
 description = "Таблица: holding, input, coil или discrete"
 
+[[param.choice]]
+value = "holding"
+label = "Holding (4x, регистры хранения)"
+
+[[param.choice]]
+value = "input"
+label = "Input (3x, входные регистры)"
+
+[[param.choice]]
+value = "coil"
+label = "Coil (0x, катушки)"
+
+[[param.choice]]
+value = "discrete"
+label = "Discrete (1x, дискретные входы)"
+
 [[param]]
 name = "kind"
 type = "string"
 default = "int"
 description = "Тип значения: int (1 регистр), float (2 регистра) или bool (катушка, вход)"
+
+[[param.choice]]
+value = "int"
+label = "Целое (1 регистр)"
+
+[[param.choice]]
+value = "float"
+label = "Дробное float (2 регистра)"
+
+[[param.choice]]
+value = "bool"
+label = "Бит (катушка, вход)"
 
 [[param]]
 name = "reg"
@@ -63,3 +91,11 @@ name = "master"
 type = "string"
 default = "rtu"
 description = "Чей опрос: rtu («Modbus RTU Master») или tcp («Modbus TCP Master»)"
+
+[[param.choice]]
+value = "rtu"
+label = "Modbus RTU Master"
+
+[[param.choice]]
+value = "tcp"
+label = "Modbus TCP Master"

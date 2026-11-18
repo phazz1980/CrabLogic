@@ -82,16 +82,14 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<DisplayAction> {
         .id_salt("displays_panel")
         .default_open(logic.blocks.iter().any(|b| is_display(&b.kind)))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.small_button("+ OLED").clicked() {
-                    actions.push(DisplayAction::Add("oled"));
+            // One group per kind: its add button on its own line, its displays right under it.
+            for (kind, caption) in [("oled", "+ OLED"), ("lcd", "+ LCD")] {
+                if crate::iconbtn::add_button(ui, true, caption, "").clicked() {
+                    actions.push(DisplayAction::Add(kind));
                 }
-                if ui.small_button("+ LCD").clicked() {
-                    actions.push(DisplayAction::Add("lcd"));
+                for b in logic.blocks.iter().filter(|b| b.kind == kind) {
+                    display(app, ui, b, &mut actions);
                 }
-            });
-            for b in logic.blocks.iter().filter(|b| is_display(&b.kind)) {
-                display(app, ui, b, &mut actions);
             }
         });
     ui.separator();
@@ -110,76 +108,97 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
         .map(|c| c.label.clone())
         .unwrap_or_default();
     let placed = doc.project.layout.blocks.contains_key(&b.id);
-    ui.horizontal(|ui| {
-        ui.dnd_drag_source(
-            Id::unique(("display", &b.id)),
-            DragItem::Topic(b.id.clone()),
-            |ui| ui.label(if placed { "▣" } else { "▢" }),
-        )
-        .response
-        .on_hover_text(if placed {
-            crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
-        } else {
-            crate::i18n::tr("Перетащите на плату")
-        });
-        egui::CollapsingHeader::new(format!("{} ({model_label})", b.id))
-            .id_salt(("display", &b.id))
-            .default_open(false)
-            .show(ui, |ui| {
-                if let Some(def) = lib.as_ref().and_then(|l| l.def.param("model")) {
-                    ui.horizontal(|ui| {
-                        ui.label(crate::i18n::tr("Вид дисплея"));
-                        egui::ComboBox::from_id_salt(("display_model", &b.id))
-                            .selected_text(model_label.clone())
-                            .show_ui(ui, |ui| {
-                                for c in &def.choices {
-                                    if ui
-                                        .selectable_label(Some(&c.value) == model.as_ref(), &c.label)
-                                        .clicked()
-                                    {
-                                        actions.push(DisplayAction::SetParam {
-                                            id: b.id.clone(),
-                                            name: "model",
-                                            value: c.value.clone(),
-                                        });
-                                    }
-                                }
-                            });
-                    });
-                }
-                address_row(app, ui, b, actions);
-                let menus = menus_of(logic, &b.id);
-                let mut on = !menus.is_empty();
-                if ui
-                    .checkbox(&mut on, crate::i18n::tr("Меню"))
-                    .on_hover_text(crate::i18n::tr(
-                        "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется",
-                    ))
-                    .changed()
-                {
-                    actions.push(DisplayAction::Menu {
-                        display: b.id.clone(),
-                        on,
-                    });
-                }
-                if ui.button(crate::i18n::tr("Экраны и меню...")).clicked() {
-                    actions.push(DisplayAction::Designer(b.id.clone()));
-                }
-                if ui
-                    .add_enabled(placed, egui::Button::new(crate::i18n::tr("Найти на плате")))
-                    .clicked()
-                {
-                    actions.push(DisplayAction::Focus(b.id.clone()));
-                }
-                if ui
-                    .button(crate::i18n::tr("Удалить дисплей"))
-                    .on_hover_text(crate::i18n::tr("Дисплей и его блок меню удаляются из проекта"))
-                    .clicked()
+    let id = ui.make_persistent_id(("display", &b.id));
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+        .show_header(ui, |ui| {
+            ui.dnd_drag_source(
+                Id::unique(("display", &b.id)),
+                DragItem::Topic(b.id.clone()),
+                |ui| ui.label(if placed { "▣" } else { "▢" }),
+            )
+            .response
+            .on_hover_text(if placed {
+                crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
+            } else {
+                crate::i18n::tr("Перетащите на плату")
+            });
+            ui.label(format!("{} ({model_label})", b.id));
+            // The buttons sit at the right end of the first row (right to left: delete is last).
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::iconbtn::icon_button(
+                    ui,
+                    true,
+                    crate::iconbtn::Icon::Delete,
+                    &format!(
+                        "{}: {}",
+                        crate::i18n::tr("Удалить дисплей"),
+                        crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")
+                    ),
+                )
+                .clicked()
                 {
                     actions.push(DisplayAction::Remove(b.id.clone()));
                 }
+                if crate::iconbtn::icon_button(
+                    ui,
+                    placed,
+                    crate::iconbtn::Icon::Find,
+                    crate::i18n::tr("Найти на плате"),
+                )
+                .clicked()
+                {
+                    actions.push(DisplayAction::Focus(b.id.clone()));
+                }
+                if crate::iconbtn::icon_button(
+                    ui,
+                    true,
+                    crate::iconbtn::Icon::Designer,
+                    crate::i18n::tr("Экраны и меню..."),
+                )
+                .clicked()
+                {
+                    actions.push(DisplayAction::Designer(b.id.clone()));
+                }
             });
-    });
+        })
+        .body(|ui| {
+            if let Some(def) = lib.as_ref().and_then(|l| l.def.param("model")) {
+                ui.horizontal(|ui| {
+                    ui.label(crate::i18n::tr("Вид дисплея"));
+                    egui::ComboBox::from_id_salt(("display_model", &b.id))
+                        .selected_text(model_label.clone())
+                        .show_ui(ui, |ui| {
+                            for c in &def.choices {
+                                if ui
+                                    .selectable_label(Some(&c.value) == model.as_ref(), &c.label)
+                                    .clicked()
+                                {
+                                    actions.push(DisplayAction::SetParam {
+                                        id: b.id.clone(),
+                                        name: "model",
+                                        value: c.value.clone(),
+                                    });
+                                }
+                            }
+                        });
+                });
+            }
+            address_row(app, ui, b, actions);
+            let menus = menus_of(logic, &b.id);
+            let mut on = !menus.is_empty();
+            if ui
+                .checkbox(&mut on, crate::i18n::tr("Меню"))
+                .on_hover_text(crate::i18n::tr(
+                    "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется",
+                ))
+                .changed()
+            {
+                actions.push(DisplayAction::Menu {
+                    display: b.id.clone(),
+                    on,
+                });
+            }
+        });
 }
 
 /// Address field: shown as hex, edited as text, applied when the field loses focus.

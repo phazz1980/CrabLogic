@@ -256,11 +256,16 @@ name = "crab-master-rs"
 version = "2.0.1"
 dependencies = [
  "crab-kernel",
+ "crab-netfind",
  "crab-sparkplug",
  "embuild",
  "esp-idf-svc",
  "wat",
 ]
+
+[[package]]
+name = "crab-netfind"
+version = "2.0.1"
 
 [[package]]
 name = "crab-sparkplug"

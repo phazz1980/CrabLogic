@@ -22,10 +22,6 @@ id = "panel"
 type = "modbus_rtu_slave"
 uart = 1
 address = 1
-holding = 0
-input = 2
-coils = 1
-discrete = 1
 
 [[block]]
 id = "temp"

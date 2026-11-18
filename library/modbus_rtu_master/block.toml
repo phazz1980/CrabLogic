@@ -13,11 +13,24 @@ access = "exclusive"
 
 [[param]]
 name = "uart"
+label = "UART"
 type = "int"
 default = 2
 min = 0
 max = 2
 description = "Номер UART: 1 или 2 (на ESP32-C3 только 1); скорость, формат и выводы — в настройках платы"
+
+[[param.choice]]
+value = 0
+label = "UART0"
+
+[[param.choice]]
+value = 1
+label = "UART1"
+
+[[param.choice]]
+value = 2
+label = "UART2"
 
 [[param]]
 name = "count"

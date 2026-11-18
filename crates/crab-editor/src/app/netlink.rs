@@ -96,6 +96,8 @@ impl EditorApp {
                 ui.weak(crate::i18n::tr(
                     "Нужен пароль проекта и ключ на плате (Проект → Записать ключ для заливки по сети)",
                 ));
+                ui.separator();
+                crate::netfind_ui::section(ui, &mut self.netfind, text);
                 ui.horizontal(|ui| {
                     let ok = !text.trim().is_empty();
                     if ui.add_enabled(ok, egui::Button::new("OK")).clicked() || (enter && ok) {

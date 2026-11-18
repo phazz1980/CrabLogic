@@ -1,9 +1,9 @@
 [block]
 type = "lora_point"
-name = "LoRa: слэйв"
+name = "LoRa: slave"
 symbol = "LoRa-вед"
 group = "Радио"
-description = "Один узел-слэйв LoRa на стороне мастера: команды уходят ему, ответы приходят от него. Модем (lora_e220) с ролью «мастер» стоит на том же листе."
+description = "Один узел-slave LoRa на стороне master: команды уходят ему, ответы приходят от него. Модем (lora_e220) с ролью «master» стоит на том же листе."
 memory = true
 
 [[param]]
@@ -12,16 +12,16 @@ label = "Модем"
 type = "string"
 default = ""
 of_block = "lora_e220"
-description = "Идентификатор блока lora_e220 (роль «мастер»), через который идёт обмен"
+description = "Идентификатор блока lora_e220 (роль «master»), через который идёт обмен"
 
 [[param]]
 name = "node"
-label = "Адрес слэйва"
+label = "Адрес slave"
 type = "int"
 default = 0
 min = 0
 max = 14
-description = "Адрес слэйва узла 0…14: у слэйва такой же в блоке lora_e220; у одного мастера адреса разные"
+description = "Адрес slave узла 0…14: у slave такой же в блоке lora_e220; у одного master адреса разные"
 
 [[input]]
 name = "cmd0b"
@@ -29,7 +29,7 @@ label = "команда 0"
 type = "bool"
 default = false
 when = "n_cmd > 0 and t_cmd0 == 0"
-description = "Команда слэйву, значение 0 (бит)"
+description = "Команда slave, значение 0 (бит)"
 
 [[input]]
 name = "cmd0i"
@@ -37,7 +37,7 @@ label = "команда 0"
 type = "int"
 default = 0
 when = "n_cmd > 0 and t_cmd0 == 1"
-description = "Команда слэйву, значение 0 (целое)"
+description = "Команда slave, значение 0 (целое)"
 
 [[input]]
 name = "cmd0f"
@@ -45,7 +45,7 @@ label = "команда 0"
 type = "float"
 default = 0.0
 when = "n_cmd > 0 and t_cmd0 == 2"
-description = "Команда слэйву, значение 0 (дробное)"
+description = "Команда slave, значение 0 (дробное)"
 
 [[input]]
 name = "cmd1b"
@@ -53,7 +53,7 @@ label = "команда 1"
 type = "bool"
 default = false
 when = "n_cmd > 1 and t_cmd1 == 0"
-description = "Команда слэйву, значение 1 (бит)"
+description = "Команда slave, значение 1 (бит)"
 
 [[input]]
 name = "cmd1i"
@@ -61,7 +61,7 @@ label = "команда 1"
 type = "int"
 default = 0
 when = "n_cmd > 1 and t_cmd1 == 1"
-description = "Команда слэйву, значение 1 (целое)"
+description = "Команда slave, значение 1 (целое)"
 
 [[input]]
 name = "cmd1f"
@@ -69,7 +69,7 @@ label = "команда 1"
 type = "float"
 default = 0.0
 when = "n_cmd > 1 and t_cmd1 == 2"
-description = "Команда слэйву, значение 1 (дробное)"
+description = "Команда slave, значение 1 (дробное)"
 
 [[input]]
 name = "cmd2b"
@@ -77,7 +77,7 @@ label = "команда 2"
 type = "bool"
 default = false
 when = "n_cmd > 2 and t_cmd2 == 0"
-description = "Команда слэйву, значение 2 (бит)"
+description = "Команда slave, значение 2 (бит)"
 
 [[input]]
 name = "cmd2i"
@@ -85,7 +85,7 @@ label = "команда 2"
 type = "int"
 default = 0
 when = "n_cmd > 2 and t_cmd2 == 1"
-description = "Команда слэйву, значение 2 (целое)"
+description = "Команда slave, значение 2 (целое)"
 
 [[input]]
 name = "cmd2f"
@@ -93,7 +93,7 @@ label = "команда 2"
 type = "float"
 default = 0.0
 when = "n_cmd > 2 and t_cmd2 == 2"
-description = "Команда слэйву, значение 2 (дробное)"
+description = "Команда slave, значение 2 (дробное)"
 
 [[input]]
 name = "cmd3b"
@@ -101,7 +101,7 @@ label = "команда 3"
 type = "bool"
 default = false
 when = "n_cmd > 3 and t_cmd3 == 0"
-description = "Команда слэйву, значение 3 (бит)"
+description = "Команда slave, значение 3 (бит)"
 
 [[input]]
 name = "cmd3i"
@@ -109,7 +109,7 @@ label = "команда 3"
 type = "int"
 default = 0
 when = "n_cmd > 3 and t_cmd3 == 1"
-description = "Команда слэйву, значение 3 (целое)"
+description = "Команда slave, значение 3 (целое)"
 
 [[input]]
 name = "cmd3f"
@@ -117,7 +117,7 @@ label = "команда 3"
 type = "float"
 default = 0.0
 when = "n_cmd > 3 and t_cmd3 == 2"
-description = "Команда слэйву, значение 3 (дробное)"
+description = "Команда slave, значение 3 (дробное)"
 
 [[input]]
 name = "cmd4b"
@@ -125,7 +125,7 @@ label = "команда 4"
 type = "bool"
 default = false
 when = "n_cmd > 4 and t_cmd4 == 0"
-description = "Команда слэйву, значение 4 (бит)"
+description = "Команда slave, значение 4 (бит)"
 
 [[input]]
 name = "cmd4i"
@@ -133,7 +133,7 @@ label = "команда 4"
 type = "int"
 default = 0
 when = "n_cmd > 4 and t_cmd4 == 1"
-description = "Команда слэйву, значение 4 (целое)"
+description = "Команда slave, значение 4 (целое)"
 
 [[input]]
 name = "cmd4f"
@@ -141,7 +141,7 @@ label = "команда 4"
 type = "float"
 default = 0.0
 when = "n_cmd > 4 and t_cmd4 == 2"
-description = "Команда слэйву, значение 4 (дробное)"
+description = "Команда slave, значение 4 (дробное)"
 
 [[input]]
 name = "cmd5b"
@@ -149,7 +149,7 @@ label = "команда 5"
 type = "bool"
 default = false
 when = "n_cmd > 5 and t_cmd5 == 0"
-description = "Команда слэйву, значение 5 (бит)"
+description = "Команда slave, значение 5 (бит)"
 
 [[input]]
 name = "cmd5i"
@@ -157,7 +157,7 @@ label = "команда 5"
 type = "int"
 default = 0
 when = "n_cmd > 5 and t_cmd5 == 1"
-description = "Команда слэйву, значение 5 (целое)"
+description = "Команда slave, значение 5 (целое)"
 
 [[input]]
 name = "cmd5f"
@@ -165,7 +165,7 @@ label = "команда 5"
 type = "float"
 default = 0.0
 when = "n_cmd > 5 and t_cmd5 == 2"
-description = "Команда слэйву, значение 5 (дробное)"
+description = "Команда slave, значение 5 (дробное)"
 
 [[input]]
 name = "cmd6b"
@@ -173,7 +173,7 @@ label = "команда 6"
 type = "bool"
 default = false
 when = "n_cmd > 6 and t_cmd6 == 0"
-description = "Команда слэйву, значение 6 (бит)"
+description = "Команда slave, значение 6 (бит)"
 
 [[input]]
 name = "cmd6i"
@@ -181,7 +181,7 @@ label = "команда 6"
 type = "int"
 default = 0
 when = "n_cmd > 6 and t_cmd6 == 1"
-description = "Команда слэйву, значение 6 (целое)"
+description = "Команда slave, значение 6 (целое)"
 
 [[input]]
 name = "cmd6f"
@@ -189,7 +189,7 @@ label = "команда 6"
 type = "float"
 default = 0.0
 when = "n_cmd > 6 and t_cmd6 == 2"
-description = "Команда слэйву, значение 6 (дробное)"
+description = "Команда slave, значение 6 (дробное)"
 
 [[input]]
 name = "cmd7b"
@@ -197,7 +197,7 @@ label = "команда 7"
 type = "bool"
 default = false
 when = "n_cmd > 7 and t_cmd7 == 0"
-description = "Команда слэйву, значение 7 (бит)"
+description = "Команда slave, значение 7 (бит)"
 
 [[input]]
 name = "cmd7i"
@@ -205,7 +205,7 @@ label = "команда 7"
 type = "int"
 default = 0
 when = "n_cmd > 7 and t_cmd7 == 1"
-description = "Команда слэйву, значение 7 (целое)"
+description = "Команда slave, значение 7 (целое)"
 
 [[input]]
 name = "cmd7f"
@@ -213,7 +213,7 @@ label = "команда 7"
 type = "float"
 default = 0.0
 when = "n_cmd > 7 and t_cmd7 == 2"
-description = "Команда слэйву, значение 7 (дробное)"
+description = "Команда slave, значение 7 (дробное)"
 
 [[input]]
 name = "cmd8b"
@@ -221,7 +221,7 @@ label = "команда 8"
 type = "bool"
 default = false
 when = "n_cmd > 8 and t_cmd8 == 0"
-description = "Команда слэйву, значение 8 (бит)"
+description = "Команда slave, значение 8 (бит)"
 
 [[input]]
 name = "cmd8i"
@@ -229,7 +229,7 @@ label = "команда 8"
 type = "int"
 default = 0
 when = "n_cmd > 8 and t_cmd8 == 1"
-description = "Команда слэйву, значение 8 (целое)"
+description = "Команда slave, значение 8 (целое)"
 
 [[input]]
 name = "cmd8f"
@@ -237,7 +237,7 @@ label = "команда 8"
 type = "float"
 default = 0.0
 when = "n_cmd > 8 and t_cmd8 == 2"
-description = "Команда слэйву, значение 8 (дробное)"
+description = "Команда slave, значение 8 (дробное)"
 
 [[input]]
 name = "cmd9b"
@@ -245,7 +245,7 @@ label = "команда 9"
 type = "bool"
 default = false
 when = "n_cmd > 9 and t_cmd9 == 0"
-description = "Команда слэйву, значение 9 (бит)"
+description = "Команда slave, значение 9 (бит)"
 
 [[input]]
 name = "cmd9i"
@@ -253,7 +253,7 @@ label = "команда 9"
 type = "int"
 default = 0
 when = "n_cmd > 9 and t_cmd9 == 1"
-description = "Команда слэйву, значение 9 (целое)"
+description = "Команда slave, значение 9 (целое)"
 
 [[input]]
 name = "cmd9f"
@@ -261,7 +261,7 @@ label = "команда 9"
 type = "float"
 default = 0.0
 when = "n_cmd > 9 and t_cmd9 == 2"
-description = "Команда слэйву, значение 9 (дробное)"
+description = "Команда slave, значение 9 (дробное)"
 
 [[output]]
 name = "ans0b"
@@ -269,7 +269,7 @@ label = "ответ 0"
 type = "bool"
 sim = false
 when = "n_ans > 0 and t_ans0 == 0"
-description = "Ответ слэйва, значение 0 (бит)"
+description = "Ответ slave, значение 0 (бит)"
 
 [[output]]
 name = "ans0i"
@@ -277,7 +277,7 @@ label = "ответ 0"
 type = "int"
 sim = 0
 when = "n_ans > 0 and t_ans0 == 1"
-description = "Ответ слэйва, значение 0 (целое)"
+description = "Ответ slave, значение 0 (целое)"
 
 [[output]]
 name = "ans0f"
@@ -285,7 +285,7 @@ label = "ответ 0"
 type = "float"
 sim = 0.0
 when = "n_ans > 0 and t_ans0 == 2"
-description = "Ответ слэйва, значение 0 (дробное)"
+description = "Ответ slave, значение 0 (дробное)"
 
 [[output]]
 name = "ans1b"
@@ -293,7 +293,7 @@ label = "ответ 1"
 type = "bool"
 sim = false
 when = "n_ans > 1 and t_ans1 == 0"
-description = "Ответ слэйва, значение 1 (бит)"
+description = "Ответ slave, значение 1 (бит)"
 
 [[output]]
 name = "ans1i"
@@ -301,7 +301,7 @@ label = "ответ 1"
 type = "int"
 sim = 0
 when = "n_ans > 1 and t_ans1 == 1"
-description = "Ответ слэйва, значение 1 (целое)"
+description = "Ответ slave, значение 1 (целое)"
 
 [[output]]
 name = "ans1f"
@@ -309,7 +309,7 @@ label = "ответ 1"
 type = "float"
 sim = 0.0
 when = "n_ans > 1 and t_ans1 == 2"
-description = "Ответ слэйва, значение 1 (дробное)"
+description = "Ответ slave, значение 1 (дробное)"
 
 [[output]]
 name = "ans2b"
@@ -317,7 +317,7 @@ label = "ответ 2"
 type = "bool"
 sim = false
 when = "n_ans > 2 and t_ans2 == 0"
-description = "Ответ слэйва, значение 2 (бит)"
+description = "Ответ slave, значение 2 (бит)"
 
 [[output]]
 name = "ans2i"
@@ -325,7 +325,7 @@ label = "ответ 2"
 type = "int"
 sim = 0
 when = "n_ans > 2 and t_ans2 == 1"
-description = "Ответ слэйва, значение 2 (целое)"
+description = "Ответ slave, значение 2 (целое)"
 
 [[output]]
 name = "ans2f"
@@ -333,7 +333,7 @@ label = "ответ 2"
 type = "float"
 sim = 0.0
 when = "n_ans > 2 and t_ans2 == 2"
-description = "Ответ слэйва, значение 2 (дробное)"
+description = "Ответ slave, значение 2 (дробное)"
 
 [[output]]
 name = "ans3b"
@@ -341,7 +341,7 @@ label = "ответ 3"
 type = "bool"
 sim = false
 when = "n_ans > 3 and t_ans3 == 0"
-description = "Ответ слэйва, значение 3 (бит)"
+description = "Ответ slave, значение 3 (бит)"
 
 [[output]]
 name = "ans3i"
@@ -349,7 +349,7 @@ label = "ответ 3"
 type = "int"
 sim = 0
 when = "n_ans > 3 and t_ans3 == 1"
-description = "Ответ слэйва, значение 3 (целое)"
+description = "Ответ slave, значение 3 (целое)"
 
 [[output]]
 name = "ans3f"
@@ -357,7 +357,7 @@ label = "ответ 3"
 type = "float"
 sim = 0.0
 when = "n_ans > 3 and t_ans3 == 2"
-description = "Ответ слэйва, значение 3 (дробное)"
+description = "Ответ slave, значение 3 (дробное)"
 
 [[output]]
 name = "ans4b"
@@ -365,7 +365,7 @@ label = "ответ 4"
 type = "bool"
 sim = false
 when = "n_ans > 4 and t_ans4 == 0"
-description = "Ответ слэйва, значение 4 (бит)"
+description = "Ответ slave, значение 4 (бит)"
 
 [[output]]
 name = "ans4i"
@@ -373,7 +373,7 @@ label = "ответ 4"
 type = "int"
 sim = 0
 when = "n_ans > 4 and t_ans4 == 1"
-description = "Ответ слэйва, значение 4 (целое)"
+description = "Ответ slave, значение 4 (целое)"
 
 [[output]]
 name = "ans4f"
@@ -381,7 +381,7 @@ label = "ответ 4"
 type = "float"
 sim = 0.0
 when = "n_ans > 4 and t_ans4 == 2"
-description = "Ответ слэйва, значение 4 (дробное)"
+description = "Ответ slave, значение 4 (дробное)"
 
 [[output]]
 name = "ans5b"
@@ -389,7 +389,7 @@ label = "ответ 5"
 type = "bool"
 sim = false
 when = "n_ans > 5 and t_ans5 == 0"
-description = "Ответ слэйва, значение 5 (бит)"
+description = "Ответ slave, значение 5 (бит)"
 
 [[output]]
 name = "ans5i"
@@ -397,7 +397,7 @@ label = "ответ 5"
 type = "int"
 sim = 0
 when = "n_ans > 5 and t_ans5 == 1"
-description = "Ответ слэйва, значение 5 (целое)"
+description = "Ответ slave, значение 5 (целое)"
 
 [[output]]
 name = "ans5f"
@@ -405,7 +405,7 @@ label = "ответ 5"
 type = "float"
 sim = 0.0
 when = "n_ans > 5 and t_ans5 == 2"
-description = "Ответ слэйва, значение 5 (дробное)"
+description = "Ответ slave, значение 5 (дробное)"
 
 [[output]]
 name = "ans6b"
@@ -413,7 +413,7 @@ label = "ответ 6"
 type = "bool"
 sim = false
 when = "n_ans > 6 and t_ans6 == 0"
-description = "Ответ слэйва, значение 6 (бит)"
+description = "Ответ slave, значение 6 (бит)"
 
 [[output]]
 name = "ans6i"
@@ -421,7 +421,7 @@ label = "ответ 6"
 type = "int"
 sim = 0
 when = "n_ans > 6 and t_ans6 == 1"
-description = "Ответ слэйва, значение 6 (целое)"
+description = "Ответ slave, значение 6 (целое)"
 
 [[output]]
 name = "ans6f"
@@ -429,7 +429,7 @@ label = "ответ 6"
 type = "float"
 sim = 0.0
 when = "n_ans > 6 and t_ans6 == 2"
-description = "Ответ слэйва, значение 6 (дробное)"
+description = "Ответ slave, значение 6 (дробное)"
 
 [[output]]
 name = "ans7b"
@@ -437,7 +437,7 @@ label = "ответ 7"
 type = "bool"
 sim = false
 when = "n_ans > 7 and t_ans7 == 0"
-description = "Ответ слэйва, значение 7 (бит)"
+description = "Ответ slave, значение 7 (бит)"
 
 [[output]]
 name = "ans7i"
@@ -445,7 +445,7 @@ label = "ответ 7"
 type = "int"
 sim = 0
 when = "n_ans > 7 and t_ans7 == 1"
-description = "Ответ слэйва, значение 7 (целое)"
+description = "Ответ slave, значение 7 (целое)"
 
 [[output]]
 name = "ans7f"
@@ -453,7 +453,7 @@ label = "ответ 7"
 type = "float"
 sim = 0.0
 when = "n_ans > 7 and t_ans7 == 2"
-description = "Ответ слэйва, значение 7 (дробное)"
+description = "Ответ slave, значение 7 (дробное)"
 
 [[output]]
 name = "ans8b"
@@ -461,7 +461,7 @@ label = "ответ 8"
 type = "bool"
 sim = false
 when = "n_ans > 8 and t_ans8 == 0"
-description = "Ответ слэйва, значение 8 (бит)"
+description = "Ответ slave, значение 8 (бит)"
 
 [[output]]
 name = "ans8i"
@@ -469,7 +469,7 @@ label = "ответ 8"
 type = "int"
 sim = 0
 when = "n_ans > 8 and t_ans8 == 1"
-description = "Ответ слэйва, значение 8 (целое)"
+description = "Ответ slave, значение 8 (целое)"
 
 [[output]]
 name = "ans8f"
@@ -477,7 +477,7 @@ label = "ответ 8"
 type = "float"
 sim = 0.0
 when = "n_ans > 8 and t_ans8 == 2"
-description = "Ответ слэйва, значение 8 (дробное)"
+description = "Ответ slave, значение 8 (дробное)"
 
 [[output]]
 name = "ans9b"
@@ -485,7 +485,7 @@ label = "ответ 9"
 type = "bool"
 sim = false
 when = "n_ans > 9 and t_ans9 == 0"
-description = "Ответ слэйва, значение 9 (бит)"
+description = "Ответ slave, значение 9 (бит)"
 
 [[output]]
 name = "ans9i"
@@ -493,7 +493,7 @@ label = "ответ 9"
 type = "int"
 sim = 0
 when = "n_ans > 9 and t_ans9 == 1"
-description = "Ответ слэйва, значение 9 (целое)"
+description = "Ответ slave, значение 9 (целое)"
 
 [[output]]
 name = "ans9f"
@@ -501,33 +501,33 @@ label = "ответ 9"
 type = "float"
 sim = 0.0
 when = "n_ans > 9 and t_ans9 == 2"
-description = "Ответ слэйва, значение 9 (дробное)"
+description = "Ответ slave, значение 9 (дробное)"
 
 [[output]]
 name = "online"
 label = "На связи"
 type = "bool"
 sim = true
-description = "true, пока слэйв отвечает (нет тишины дольше заданного в модеме)"
+description = "true, пока slave отвечает (нет тишины дольше заданного в модеме)"
 
 [[param]]
 name = "n_cmd"
-label = "Число значений: команды мастера → слэйву"
+label = "Число значений: команды master → slave"
 type = "int"
 default = 2
 min = 0
 max = 10
-description = "Сколько значений (команды мастера → слэйву) в обмене, 0…10; у обоих концов связи одинаково"
+description = "Сколько значений (команды master → slave) в обмене, 0…10; у обоих концов связи одинаково"
 
 [[param]]
 name = "t_cmd0"
-label = "Тип значения 0 (команды мастера → слэйву)"
+label = "Тип значения 0 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 0"
-description = "Тип значения 0: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 0: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -543,13 +543,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd1"
-label = "Тип значения 1 (команды мастера → слэйву)"
+label = "Тип значения 1 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 1"
-description = "Тип значения 1: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 1: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -565,13 +565,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd2"
-label = "Тип значения 2 (команды мастера → слэйву)"
+label = "Тип значения 2 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 2"
-description = "Тип значения 2: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 2: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -587,13 +587,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd3"
-label = "Тип значения 3 (команды мастера → слэйву)"
+label = "Тип значения 3 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 3"
-description = "Тип значения 3: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 3: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -609,13 +609,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd4"
-label = "Тип значения 4 (команды мастера → слэйву)"
+label = "Тип значения 4 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 4"
-description = "Тип значения 4: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 4: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -631,13 +631,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd5"
-label = "Тип значения 5 (команды мастера → слэйву)"
+label = "Тип значения 5 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 5"
-description = "Тип значения 5: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 5: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -653,13 +653,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd6"
-label = "Тип значения 6 (команды мастера → слэйву)"
+label = "Тип значения 6 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 6"
-description = "Тип значения 6: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 6: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -675,13 +675,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd7"
-label = "Тип значения 7 (команды мастера → слэйву)"
+label = "Тип значения 7 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 7"
-description = "Тип значения 7: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 7: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -697,13 +697,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd8"
-label = "Тип значения 8 (команды мастера → слэйву)"
+label = "Тип значения 8 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 8"
-description = "Тип значения 8: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 8: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -719,13 +719,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_cmd9"
-label = "Тип значения 9 (команды мастера → слэйву)"
+label = "Тип значения 9 (команды master → slave)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_cmd > 9"
-description = "Тип значения 9: команды мастера → слэйву; у обоих концов связи одинаковый"
+description = "Тип значения 9: команды master → slave; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -741,22 +741,22 @@ label = "float (дробное)"
 
 [[param]]
 name = "n_ans"
-label = "Число значений: ответы слэйва → мастеру"
+label = "Число значений: ответы slave → master"
 type = "int"
 default = 2
 min = 0
 max = 10
-description = "Сколько значений (ответы слэйва → мастеру) в обмене, 0…10; у обоих концов связи одинаково"
+description = "Сколько значений (ответы slave → master) в обмене, 0…10; у обоих концов связи одинаково"
 
 [[param]]
 name = "t_ans0"
-label = "Тип значения 0 (ответы слэйва → мастеру)"
+label = "Тип значения 0 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 0"
-description = "Тип значения 0: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 0: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -772,13 +772,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans1"
-label = "Тип значения 1 (ответы слэйва → мастеру)"
+label = "Тип значения 1 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 1"
-description = "Тип значения 1: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 1: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -794,13 +794,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans2"
-label = "Тип значения 2 (ответы слэйва → мастеру)"
+label = "Тип значения 2 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 2"
-description = "Тип значения 2: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 2: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -816,13 +816,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans3"
-label = "Тип значения 3 (ответы слэйва → мастеру)"
+label = "Тип значения 3 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 3"
-description = "Тип значения 3: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 3: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -838,13 +838,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans4"
-label = "Тип значения 4 (ответы слэйва → мастеру)"
+label = "Тип значения 4 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 4"
-description = "Тип значения 4: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 4: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -860,13 +860,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans5"
-label = "Тип значения 5 (ответы слэйва → мастеру)"
+label = "Тип значения 5 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 5"
-description = "Тип значения 5: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 5: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -882,13 +882,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans6"
-label = "Тип значения 6 (ответы слэйва → мастеру)"
+label = "Тип значения 6 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 6"
-description = "Тип значения 6: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 6: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -904,13 +904,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans7"
-label = "Тип значения 7 (ответы слэйва → мастеру)"
+label = "Тип значения 7 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 7"
-description = "Тип значения 7: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 7: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -926,13 +926,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans8"
-label = "Тип значения 8 (ответы слэйва → мастеру)"
+label = "Тип значения 8 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 8"
-description = "Тип значения 8: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 8: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0
@@ -948,13 +948,13 @@ label = "float (дробное)"
 
 [[param]]
 name = "t_ans9"
-label = "Тип значения 9 (ответы слэйва → мастеру)"
+label = "Тип значения 9 (ответы slave → master)"
 type = "int"
 default = 1
 min = 0
 max = 2
 when = "n_ans > 9"
-description = "Тип значения 9: ответы слэйва → мастеру; у обоих концов связи одинаковый"
+description = "Тип значения 9: ответы slave → master; у обоих концов связи одинаковый"
 
 [[param.choice]]
 value = 0

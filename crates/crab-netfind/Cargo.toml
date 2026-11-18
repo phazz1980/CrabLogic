@@ -1,0 +1,12 @@
+[package]
+name = "crab-netfind"
+version.workspace = true
+edition.workspace = true
+description = "LAN board search wire format: request, reply record and reply rate limiter (no_std + alloc, no dependencies)"
+
+[features]
+# Nothing to switch yet; the feature list exists so consumers can write `default-features = false`
+# the same way as for crab-kernel.
+default = []
+
+[dependencies]

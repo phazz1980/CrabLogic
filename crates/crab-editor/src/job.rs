@@ -554,6 +554,8 @@ fn upload_modules(
             ),
         );
     }
+    // The project name for the network search; an old master that does not know it is skipped.
+    let _ = crab_build::mcu_module::set_board_name(&mut serial, &project.config.project.name);
     // Remember the board for the check panel; a failure here never fails the upload.
     if info.takes_aot() {
         match crab_build::upload_plan::read_crabmod_space(&mut serial) {

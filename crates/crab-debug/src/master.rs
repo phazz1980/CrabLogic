@@ -351,9 +351,18 @@ fn handle_line(
         l.connected = true;
         l.schema_matches = Some(missing.is_none());
         l.status = missing.map_or(String::new(), |m| {
+            // The CRCs tell a stale module from a mismatch of what the editor expects.
+            let board = running
+                .iter()
+                .find(|(n, _)| *n == m.name)
+                .map_or("нет".to_owned(), |(_, c)| format!("{c:08x}"));
             format!(
-                "Модуль «{}» на плате не совпадает со схемой: залейте модули (📦)",
-                m.name
+                "Модуль «{}» на плате не совпадает со схемой: залейте модули (📦) \
+                 (crc на плате {board}, в схеме {:08x}{})",
+                m.name,
+                m.crc,
+                m.image_crc
+                    .map_or(String::new(), |c| format!(", образ {c:08x}"))
             )
         });
         return true;

@@ -15,8 +15,17 @@ description = "Код последней ошибки Modbus (0 — нет ош�
 [[param]]
 name = "net"
 type = "string"
+label = "Сеть"
 default = "wifi"
 description = "Сеть: wifi (блок «Wi-Fi клиент») или ethernet (блок «Ethernet»)"
+
+[[param.choice]]
+value = "wifi"
+label = "Wi-Fi"
+
+[[param.choice]]
+value = "ethernet"
+label = "Ethernet"
 
 [[param]]
 name = "address"
@@ -34,30 +43,3 @@ min = 1
 max = 65535
 description = "TCP-порт"
 
-[[param]]
-name = "holding"
-type = "int"
-default = 10
-min = 0
-description = "Число регистров хранения (Holding, 4x), с адреса 0"
-
-[[param]]
-name = "input"
-type = "int"
-default = 10
-min = 0
-description = "Число входных регистров (Input, 3x), с адреса 0"
-
-[[param]]
-name = "coils"
-type = "int"
-default = 10
-min = 0
-description = "Число катушек (Coils, 0x), с адреса 0"
-
-[[param]]
-name = "discrete"
-type = "int"
-default = 10
-min = 0
-description = "Число дискретных входов (Discrete Inputs, 1x), с адреса 0"

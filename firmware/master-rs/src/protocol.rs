@@ -137,7 +137,13 @@ pub enum Command {
     /// `netkey <64 hex>` stores the key of the network command server, `netkey -` removes it
     /// (`specs/ota`). Accepted over USB only.
     NetKey(Option<[u8; 32]>),
+    /// `name <text>` sets the name the board shows in the network search (the project name),
+    /// `name -` clears it. Kept in NVS; accepted over USB and from a logged-in network client.
+    Name(Option<String>),
 }
+
+/// Longest board name, bytes (the search reply cuts at the same length, `crab-netfind`).
+pub const BOARD_NAME_MAX: usize = 40;
 
 /// Bytes of the crash dump in one `core read` answer (1024 hex digits on the line).
 pub const CORE_CHUNK: usize = 512;
@@ -449,6 +455,25 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
                 crate::netauth::from_hex(hex).ok_or(ParseError::InvalidNumber)?,
             )),
         },
+        "name" => {
+            let mut text = String::new();
+            for word in args.by_ref() {
+                if !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push_str(word);
+            }
+            if text.is_empty() {
+                return Err(ParseError::MissingArgument);
+            }
+            if text == "-" {
+                Command::Name(None)
+            } else if text.len() > BOARD_NAME_MAX || text.chars().any(char::is_control) {
+                return Err(ParseError::InvalidName);
+            } else {
+                Command::Name(Some(text))
+            }
+        }
         "selftest" => match one(&mut args)? {
             "panic" => Command::SelfTestPanic,
             "hang" => Command::SelfTestHang,
@@ -669,6 +694,13 @@ mod core_tests {
             Ok(Command::NetKey(Some([0x0f; 32])))
         );
         assert!(parse_command("netkey 0f").is_err());
+        assert_eq!(
+            parse_command("name Pump  station"),
+            Ok(Command::Name(Some("Pump station".into())))
+        );
+        assert_eq!(parse_command("name -"), Ok(Command::Name(None)));
+        assert!(parse_command("name").is_err());
+        assert!(parse_command(&format!("name {}", "x".repeat(41))).is_err());
         assert!(parse_command("selftest other").is_err());
     }
 

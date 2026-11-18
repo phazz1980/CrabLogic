@@ -927,7 +927,7 @@ impl EditorApp {
         match &self.doc {
             Some(doc) => {
                 let p = &doc.project;
-                ui.label(crate::i18n::fmt("Проект: {0}", &[&p.config.project.name]));
+                ui.label(crate::i18n::fmt("Проект: {0}", &[&p.display_name()]));
                 ui.separator();
                 ui.label(crate::i18n::fmt("Блоков: {0}", &[&p.logic.blocks.len()]));
                 ui.separator();
@@ -1154,7 +1154,7 @@ impl EditorApp {
         match &self.doc {
             Some(doc) => format!(
                 "{}{} — CrabLogic",
-                doc.project.config.project.name,
+                doc.project.display_name(),
                 if doc.dirty { " *" } else { "" }
             ),
             None => "CrabLogic".to_owned(),

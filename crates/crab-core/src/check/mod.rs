@@ -20,6 +20,7 @@ mod display;
 mod flow;
 mod graph;
 mod lora;
+mod modbus;
 mod retain;
 #[cfg(test)]
 mod tests;
@@ -81,6 +82,7 @@ pub fn check_project(project: &Project, lib: &Library) -> Report {
     }
     check_board_blocks(project, lib, &mut report);
     crate::modbus_tags::check_externals(project, &mut report);
+    modbus::check_modbus(&project.logic, &mut report);
     let layout = BoardLayout::of_board(&project.config.board, lib.boards());
     let pins = pin_uses(&project.logic, lib);
     let uarts = crate::uart::check_project_part(

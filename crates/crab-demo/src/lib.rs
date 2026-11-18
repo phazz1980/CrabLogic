@@ -87,7 +87,7 @@ impl DemoApp {
 
     fn start_sim(&mut self) {
         self.pending_ms = 0.0;
-        match Simulation::new(&self.project.without_disabled().logic, &self.lib) {
+        match Simulation::for_project(&self.project.without_disabled(), &self.lib) {
             Ok(sim) => {
                 self.sim = Some(sim);
                 self.error.clear();
@@ -555,7 +555,7 @@ mod tests {
             let project = load_example(i);
             let text = sheet_modules(&project, &lib).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(text.contains("лист"), "{name}");
-            let mut sim = Simulation::new(&project.without_disabled().logic, &lib)
+            let mut sim = Simulation::for_project(&project.without_disabled(), &lib)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             sim.step(100).unwrap();
         }

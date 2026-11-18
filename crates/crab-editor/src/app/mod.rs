@@ -230,6 +230,8 @@ pub struct EditorApp {
     net_input: Option<String>,
     /// Result of writing the network key over USB.
     net_key_rx: Option<Receiver<Result<String, String>>>,
+    /// Search of the boards in the local network, shown in the network window.
+    pub(super) netfind: crate::netfind_ui::NetFind,
     /// Online debugging session, when running.
     pub debug: Option<DebugState>,
     /// Simulation of the schema on this computer, when running.
@@ -346,6 +348,7 @@ impl EditorApp {
             port_scan: None,
             net_input: None,
             net_key_rx: None,
+            netfind: Default::default(),
             debug: None,
             sim: None,
             debug_firmware: false,

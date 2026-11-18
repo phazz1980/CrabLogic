@@ -5,6 +5,10 @@
 `table` — holding, input, coil или discrete; `kind` — int, float или bool,
 от него зависит выход (`out`, `out_f`, `out_b`).
 
+`float` занимает два регистра подряд, начиная с адреса `reg`.
+`swap` («Слова наоборот», только для float) — поменять местами два регистра:
+порядок CDAB вместо ABCD. Так делают некоторые системы SCADA и панели.
+
 Примеры: `examples/modbus_wifi`, `examples/modbus_rtu`.
 
 В модуле WASM работает со slave `rtu` (протокол ведёт мастер-прошивка); `tcp` пока только в обычном скетче.

@@ -1506,11 +1506,22 @@ pub struct RoleSettings {
     pub tcp: Option<TcpSettings>,
 }
 
+/// `bits` with its two 16-bit words exchanged when `swap` is set (`rotate_left(16)` is its own inverse).
+fn float_words(bits: u32, swap: bool) -> u32 {
+    if swap {
+        bits.rotate_left(16)
+    } else {
+        bits
+    }
+}
+
 /// The `modbus(op, a, b, c, d) -> i32` import of WASM modules (`h_modbus` of the C++ master).
 ///
 /// - op 0: setting, `a` = code, `b` = value; code 0 clears the list, 63 commits it (once per role);
-/// - op 1: read, `a` = slave address, `b` = table | kind << 4 | master << 8 | tcp << 9, `c` = register;
+/// - op 1: read, `a` = slave address, `b` = table | kind << 4 | master << 8 | tcp << 9 | swap << 10,
+///   `c` = register;
 /// - op 2: write, as read, `d` = value (floats as their bits);
+/// - swap (bit 10, floats only): the two 16-bit words of the float are exchanged on read and on write;
 /// - op 3: status, `a >= 0` the slave answers (1/0), `a < 0` last error of our slave.
 ///
 /// Setting codes: 0 role (1 RTU master, 2 RTU slave, 3 TCP master, 4 TCP slave), 1 uart (TCP:
@@ -1603,6 +1614,7 @@ impl ModbusHost {
         let kind = b >> 4 & 15;
         let master = b >> 8 & 1 != 0;
         let tcp = b >> 9 & 1 != 0;
+        let swap = b >> 10 & 1 != 0;
         match op {
             0 => {
                 if a == 0 {
@@ -1616,14 +1628,14 @@ impl ModbusHost {
                 0
             }
             1 => self.tables(tcp, master, a).map_or(0, |t| match kind {
-                1 => t.read_float(table, c).to_bits() as i32,
+                1 => float_words(t.read_float(table, c).to_bits(), swap) as i32,
                 2 => i32::from(t.read_bool(table, c)),
                 _ => i32::from(t.read_int(table, c)),
             }),
             2 => {
                 if let Some(t) = self.tables(tcp, master, a) {
                     match kind {
-                        1 => t.save_float(table, c, f32::from_bits(d as u32)),
+                        1 => t.save_float(table, c, f32::from_bits(float_words(d as u32, swap))),
                         2 => t.save_bool(table, c, d != 0),
                         _ => t.save_int(table, c, d as i16),
                     }
@@ -2344,5 +2356,50 @@ mod tests {
             "the RTU master does not exist"
         );
         assert_eq!(host.call(3, 1, 1 << 9, 0, 0), 1);
+    }
+
+    /// An RTU slave at address 5 with 8 holding registers (the host calls need no UART).
+    fn float_slave() -> ModbusHost {
+        let mut host = ModbusHost::new();
+        set(&mut host, 0, 2);
+        set(&mut host, 2, 9600);
+        set(&mut host, 7, 5);
+        set(&mut host, 8, 8);
+        set(&mut host, 9, 4);
+        set(&mut host, 10, 4);
+        set(&mut host, 11, 4);
+        set(&mut host, 63, 0);
+        host
+    }
+
+    #[test]
+    fn float_word_swap() {
+        const SWAP: i32 = 1 << 10;
+        let holding_float = 1 << 4;
+        let bits = 1.5f32.to_bits();
+
+        // Written with swap, read with swap: the same float.
+        let mut host = float_slave();
+        host.call(2, 5, holding_float | SWAP, 0, bits as i32);
+        assert_eq!(
+            f32::from_bits(host.call(1, 5, holding_float | SWAP, 0, 0) as u32),
+            1.5
+        );
+
+        // The same registers read without swap: the halves are exchanged, low word first.
+        assert_eq!(
+            host.call(1, 5, holding_float, 0, 0) as u32,
+            bits.rotate_left(16)
+        );
+        assert_eq!(host.call(1, 5, 0, 0, 0), 0, "high word in register 0");
+        assert_eq!(host.call(1, 5, 0, 1, 0), 0x3FC0, "low word in register 1");
+
+        // Without swap a float is stored and read as before.
+        host.call(2, 5, holding_float, 2, bits as i32);
+        assert_eq!(host.call(1, 5, holding_float, 2, 0), bits as i32);
+        assert_eq!(
+            host.call(1, 5, holding_float | SWAP, 2, 0) as u32,
+            bits.rotate_left(16)
+        );
     }
 }

@@ -734,7 +734,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut add_kind = None;
 
     ScrollArea::vertical().auto_shrink([ui.is_sizing_pass(), false]).show(ui, |ui| {
-        let title = crate::i18n::fmt("Контроллер: {0} ({1})", &[&doc.project.config.project.name, &crate::boardcfg::board_name(&doc.project.config.board, app.lib.boards())]);
+        let title = crate::i18n::fmt("Контроллер: {0} ({1})", &[&doc.project.display_name(), &crate::boardcfg::board_name(&doc.project.config.board, app.lib.boards())]);
         group(ui, "controller", &title, Level::Top, |_| {}, |ui| {
             group(ui, "tags", crate::i18n::tr("Теги"), Level::Mid, |_| {}, |ui| {
                 for (key, title, items, kinds, hint) in [
@@ -914,7 +914,8 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             });
             display_actions = crate::displaypanel::show(app, ui);
             radio_actions = crate::radiopanel::show(app, ui);
-            net_actions = crate::netpanel::show(app, ui);
+            // The «Сеть» folder adds the actions of its Modbus folder to the radio ones.
+            net_actions = crate::netpanel::show(app, ui, &mut radio_actions);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
                 for b in &logic.blocks {
@@ -1205,6 +1206,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
             || info.group == WEB_GROUP
             || info.group == DISPLAY_GROUP
             || info.group == RADIO_GROUP
+            || crab_core::project::MODBUS_KINDS.contains(&info.kind.as_str())
             || crab_core::project::is_screen_kind(&info.kind)
             || info.hidden
             || !info.fits_board(model)

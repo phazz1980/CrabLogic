@@ -587,3 +587,16 @@ to = "dac.in"
         assert_eq!(s.output_pin("dac"), Some((25, code)), "level {level}");
     }
 }
+
+#[test]
+fn an_unused_tag_with_an_empty_input_does_not_stop_the_simulation() {
+    let (lib, _) = Library::load(repo("library")).unwrap();
+    let mut p = Project::load(repo("examples/tag_copies")).unwrap();
+    p.take_off_board("lamp_2").unwrap();
+    p.take_off_board("lamp").unwrap();
+    assert_eq!(p.unused_tags(&lib), ["lamp"]);
+    // The editor check passes, so the simulation must start too.
+    assert!(Simulation::new(&p.logic, &lib).is_err());
+    let mut s = Simulation::for_project(&p, &lib).unwrap();
+    s.step(10).unwrap();
+}

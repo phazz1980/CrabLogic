@@ -685,16 +685,8 @@ impl Builder {
 
     /// The slave block and one `modbus_write` per register pair, fed from `tap(k)`.
     fn modbus_slave_with(&mut self, tap: impl Fn(usize) -> String) {
-        self.add(
-            "slave",
-            "modbus_tcp_slave",
-            &[
-                ("holding", ParamValue::Int(MODBUS_REGISTERS as i64)),
-                ("input", ParamValue::Int(0)),
-                ("coils", ParamValue::Int(0)),
-                ("discrete", ParamValue::Int(0)),
-            ],
-        );
+        // The table size comes from the float tags below, not from a parameter of the slave.
+        self.add("slave", "modbus_tcp_slave", &[]);
         for k in 0..MODBUS_REGISTERS / 2 {
             let id = format!("reg{k}");
             self.add(

@@ -46,6 +46,11 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 /// Uptime of the last USB command, ms (low 32 bits, `| 1` so 0 means never).
 static USB_AT: AtomicU32 = AtomicU32::new(0);
 
+/// Whether a network key is stored (the board search tells it; the key itself never leaves).
+pub fn has_key() -> bool {
+    HAS_KEY.load(Ordering::Acquire)
+}
+
 /// Whether a network client is logged in.
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
@@ -102,7 +107,7 @@ pub fn mirror(bytes: &[u8]) {
 
 // ---- the key in NVS (namespace `crab_net`) ----
 
-fn nvs() -> Option<sys::nvs_handle_t> {
+pub(super) fn nvs() -> Option<sys::nvs_handle_t> {
     let mut h: sys::nvs_handle_t = 0;
     // SAFETY: NVS is set up at start (a second init is harmless); a fixed namespace.
     let ok = unsafe {

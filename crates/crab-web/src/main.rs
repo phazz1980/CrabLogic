@@ -30,6 +30,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_PORT: u16 = 8080;
 /// Largest request body accepted (commands are small JSON objects).
 const MAX_BODY: usize = 1 << 20;
+/// How long a connection may stay silent before its request is given up.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// The page pings the server every few seconds; with no request for this long the
 /// server exits, so it never outlives the browser tab (or the editor that started it).
 const IDLE_LIMIT: Duration = Duration::from_secs(300);
@@ -87,10 +89,28 @@ fn run() -> Result<(), String> {
             std::process::exit(0);
         }
     });
-    for stream in listener.incoming().flatten() {
-        last_seen.store(started.elapsed().as_secs(), Ordering::Relaxed);
-        // One user: requests are handled one at a time, edits never race.
-        if let Err(e) = handle(stream, &mut ctx, port) {
+    // A browser opens idle sockets ahead of a request (typing an address, preconnect): each
+    // connection is read on its own thread, so a silent one never holds the others back.
+    let (tx, rx) = std::sync::mpsc::channel::<(TcpStream, Request)>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (tx, last_seen) = (tx.clone(), last_seen.clone());
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+                match read_request(&stream) {
+                    Ok(req) => {
+                        last_seen.store(started.elapsed().as_secs(), Ordering::Relaxed);
+                        let _ = tx.send((stream, req));
+                    }
+                    // A socket that never said anything: not worth a message.
+                    Err(e) => eprintln!("crablogic-web: {e}"),
+                }
+            });
+        }
+    });
+    // One user: requests are served one at a time, edits never race.
+    for (stream, req) in rx {
+        if let Err(e) = serve(stream, req, &mut ctx, port) {
             eprintln!("crablogic-web: {e}");
         }
     }
@@ -154,8 +174,18 @@ fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]
     let _ = stream.write_all(body);
 }
 
-fn handle(mut stream: TcpStream, ctx: &mut FolderContext, port: u16) -> Result<(), String> {
+#[cfg(test)]
+fn handle(stream: TcpStream, ctx: &mut FolderContext, port: u16) -> Result<(), String> {
     let req = read_request(&stream)?;
+    serve(stream, req, ctx, port)
+}
+
+fn serve(
+    mut stream: TcpStream,
+    req: Request,
+    ctx: &mut FolderContext,
+    port: u16,
+) -> Result<(), String> {
     // Only the loopback names: a foreign page cannot reach the editor via DNS rebinding.
     let local = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
     if !local.contains(&req.host) {

@@ -28,6 +28,7 @@ mod modbus;
 mod mqtt;
 mod net;
 mod netcmd;
+mod netfind;
 mod note_queue;
 mod notes;
 mod pcf;
@@ -352,25 +353,28 @@ impl Master {
         Ok((module, before.saturating_sub(after)))
     }
 
-    /// The new version did not load next to the running old one (not enough memory): the old
-    /// instance is freed but keeps its outputs, the new one is loaded again, and if that fails
-    /// the old image is put back. Returns the new handle and heap, or the original error `err`
-    /// (the old version then runs again, or the module is stopped if even that failed).
+    /// Replaces a running module: the old instance is freed first (its buses go free for the
+    /// `init` of the new one) but keeps its outputs, the new one is loaded, and if that fails
+    /// the old image is put back. Returns the new handle and heap, or the error of the new load
+    /// (`err` when the caller already has one, e.g. not enough memory); the old version then runs
+    /// again, or the module is stopped if even that failed.
     fn load_without_old(
         &mut self,
         old: Handle,
         index: usize,
         area: &Area,
-        err: String,
+        mut err: Option<String>,
     ) -> Result<(Handle, u32), String> {
         let name = area.meta.name.clone();
         let Ok(evicted) = self.kernel.evict(old) else {
-            return Err(err);
+            return Err(err.unwrap_or_else(|| "нет такого модуля".to_owned()));
         };
-        self.log(
-            &name,
-            "не хватило памяти рядом со старой версией: старая выгружена на время загрузки",
-        );
+        if err.is_some() {
+            self.log(
+                &name,
+                "не хватило памяти рядом со старой версией: старая выгружена на время загрузки",
+            );
+        }
         let evicted = match self.load(area) {
             Ok((module, heap)) => match self.kernel.restore(evicted, module) {
                 Ok(h) => return Ok((h, heap)),
@@ -379,7 +383,10 @@ impl Master {
                     return Err(e);
                 }
             },
-            Err(_) => evicted,
+            Err(e) => {
+                err.get_or_insert(e);
+                evicted
+            }
         };
         let previous = self.storage.area(self.slots[index].at).cloned();
         match previous.map(|a| self.load(&a)) {
@@ -395,7 +402,7 @@ impl Master {
                 self.slots[index].handle = None;
             }
         }
-        Err(err)
+        Err(err.unwrap_or_default())
     }
 
     /// Starts the module of the area at `at`. A running module with the same name is replaced
@@ -413,13 +420,14 @@ impl Master {
         let index = self.slot(&area.meta.name);
         let running = index.and_then(|i| self.slots[i].handle);
         let queue = index.map_or(0, |i| self.slots[i].queue);
-        let (handle, heap) = match (self.load(&area), running, index) {
-            (Ok((module, heap)), Some(old), _) => {
-                (self.kernel.swap(old, module, &[], queue)?, heap)
-            }
-            (Ok((module, heap)), None, _) => (self.kernel.add(module, &[], queue)?, heap),
-            (Err(e), Some(old), Some(i)) => self.load_without_old(old, i, &area, e)?,
-            (Err(e), _, _) => return Err(e),
+        // A running module is freed before the new one loads: the new `init` runs during the load
+        // and takes buses (UART, SPI, counters) the old instance still holds until it is dropped.
+        let (handle, heap) = match (running, index) {
+            (Some(old), Some(i)) => self.load_without_old(old, i, &area, None)?,
+            _ => match self.load(&area) {
+                Ok((module, heap)) => (self.kernel.add(module, &[], queue)?, heap),
+                Err(e) => return Err(e),
+            },
         };
         let mut slot = Slot::new(area.meta.name, at, Some(handle), heap);
         slot.queue = queue;
@@ -929,6 +937,8 @@ impl Master {
             Ok(Command::SelfTestPanic) => println!("err selftest is not in this build"),
             // Handled by `crab-io` (USB only); here only if handed over anyway.
             Ok(Command::NetKey(_)) => println!("err netkey only over USB"),
+            // Handled by `crab-io`; here only if handed over anyway.
+            Ok(Command::Name(_)) => println!("err name is handled by the io thread"),
             // A hang of the scan on purpose: the scan watchdog must restart the board.
             #[cfg(feature = "selftest")]
             Ok(Command::SelfTestHang) => {
@@ -1222,6 +1232,9 @@ pub fn main() {
                     }
                     if !netcmd::start() {
                         println!("err netcmd thread");
+                    }
+                    if !netfind::start() {
+                        println!("err netfind thread");
                     }
                     master.run()
                 }
