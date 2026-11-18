@@ -1,0 +1,47 @@
+# Posts a published release to the Telegram channel. Needs the secret TELEGRAM_BOT_TOKEN
+# (a bot made with @BotFather that is an administrator of the channel with the right to post).
+# Run it by hand from the Actions tab to send the latest release again.
+name: Telegram release post
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  # The channel the post goes to; a public channel works by its @name.
+  TELEGRAM_CHAT: "@Crablogic"
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send the release to the channel
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+            echo "TELEGRAM_BOT_TOKEN is not set; nothing to send"
+            exit 1
+          fi
+          tag="$EVENT_TAG"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          fi
+          title=$(gh release view "$tag" --repo "$REPO" --json name --jq .name)
+          body=$(gh release view "$tag" --repo "$REPO" --json body --jq .body)
+          url="https://github.com/$REPO/releases/tag/$tag"
+          # Telegram takes up to 4096 characters; keep room for the title and the link.
+          body=$(printf '%s' "$body" | head -c 3300)
+          text=$(printf '%s\n\n%s\n\n%s' "$title" "$body" "$url")
+          curl --fail --silent --show-error \
+            --data-urlencode "chat_id=$TELEGRAM_CHAT" \
+            --data-urlencode "text=$text" \
+            --data-urlencode "disable_web_page_preview=true" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" > /dev/null
+          echo "sent $tag"
