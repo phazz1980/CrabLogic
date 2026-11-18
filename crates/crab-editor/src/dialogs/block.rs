@@ -52,6 +52,21 @@ pub(super) fn block_body(app: &EditorApp, ui: &mut Ui, d: &mut BlockDialog) {
 pub(super) const SETTINGS_WIDTH: f32 = 360.0;
 pub(super) const DOCS_MIN_WIDTH: f32 = 320.0;
 
+/// `Some(false)` for a boolean port switch of an input (`use_*`), `Some(true)` for one of an
+/// output (`out_*`), `None` for any other parameter.
+fn port_flag_column(p: &ParamDef) -> Option<bool> {
+    if p.kind != ParamKind::Bool || p.show != crab_core::ParamShow::Hidden {
+        return None;
+    }
+    if p.name.starts_with("use_") {
+        Some(false)
+    } else if p.name.starts_with("out_") {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 pub(super) fn block_settings(
     app: &EditorApp,
     ui: &mut Ui,
@@ -108,12 +123,13 @@ pub(super) fn block_settings(
         free_id: free_expander_id(&doc.project.logic),
     };
     egui::Grid::new("block_props")
-        .num_columns(3)
+        .num_columns(4)
         .spacing([10.0, 6.0])
         .show(ui, |ui| {
             ui.label(crate::i18n::tr("Надпись (id)"));
             ui.text_edit_singleline(&mut d.new_id);
             ui.label(RichText::new(crate::i18n::tr("Вход")).weak());
+            ui.label(RichText::new(crate::i18n::tr("Выход")).weak());
             ui.end_row();
             for &p in &params {
                 let hint = match &p.label {
@@ -122,6 +138,30 @@ pub(super) fn block_settings(
                 };
                 ui.label(crate::i18n::tr(p.title()))
                     .on_hover_text(crate::i18n::tr(hint.trim()));
+                // A port switch (`use_*` shows an input, `out_*` an output): a checkbox in the
+                // «Вход» or «Выход» column instead of a toggle in the value column.
+                let flag_column = port_flag_column(p);
+                if let Some(output) = flag_column {
+                    ui.label("");
+                    if output {
+                        ui.label("");
+                    }
+                    let mut on = matches!(d.values.get(&p.name), Some(Some(ParamValue::Bool(true))))
+                        || (!d.values.contains_key(&p.name)
+                            && matches!(p.default, Some(ParamValue::Bool(true))));
+                    if ui
+                        .checkbox(&mut on, "")
+                        .on_hover_text(crate::i18n::tr(hint.trim()))
+                        .changed()
+                    {
+                        d.values.insert(p.name.clone(), Some(ParamValue::Bool(on)));
+                    }
+                    if !output {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                    continue;
+                }
                 let as_input = d.param_in.contains(&p.name);
                 // Top-aligned: a tall editor (the duration's four radio rows) centred on a
                 // one-line row would stick out above and below it and overlap its neighbours.
@@ -164,6 +204,7 @@ pub(super) fn block_settings(
                 else {
                     ui.label("");
                 }
+                ui.label("");
                 ui.end_row();
             }
         });

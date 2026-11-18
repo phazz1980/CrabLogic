@@ -246,14 +246,14 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "crab-kernel"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "crab-master-rs"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-kernel",
  "crab-netfind",
@@ -265,11 +265,11 @@ dependencies = [
 
 [[package]]
 name = "crab-netfind"
-version = "2.0.1"
+version = "2.1.0"
 
 [[package]]
 name = "crab-sparkplug"
-version = "2.0.1"
+version = "2.1.0"
 
 [[package]]
 name = "critical-section"

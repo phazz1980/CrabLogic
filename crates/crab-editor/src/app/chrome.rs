@@ -23,6 +23,12 @@ fn keep_min_size(
     }
 }
 
+/// The Telegram channel and chat of the project, shown in the title bar and the help menu.
+const CHANNEL_URL: &str = "https://t.me/Crablogic";
+const CHAT_URL: &str = "https://t.me/Crablogic_Chat";
+/// Room kept in the title bar for the two links (their width plus spacing).
+const COMMUNITY_WIDTH: f32 = 150.0;
+
 impl EditorApp {
     /// Menu part: the AOT compiler (wamrc) of the modules.
     pub(super) fn aot_settings_menu(&mut self, ui: &mut egui::Ui) {
@@ -210,7 +216,7 @@ impl EditorApp {
             panels::toolbar(self, ui);
             // The rest of the row drags the window; double click maximizes.
             // The program name sits at its right end, next to the window buttons.
-            let width = (ui.available_width() - 3.0 * 44.0 - 14.0).max(0.0);
+            let width = (ui.available_width() - 3.0 * 44.0 - 14.0 - COMMUNITY_WIDTH).max(0.0);
             let (rect, drag) = ui.allocate_exact_size(
                 egui::vec2(width, ui.spacing().interact_size.y.max(30.0)),
                 egui::Sense::click_and_drag(),
@@ -231,6 +237,18 @@ impl EditorApp {
                     ui.visuals().weak_text_color(),
                 );
             }
+            // The channel and the chat of the project: always in sight, next to the window buttons.
+            ui.hyperlink_to(
+                egui::RichText::new(crate::i18n::tr("📣 Канал")).strong(),
+                CHANNEL_URL,
+            )
+            .on_hover_text(CHANNEL_URL);
+            ui.hyperlink_to(
+                egui::RichText::new(crate::i18n::tr("💬 Чат")).strong(),
+                CHAT_URL,
+            )
+            .on_hover_text(CHAT_URL);
+            ui.add_space(8.0);
             if drag.drag_started_by(egui::PointerButton::Primary) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
@@ -822,6 +840,9 @@ impl EditorApp {
                 self.changes_window = true;
                 ui.close();
             }
+            ui.separator();
+            ui.hyperlink_to(crate::i18n::tr("Telegram: канал проекта"), CHANNEL_URL);
+            ui.hyperlink_to(crate::i18n::tr("Telegram: чат пользователей"), CHAT_URL);
             if let Some(release) = &self.new_release {
                 ui.separator();
                 if ui

@@ -15,10 +15,6 @@ use crate::app::EditorApp;
 use crate::canvas::DragItem;
 use crate::radiopanel::RadioAction;
 
-/// Block kinds of the slave tags: `modbus_write` is «из схемы» (the schema writes, the master
-/// reads), `modbus_read` is «в схему» (the master writes, the schema reads).
-const TAG_KINDS: [&str; 2] = ["modbus_write", "modbus_read"];
-
 /// Tables in the order of their combo box: (value, caption).
 const TABLES: [(&str, &str); 4] = [
     ("holding", "Holding"),
@@ -51,30 +47,29 @@ pub fn show(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<RadioAction>) {
                 .any(|b| MODBUS_KINDS.contains(&b.kind.as_str())),
         )
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (kind, caption) in ADD {
-                    let info = app.lib.get(kind).map(|l| &l.def.info);
-                    // Masters, slaves and the RTU/TCP links are one per board (`single`).
-                    let enabled = !info.is_some_and(|i| i.single) || !has(kind);
-                    let hint = info.map_or("", |i| i.description.as_str());
-                    if crate::iconbtn::add_button(
-                        ui,
-                        enabled,
-                        crate::i18n::tr(caption),
-                        crate::i18n::tr(hint),
-                    )
-                    .clicked()
-                    {
-                        actions.push(RadioAction::Add(kind));
-                    }
+            // One group per kind: its add button on its own line, its blocks right under it.
+            for (kind, caption) in ADD {
+                let info = app.lib.get(kind).map(|l| &l.def.info);
+                // Masters, slaves and the RTU/TCP links are one per board (`single`).
+                let enabled = !info.is_some_and(|i| i.single) || !has(kind);
+                let hint = info.map_or("", |i| i.description.as_str());
+                if crate::iconbtn::add_button(
+                    ui,
+                    enabled,
+                    crate::i18n::tr(caption),
+                    crate::i18n::tr(hint),
+                )
+                .clicked()
+                {
+                    actions.push(RadioAction::Add(kind));
                 }
-            });
-            for b in logic.blocks.iter().filter(|b| {
-                b.tag.is_none()
-                    && MODBUS_KINDS.contains(&b.kind.as_str())
-                    && !TAG_KINDS.contains(&b.kind.as_str())
-            }) {
-                crate::radiopanel::row(app, ui, b, actions);
+                for b in logic
+                    .blocks
+                    .iter()
+                    .filter(|b| b.tag.is_none() && b.kind == kind)
+                {
+                    crate::radiopanel::row(app, ui, b, actions);
+                }
             }
             tags(app, ui, actions);
         });
@@ -91,38 +86,37 @@ fn tags(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<RadioAction>) {
         .id_salt("modbus_tags")
         .default_open(true)
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let buttons = [
-                    (
-                        "modbus_write",
-                        "+ Из схемы",
-                        "Тег «из схемы»: схема записывает значение, master его читает",
-                    ),
-                    (
-                        "modbus_read",
-                        "+ В схему",
-                        "Тег «в схему»: master записывает значение, схема его читает",
-                    ),
-                ];
-                for (kind, caption, hint) in buttons {
-                    if crate::iconbtn::add_button(
-                        ui,
-                        true,
-                        crate::i18n::tr(caption),
-                        crate::i18n::tr(hint),
-                    )
-                    .clicked()
-                    {
-                        actions.push(RadioAction::AddTag(kind));
-                    }
+            let buttons = [
+                (
+                    "modbus_write",
+                    "+ Из схемы",
+                    "Тег «из схемы»: схема записывает значение, master его читает",
+                ),
+                (
+                    "modbus_read",
+                    "+ В схему",
+                    "Тег «в схему»: master записывает значение, схема его читает",
+                ),
+            ];
+            // One group per direction: its add button, its tags right under it.
+            for (kind, caption, hint) in buttons {
+                if crate::iconbtn::add_button(
+                    ui,
+                    true,
+                    crate::i18n::tr(caption),
+                    crate::i18n::tr(hint),
+                )
+                .clicked()
+                {
+                    actions.push(RadioAction::AddTag(kind));
                 }
-            });
-            for b in logic
-                .blocks
-                .iter()
-                .filter(|b| b.tag.is_none() && TAG_KINDS.contains(&b.kind.as_str()))
-            {
-                tag_row(app, ui, b, &conflicts, actions);
+                for b in logic
+                    .blocks
+                    .iter()
+                    .filter(|b| b.tag.is_none() && b.kind == kind)
+                {
+                    tag_row(app, ui, b, &conflicts, actions);
+                }
             }
         });
 }

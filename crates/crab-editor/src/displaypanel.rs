@@ -123,21 +123,17 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
                 crate::i18n::tr("Перетащите на плату")
             });
             ui.label(format!("{} ({model_label})", b.id));
-            // The buttons sit at the right end of the first row (right to left: delete is last).
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // The buttons follow the title on the first row.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 if crate::iconbtn::icon_button(
                     ui,
                     true,
-                    crate::iconbtn::Icon::Delete,
-                    &format!(
-                        "{}: {}",
-                        crate::i18n::tr("Удалить дисплей"),
-                        crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")
-                    ),
+                    crate::iconbtn::Icon::Designer,
+                    crate::i18n::tr("Экраны и меню..."),
                 )
                 .clicked()
                 {
-                    actions.push(DisplayAction::Remove(b.id.clone()));
+                    actions.push(DisplayAction::Designer(b.id.clone()));
                 }
                 if crate::iconbtn::icon_button(
                     ui,
@@ -152,12 +148,16 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
                 if crate::iconbtn::icon_button(
                     ui,
                     true,
-                    crate::iconbtn::Icon::Designer,
-                    crate::i18n::tr("Экраны и меню..."),
+                    crate::iconbtn::Icon::Delete,
+                    &format!(
+                        "{}: {}",
+                        crate::i18n::tr("Удалить дисплей"),
+                        crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")
+                    ),
                 )
                 .clicked()
                 {
-                    actions.push(DisplayAction::Designer(b.id.clone()));
+                    actions.push(DisplayAction::Remove(b.id.clone()));
                 }
             });
         })

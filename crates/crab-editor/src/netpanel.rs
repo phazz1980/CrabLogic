@@ -4,12 +4,12 @@
 //! be taken out to the board as a variable (a binding stored in the block).
 
 use crab_core::project::MODBUS_KINDS;
-use crab_core::{bindable_type, ParamKind, ParamValue, SignalType, Var, VarType};
+use crab_core::{ParamValue, SignalType, Var, VarType};
 use eframe::egui::{self, Id, Ui};
 
 use crate::app::{EditorApp, LogLevel};
 use crate::canvas::DragItem;
-use crate::dialogs::{value_text, Dialog};
+use crate::dialogs::Dialog;
 use crate::radiopanel::RadioAction;
 
 const NETWORKS: [(&str, &str); 2] = [("wifi", "Wi-Fi"), ("ethernet", "Ethernet")];
@@ -124,10 +124,36 @@ fn service(
     let logic = &doc.project.logic;
     let block = logic.blocks.iter().find(|b| b.kind == kind);
     ui.add_space(4.0);
-    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
-        .id_salt(("net", kind))
-        .default_open(block.is_some())
-        .show(ui, |ui| {
+    let id = ui.make_persistent_id(("net", kind));
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, block.is_some())
+        .show_header(ui, |ui| {
+            ui.label(egui::RichText::new(title).strong());
+            // The buttons follow the title on the first row.
+            if let Some(b) = block {
+                if crate::iconbtn::icon_button(
+                    ui,
+                    true,
+                    crate::iconbtn::Icon::Settings,
+                    crate::i18n::tr("Настройки..."),
+                )
+                .clicked()
+                {
+                    actions.push(NetAction::Settings(b.id.clone()));
+                }
+            }
+            if kind == WEB_UI
+                && crate::iconbtn::icon_button(
+                    ui,
+                    true,
+                    crate::iconbtn::Icon::Designer,
+                    crate::i18n::tr("Конструктор страницы..."),
+                )
+                .clicked()
+            {
+                actions.push(NetAction::Designer);
+            }
+        })
+        .body(|ui| {
             // The web page is switched by a parameter: its settings and widgets stay.
             let web_switch = kind == WEB_UI && block.is_some();
             let mut on = match block {
@@ -152,17 +178,6 @@ fn service(
                     _ => actions.push(NetAction::Toggle { kind, on }),
                 }
             }
-            if kind == WEB_UI
-                && crate::iconbtn::icon_button(
-                    ui,
-                    true,
-                    crate::iconbtn::Icon::Designer,
-                    crate::i18n::tr("Конструктор страницы..."),
-                )
-                .clicked()
-            {
-                actions.push(NetAction::Designer);
-            }
             if let Some(b) = block {
                 // The whole block with its ports goes to the board, like a topic.
                 let pullable = app
@@ -186,7 +201,9 @@ fn service(
                         ui.label(crate::i18n::tr("Блок целиком"));
                     });
                 }
-                settings(app, ui, b, kind, actions);
+                if kind == WEB_UI {
+                    pages_section(app, ui, actions);
+                }
             }
             if kind == MQTT && block.is_some() {
                 topics_section(app, ui, actions);
@@ -214,24 +231,30 @@ fn topics_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
                 _ => crate::i18n::tr("без топика"),
             };
             let placed = doc.project.layout.blocks.contains_key(&b.id);
-            ui.dnd_drag_source(
-                Id::unique(("topic", &b.id)),
-                DragItem::Topic(b.id.clone()),
-                |ui| ui.label(if placed { "▣" } else { "▢" }),
-            )
-            .response
-            .on_hover_text(if placed {
-                crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
-            } else {
-                crate::i18n::tr("Перетащите на плату")
-            });
-            egui::CollapsingHeader::new(format!("{topic} ({})", b.id))
-                .id_salt(("mqtt_topic", &b.id))
-                .default_open(false)
-                .show(ui, |ui| {
-                    settings(app, ui, b, kind, actions);
-                    if let Some(lib) = &lib {
-                        topic_ports(ui, b, &lib.def);
+            let id = ui.make_persistent_id(("mqtt_topic", &b.id));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
+                .show_header(ui, |ui| {
+                    ui.dnd_drag_source(
+                        Id::unique(("topic", &b.id)),
+                        DragItem::Topic(b.id.clone()),
+                        |ui| ui.label(if placed { "▣" } else { "▢" }),
+                    )
+                    .response
+                    .on_hover_text(if placed {
+                        crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
+                    } else {
+                        crate::i18n::tr("Перетащите на плату")
+                    });
+                    ui.label(format!("{topic} ({})", b.id));
+                    if crate::iconbtn::icon_button(
+                        ui,
+                        true,
+                        crate::iconbtn::Icon::Settings,
+                        crate::i18n::tr("Настройки..."),
+                    )
+                    .clicked()
+                    {
+                        actions.push(NetAction::Settings(b.id.clone()));
                     }
                     if crate::iconbtn::icon_button(
                         ui,
@@ -243,9 +266,14 @@ fn topics_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
                     {
                         actions.push(NetAction::Remove(b.id.clone()));
                     }
+                })
+                .body(|ui| {
+                    if let Some(lib) = &lib {
+                        topic_ports(ui, b, &lib.def);
+                    }
                 });
         }
-        if ui.small_button(add).clicked() {
+        if crate::iconbtn::add_button(ui, true, crate::i18n::tr(add), "").clicked() {
             actions.push(NetAction::AddTopic(kind));
         }
     }
@@ -309,267 +337,6 @@ fn type_label(ty: SignalType) -> &'static str {
         SignalType::Any => crate::i18n::tr("любой"),
         SignalType::Number => crate::i18n::tr("число"),
         SignalType::Same => crate::i18n::tr("однотипный"),
-    }
-}
-
-/// Parameters and ports of one service block.
-fn settings(
-    app: &EditorApp,
-    ui: &mut Ui,
-    b: &crab_core::Block,
-    kind: &str,
-    actions: &mut Vec<NetAction>,
-) {
-    let Some(doc) = &app.doc else { return };
-    let logic = &doc.project.logic;
-    let Some(lib) = app.lib.resolve(logic, b) else {
-        return;
-    };
-    let def = &lib.def;
-    for p in def
-        .active_params(&b.params)
-        .filter(|p| !(kind == WEB_UI && (p.name == "pages" || p.name == "enabled")))
-    {
-        let label = crate::i18n::tr(p.label.as_deref().unwrap_or(&p.name));
-        // Values kept by the program (Wi-Fi password) are not in the project file.
-        let stored = p.local.as_ref().and_then(|key_param| {
-            let key = match b
-                .params
-                .get(key_param)
-                .or(def.param(key_param)?.default.as_ref())
-            {
-                Some(ParamValue::Text(s)) => s.as_str(),
-                _ => "",
-            };
-            app.local
-                .get(&b.kind, &p.name, key)
-                .map(|v| ParamValue::Text(v.to_owned()))
-        });
-        let current = stored
-            .as_ref()
-            .or(b.params.get(&p.name))
-            .or(p.default.as_ref());
-        ui.horizontal(|ui| {
-            if !p.choices.is_empty() {
-                let selected = current.map_or_else(
-                    || crate::i18n::tr("не задан").to_owned(),
-                    |v| crate::i18n::tr(&p.value_label(v)).to_owned(),
-                );
-                if p.name == "wifi_mode" && def.input("mode").is_some() {
-                    // Pulled out as the `mode` input: the choice becomes «set by input».
-                    pull_label(
-                        ui,
-                        &b.id,
-                        "mode",
-                        label,
-                        &p.description,
-                        Some(SignalType::Int),
-                        true,
-                        b.bound.get("mode"),
-                    );
-                } else {
-                    ui.label(label);
-                }
-                egui::ComboBox::from_id_salt(("net_param", &b.id, &p.name))
-                    .selected_text(selected)
-                    .show_ui(ui, |ui| {
-                        for c in &p.choices {
-                            let sel = current == Some(&c.value);
-                            if ui
-                                .selectable_label(sel, crate::i18n::tr(&c.label))
-                                .clicked()
-                            {
-                                actions.push(NetAction::SetParam {
-                                    id: b.id.clone(),
-                                    name: p.name.clone(),
-                                    value: c.value.clone(),
-                                });
-                            }
-                        }
-                    });
-            } else if p.kind == ParamKind::Bool && !p.runtime {
-                // `use_<port>` / `out_<port>` switch a port on: it is active only
-                // when pulled out to the board, so there is no check box.
-                let port = p
-                    .name
-                    .strip_prefix("use_")
-                    .or_else(|| p.name.strip_prefix("out_"))
-                    .filter(|n| def.input(n).is_some() || def.output(n).is_some());
-                if let Some(port) = port {
-                    let input = def.input(port).map(|d| d.ty);
-                    let ty = input.or(def.output(port).map(|d| d.ty));
-                    pull_label(
-                        ui,
-                        &b.id,
-                        port,
-                        label,
-                        &p.description,
-                        ty,
-                        input.is_some(),
-                        b.bound.get(port),
-                    );
-                } else {
-                    let mut v = matches!(current, Some(ParamValue::Bool(true)));
-                    if ui
-                        .checkbox(&mut v, label)
-                        .on_hover_text(&p.description)
-                        .changed()
-                    {
-                        actions.push(NetAction::SetParam {
-                            id: b.id.clone(),
-                            name: p.name.clone(),
-                            value: ParamValue::Bool(v),
-                        });
-                    }
-                }
-            } else if let Some(var) = b.bound.get(&p.name) {
-                pull_label(
-                    ui,
-                    &b.id,
-                    &p.name,
-                    label,
-                    &p.description,
-                    bindable_type(p.kind, false, p.runtime),
-                    true,
-                    Some(var),
-                );
-            } else {
-                pull_label(
-                    ui,
-                    &b.id,
-                    &p.name,
-                    label,
-                    &p.description,
-                    bindable_type(p.kind, false, p.runtime),
-                    true,
-                    None,
-                );
-                // A parameter made an input in the block settings is fed by its input.
-                if b.param_in.contains(&p.name) {
-                    return;
-                }
-                let set = |value| NetAction::SetParam {
-                    id: b.id.clone(),
-                    name: p.name.clone(),
-                    value,
-                };
-                match p.kind {
-                    ParamKind::Int => {
-                        let mut v = match current {
-                            Some(ParamValue::Int(i)) => *i,
-                            _ => 0,
-                        };
-                        if ui.add(egui::DragValue::new(&mut v)).changed() {
-                            actions.push(set(ParamValue::Int(v)));
-                        }
-                    }
-                    ParamKind::Float => {
-                        let mut v = match current {
-                            Some(ParamValue::Float(f)) => *f,
-                            _ => 0.0,
-                        };
-                        if ui.add(egui::DragValue::new(&mut v).speed(0.1)).changed() {
-                            actions.push(set(ParamValue::Float(v)));
-                        }
-                    }
-                    ParamKind::Text => {
-                        let mut v = match current {
-                            Some(ParamValue::Text(t)) => t.clone(),
-                            _ => String::new(),
-                        };
-                        let secret = p.show == crab_core::ParamShow::Secret;
-                        let reveal = ui.make_persistent_id(("net_reveal", &b.id, &p.name));
-                        let shown =
-                            secret && ui.data(|d| d.get_temp::<bool>(reveal)).unwrap_or(false);
-                        let edit = egui::TextEdit::singleline(&mut v)
-                            .password(secret && !shown)
-                            .desired_width(110.0);
-                        // Parameters kept by the program under this one's value
-                        // (SSID -> password).
-                        let dependents: Vec<&crab_core::ParamDef> = def
-                            .params
-                            .iter()
-                            .filter(|q| q.local.as_deref() == Some(p.name.as_str()))
-                            .collect();
-                        let changed = if dependents.is_empty() {
-                            ui.add(edit).changed()
-                        } else {
-                            // Remembered keys (entered SSIDs) are suggested while typing.
-                            let known: std::collections::BTreeSet<&str> = dependents
-                                .iter()
-                                .flat_map(|q| app.local.keys(kind, &q.name))
-                                .collect();
-                            let id = ui.make_persistent_id(("net_suggest", &b.id, &p.name));
-                            let out = egui::CompletionPopup::new(id)
-                                .word_boundary(|_| false)
-                                .show(ui, edit, |query| {
-                                    let typed = query.text.to_lowercase();
-                                    known
-                                        .iter()
-                                        .filter(|k| {
-                                            **k != query.text && k.to_lowercase().contains(&typed)
-                                        })
-                                        .map(|k| egui::Suggestion::new(*k))
-                                        .collect()
-                                });
-                            out.accepted.is_some() || out.text_edit.response.changed()
-                        };
-                        if secret
-                            && ui
-                                .selectable_label(shown, "\u{1f441}")
-                                .on_hover_text(crate::i18n::tr("Показать или скрыть"))
-                                .clicked()
-                        {
-                            ui.data_mut(|d| d.insert_temp(reveal, !shown));
-                        }
-                        if changed {
-                            // A new key brings its stored values (the password of that SSID).
-                            for q in &dependents {
-                                let stored = app.local.get(kind, &q.name, &v).unwrap_or_default();
-                                actions.push(NetAction::SetParam {
-                                    id: b.id.clone(),
-                                    name: q.name.clone(),
-                                    value: ParamValue::Text(stored.to_owned()),
-                                });
-                            }
-                            actions.push(set(ParamValue::Text(v)));
-                        }
-                    }
-                    ParamKind::Bool => {
-                        let mut v = matches!(current, Some(ParamValue::Bool(true)));
-                        if ui.checkbox(&mut v, "").changed() {
-                            actions.push(set(ParamValue::Bool(v)));
-                        }
-                    }
-                    _ => {
-                        ui.label(current.map_or_else(|| "не задан".to_owned(), value_text));
-                    }
-                }
-            }
-        });
-    }
-    if crate::iconbtn::icon_button(
-        ui,
-        true,
-        crate::iconbtn::Icon::Settings,
-        crate::i18n::tr("Настройки..."),
-    )
-    .clicked()
-    {
-        actions.push(NetAction::Settings(b.id.clone()));
-    }
-    if kind == WEB_UI {
-        pages_section(app, ui, actions);
-        if crate::iconbtn::icon_button(
-            ui,
-            true,
-            crate::iconbtn::Icon::Designer,
-            crate::i18n::tr("Конструктор страницы..."),
-        )
-        .clicked()
-        {
-            actions.push(NetAction::Designer);
-        }
     }
 }
 

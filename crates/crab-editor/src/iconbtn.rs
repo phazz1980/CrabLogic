@@ -44,7 +44,9 @@ pub fn icon_button(ui: &mut Ui, enabled: bool, icon: Icon, hint: &str) -> Respon
     };
     ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(icon.glyph()).size(17.0).color(color)),
+        egui::Button::new(RichText::new(icon.glyph()).size(14.0).color(color))
+            .min_size(egui::vec2(26.0, 22.0))
+            .frame_when_inactive(false),
     )
     .on_hover_text(hint)
 }
@@ -60,7 +62,9 @@ pub fn add_button(ui: &mut Ui, enabled: bool, caption: &str, hint: &str) -> Resp
     };
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(text).color(color)).small(),
+        egui::Button::new(RichText::new(text).size(14.0).color(color))
+            .min_size(egui::vec2(0.0, 22.0))
+            .frame_when_inactive(false),
     );
     if hint.is_empty() {
         response

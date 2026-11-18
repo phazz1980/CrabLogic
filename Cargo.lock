@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "crab-ai"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-build",
  "crab-codegen",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "crab-blocks"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-core",
  "wasm-encoder",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "crab-build"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-codegen",
  "crab-core",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "crab-cli"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "crab-codegen"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-blocks",
  "crab-core",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "crab-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chacha20poly1305",
  "getrandom 0.2.17",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "crab-debug"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-core",
  "crab-netfind",
@@ -1227,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "crab-demo"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-codegen",
  "crab-core",
@@ -1241,7 +1241,7 @@ dependencies = [
 
 [[package]]
 name = "crab-editor"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "crab-ai",
@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "crab-kernel"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "libm",
  "serde",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "crab-mcp"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-ai",
  "crab-build",
@@ -1291,11 +1291,11 @@ dependencies = [
 
 [[package]]
 name = "crab-netfind"
-version = "2.0.1"
+version = "2.1.0"
 
 [[package]]
 name = "crab-pdf"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-core",
  "thiserror 2.0.21",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "crab-pdf-render"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-core",
  "crab-pdf",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "crab-sim"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-blocks",
  "crab-codegen",
@@ -1328,18 +1328,18 @@ dependencies = [
 
 [[package]]
 name = "crab-sparkplug"
-version = "2.0.1"
+version = "2.1.0"
 
 [[package]]
 name = "crab-ui-format"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "crab-web"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "crab-ai",
  "crab-blocks",
