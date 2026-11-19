@@ -17,6 +17,7 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use crate::app::{EditorApp, LogLevel, Selection};
 
 mod block;
+pub(crate) use block::toggle_switch;
 mod expander;
 mod forms;
 mod pins;
@@ -30,6 +31,7 @@ pub enum Dialog {
     Var(VarDialog),
     Sheet(SheetDialog),
     Board(crate::boardcfg::BoardDialog),
+    Uart(crate::uartpanel::UartDialog),
     Expander(ExpanderDialog),
 }
 
@@ -254,6 +256,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
         },
         Dialog::Sheet(d) => crate::i18n::fmt("Плата {0}", &[&d.number]),
         Dialog::Board(_) => crate::i18n::tr("Настройки МК").to_owned(),
+        Dialog::Uart(d) => crate::i18n::fmt("UART{0}", &[&d.cfg.number]),
         Dialog::Expander(d) => match &d.original {
             Some(id) => crate::i18n::fmt("Расширитель «{0}»", &[&id]),
             None => crate::i18n::tr("Новый расширитель").to_owned(),
@@ -316,6 +319,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
                     };
                 }
             }
+            Dialog::Uart(d) => d.body(ui),
             Dialog::Expander(d) => expander_body(app, ui, d),
         }
     });
@@ -407,16 +411,17 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
     match dialog {
         Dialog::Board(d) => {
             let board = d.config()?;
-            let uarts = d.uarts();
-            if doc.project.config.board != board || doc.project.config.uart != uarts {
+            if doc.project.config.board != board {
                 app.port = board.port.clone().unwrap_or_default();
                 doc.project.config.board = board;
-                doc.project.config.uart = uarts;
                 doc.dirty = true;
                 doc.revision += 1;
                 // Pins and UARTs are checked against the board.
                 doc.recheck(&lib);
             }
+        }
+        Dialog::Uart(d) => {
+            crate::uartpanel::commit(app, &d.cfg);
         }
         Dialog::Block(d) => {
             let new_id = d.new_id.trim().to_owned();

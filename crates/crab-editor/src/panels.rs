@@ -637,6 +637,41 @@ pub(crate) fn add_group(
     pressed
 }
 
+/// Orange (the warning colour of the theme) of the cross after a row whose block is not on a
+/// sheet yet.
+pub(crate) fn off_sheet_cross(ui: &Ui, off_sheet: bool) -> Option<egui::Color32> {
+    off_sheet.then(|| ui.visuals().warn_fg_color)
+}
+
+/// Text of a tree row: the caption in `color` (the colour of the wires of its type; the ordinary
+/// text colour when `None`) and a cross of the given colour after it (`None`: no cross).
+pub(crate) fn row_label(
+    ui: &Ui,
+    caption: impl Into<String>,
+    color: Option<egui::Color32>,
+    cross: Option<egui::Color32>,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let font = egui::FontSelection::Style(egui::TextStyle::Button);
+    let text =
+        RichText::new(caption.into()).color(color.unwrap_or_else(|| ui.visuals().text_color()));
+    text.append_to(&mut job, ui.style(), font.clone(), egui::Align::Center);
+    if let Some(cross) = cross {
+        RichText::new(" [✕]").color(cross).append_to(
+            &mut job,
+            ui.style(),
+            font,
+            egui::Align::Center,
+        );
+    }
+    job
+}
+
+/// Colour of the wires of a variable type, for its row in the tree.
+fn var_color(pal: &crate::theme::Palette, ty: crab_core::VarType) -> egui::Color32 {
+    crate::canvas::signal_color(pal, ty.signal())
+}
+
 /// Project tree: controller → tags (inputs, outputs, variables) → sheets.
 pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let pal = app.theme.palette;
@@ -701,6 +736,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut net_actions = Vec::new();
     let mut display_actions = Vec::new();
     let mut radio_actions = Vec::new();
+    let mut uart_actions = Vec::new();
 
     // Tags: blocks with a pin, split by direction.
     let mut inputs = Vec::new();
@@ -723,10 +759,16 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             None => format!("{}  ·  GPIO{pin}", b.id),
         };
         let name = lib.def.info.name.clone();
+        let ty = lib
+            .def
+            .outputs
+            .first()
+            .map(|p| p.ty)
+            .or_else(|| lib.def.inputs.first().map(|p| p.ty));
         if lib.def.outputs.is_empty() {
-            outputs.push((b.id.clone(), text, name));
+            outputs.push((b.id.clone(), text, name, ty));
         } else {
-            inputs.push((b.id.clone(), text, name));
+            inputs.push((b.id.clone(), text, name, ty));
         }
     }
     // Library blocks with a pin, offered by the "add" menus of the two groups.
@@ -783,7 +825,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                         .on_hover_text(hint);
                     };
                     group(ui, key, title, Level::Sub, tools, |ui| {
-                        for (id, text, name) in items {
+                        for (id, text, name, ty) in items {
                             // Images on the board: the tag itself and its placed copies.
                             let images = placed_images(
                                 &doc.project,
@@ -798,13 +840,8 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                                 d.inputs.iter().find(|(p, _)| p.block == *id).map(|&(_, i)| i)
                             });
                             let shown = live_text(text, debug.as_ref(), index);
-                            // A mark instead of a caption: an arrow when the tag is on a sheet, a
-                            // cross (in the warning colour) when it is only in the tree.
-                            let shown = if placed {
-                                RichText::new(format!("→ {shown}"))
-                            } else {
-                                RichText::new(format!("✕ {shown}")).color(pal.warning)
-                            };
+                            // The colour of the wires of its type; a yellow cross while it is only in the tree.
+                            let shown = row_label(ui, shown, ty.map(|t| crate::canvas::signal_color(&pal, t)), off_sheet_cross(ui, !placed));
                             let resp = drag_row(
                                 ui,
                                 Id::unique(("tag", id)),
@@ -861,10 +898,12 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                             debug.as_ref(),
                             index,
                         );
+                        let color = Some(var_color(&pal, var.ty));
                         let text = if used {
-                            RichText::new(plain)
+                            row_label(ui, plain, color, None)
                         } else {
-                            RichText::new(crate::i18n::fmt("{0}  (не используется)", &[&plain])).color(pal.warning)
+                            // Not used on any sheet: an orange cross.
+                            row_label(ui, plain, color, Some(pal.warning))
                         };
                         let images = placed_images(
                             &doc.project,
@@ -942,6 +981,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             radio_actions = crate::radiopanel::show(app, ui);
             // The «Сеть» folder adds the actions of its Modbus folder to the radio ones.
             net_actions = crate::netpanel::show(app, ui, &mut radio_actions);
+            uart_actions = crate::uartpanel::show(app, ui);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
                 for b in &logic.blocks {
@@ -1026,6 +1066,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     crate::netpanel::apply(app, net_actions);
     crate::displaypanel::apply(app, display_actions);
     crate::radiopanel::apply(app, radio_actions);
+    crate::uartpanel::apply(app, uart_actions);
     if new_var {
         app.dialog = Dialog::for_var(app, None);
     }

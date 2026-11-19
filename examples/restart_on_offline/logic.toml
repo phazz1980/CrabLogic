@@ -1,0 +1,39 @@
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+wifi_mode = 0
+
+[[block]]
+id = "broker"
+type = "mqtt"
+broker = "broker.hivemq.com"
+user = "device"
+
+# Связи с брокером нет -> считаем время; 10 минут подряд -> перезапуск.
+[[block]]
+id = "offline"
+type = "not"
+
+[[block]]
+id = "wait"
+type = "timer_on"
+time = "10m"
+
+[[block]]
+id = "reboot"
+type = "restart"
+delay = "2s"
+guard = "60s"
+
+[[link]]
+from = "broker.connected"
+to = "offline.in"
+
+[[link]]
+from = "offline.out"
+to = "wait.in"
+
+[[link]]
+from = "wait.out"
+to = "reboot.go"

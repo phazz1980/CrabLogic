@@ -1,10 +1,9 @@
-//! "MCU settings" dialog: board, upload port and hardware UARTs.
+//! "MCU settings" dialog: board and upload port.
 
 use std::collections::BTreeMap;
 
 use crab_build::SerialPort;
-use crab_core::pins::{BoardLayout, BoardModel, BOARD_MODELS};
-use crab_core::uart::{chip_uarts, UartConfig, USB_SPEED};
+use crab_core::pins::{BoardModel, BOARD_MODELS};
 use crab_core::{BoardConfig, Boards};
 use eframe::egui::{self, RichText, Ui};
 
@@ -52,35 +51,14 @@ pub struct BoardDialog {
     port: String,
     /// Network address of the board: set from the toolbar, kept as it is.
     host: Option<String>,
-    /// `[[uart]]` of the project, edited here.
-    uarts: Vec<UartConfig>,
-    /// Blocks on each UART: (number, block id), to show who uses a port.
-    users: Vec<(u8, String)>,
-    /// UARTs set up by a settings block on a sheet: (number, block id).
-    from_blocks: Vec<(u8, String)>,
     /// The user asked for the board editor: `Some(None)` — a new board, `Some(Some(id))` —
     /// the board `id`. The caller takes it with [`BoardDialog::take_editor_request`].
     editor_request: Option<Option<String>>,
 }
 
-/// Speeds offered for a UART; any other can be typed.
-const SPEEDS: [u32; 10] = [
-    1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800,
-];
-const FORMATS: [&str; 8] = ["8N1", "8E1", "8O1", "8N2", "8E2", "8O2", "7E1", "7O1"];
-
 impl BoardDialog {
-    pub fn new(
-        board: &BoardConfig,
-        uarts: &[UartConfig],
-        users: Vec<(u8, String)>,
-        from_blocks: Vec<(u8, String)>,
-        boards: &Boards,
-    ) -> Self {
+    pub fn new(board: &BoardConfig, boards: &Boards) -> Self {
         Self {
-            uarts: uarts.to_vec(),
-            users,
-            from_blocks,
             editor_request: None,
             fqbn: board.fqbn.clone(),
             model: board.model.clone(),
@@ -129,77 +107,6 @@ impl BoardDialog {
         BoardModel::find(id)
             .map(|m| m.name)
             .or_else(|| self.boards.get(id).map(|b| b.def.info.name.as_str()))
-    }
-
-    /// `[[uart]]` to write to the project file.
-    pub fn uarts(&self) -> Vec<UartConfig> {
-        let mut uarts = self.uarts.clone();
-        uarts.sort_by_key(|u| u.number);
-        uarts
-    }
-
-    fn uart_section(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("UART").strong());
-        ui.weak(crate::i18n::fmt("USB — заливка, отладка и монитор порта, {0} бод, без настроек. UART0 у ESP32 занят USB-мостом, у ESP32-C3/S3 — свободный порт.", &[&USB_SPEED]));
-        let board = BoardConfig {
-            fqbn: self.fqbn.trim().to_owned(),
-            model: self.model.clone(),
-            port: None,
-            host: None,
-            options: BTreeMap::new(),
-        };
-        let chip = BoardLayout::of_board(&board, &self.boards).map(|l| l.chip());
-        let mut numbers: Vec<u8> = chip.map_or(vec![1, 2], |c| chip_uarts(c).to_vec());
-        // A UART set up for another board stays visible, so it can be switched off.
-        for u in &self.uarts {
-            if !numbers.contains(&u.number) {
-                numbers.push(u.number);
-            }
-        }
-        numbers.sort_unstable();
-        for number in numbers {
-            if let Some((_, id)) = self.from_blocks.iter().find(|(n, _)| *n == number) {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("UART{number}")).strong());
-                    ui.weak(crate::i18n::fmt(
-                        "настроен блоком «{0}» на схеме — меняйте его свойства",
-                        &[&id],
-                    ));
-                });
-                continue;
-            }
-            let users: Vec<&str> = self
-                .users
-                .iter()
-                .filter(|(n, id)| *n == number && !self.from_blocks.iter().any(|(_, b)| b == id))
-                .map(|(_, id)| id.as_str())
-                .collect();
-            let index = self.uarts.iter().position(|u| u.number == number);
-            let mut on = index.is_some();
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut on, format!("UART{number}"));
-                if !users.is_empty() {
-                    ui.weak(crate::i18n::fmt("используют: {0}", &[&users.join(", ")]));
-                }
-                if chip.is_some_and(|c| !chip_uarts(c).contains(&number)) {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        crate::i18n::tr("нет на этой плате"),
-                    );
-                }
-            });
-            match (on, index) {
-                (true, None) => self.uarts.push(UartConfig::new(number)),
-                (false, Some(i)) => {
-                    self.uarts.remove(i);
-                }
-                _ => {}
-            }
-            let Some(u) = self.uarts.iter_mut().find(|u| u.number == number) else {
-                continue;
-            };
-            ui.indent(("uart", number), |ui| uart_grid(ui, u));
-        }
     }
 
     /// What the user asked of the board editor since the last call (see the field).
@@ -295,78 +202,12 @@ impl BoardDialog {
                     });
                 ui.end_row();
             });
-
-        ui.separator();
-        self.uart_section(ui);
     }
 }
 
 /// A board in the picker.
 fn board_button(ui: &mut Ui, name: &str, fqbn: &str) -> egui::Response {
     ui.add(egui::Button::new(name)).on_hover_text(fqbn)
-}
-
-/// Speed, format, pins and buffer of one UART.
-fn uart_grid(ui: &mut Ui, u: &mut UartConfig) {
-    let id = u.number;
-    egui::Grid::new(("uart_grid", id))
-        .num_columns(2)
-        .spacing([10.0, 4.0])
-        .show(ui, |ui| {
-            ui.label(crate::i18n::tr("Скорость, бод"));
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt(("uart_speed", id))
-                    .selected_text(u.speed.to_string())
-                    .show_ui(ui, |ui| {
-                        for s in SPEEDS {
-                            ui.selectable_value(&mut u.speed, s, s.to_string());
-                        }
-                    });
-                ui.add(egui::DragValue::new(&mut u.speed).range(300..=5_000_000));
-            });
-            ui.end_row();
-
-            ui.label(crate::i18n::tr("Формат"));
-            egui::ComboBox::from_id_salt(("uart_format", id))
-                .selected_text(u.format.as_str())
-                .show_ui(ui, |ui| {
-                    for f in FORMATS {
-                        ui.selectable_value(&mut u.format, f.to_owned(), f);
-                    }
-                })
-                .response
-                .on_hover_text(crate::i18n::tr(
-                    "биты данных, чётность (N — нет, E — чёт, O — нечет), стоп-биты",
-                ));
-            ui.end_row();
-
-            for (label, pin, hint) in [
-                (
-                    "RX",
-                    &mut u.rx,
-                    crate::i18n::tr("-1 — вывод чипа по умолчанию"),
-                ),
-                (
-                    "TX",
-                    &mut u.tx,
-                    crate::i18n::tr("-1 — вывод чипа по умолчанию"),
-                ),
-                (
-                    "DE/RE (RS-485)",
-                    &mut u.de,
-                    crate::i18n::tr("-1 — без RS-485"),
-                ),
-            ] {
-                ui.label(label);
-                ui.add(egui::DragValue::new(pin).range(-1..=48).prefix("GPIO "))
-                    .on_hover_text(hint);
-                ui.end_row();
-            }
-
-            ui.label(crate::i18n::tr("Буфер приёма, байт"));
-            ui.add(egui::DragValue::new(&mut u.rx_buffer).range(64..=8192));
-            ui.end_row();
-        });
 }
 
 #[cfg(test)]
@@ -422,7 +263,7 @@ mod tests {
 
         let mut empty = project_board(Some("kc868"));
         empty.fqbn.clear();
-        let mut dialog = BoardDialog::new(&empty, &[], Vec::new(), Vec::new(), &boards);
+        let mut dialog = BoardDialog::new(&empty, &boards);
         dialog.fqbn = "esp32:esp32:esp32".into();
         assert_eq!(dialog.model_title(), Some("KC868"));
         assert_eq!(dialog.config().unwrap().model.as_deref(), Some("kc868"));

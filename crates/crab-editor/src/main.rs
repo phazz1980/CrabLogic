@@ -45,6 +45,7 @@ mod textmenu;
 mod theme;
 mod themeedit;
 mod trialrun;
+mod uartpanel;
 mod update;
 mod userlib;
 

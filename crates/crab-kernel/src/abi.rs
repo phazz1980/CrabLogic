@@ -120,6 +120,7 @@ pub const IMPORTS: &[Import] = &[
     imp("yield", &[], &[I32], Always),
     imp("bus", &[I32, I32, I32, I32, I32], &[I32], Allow),
     imp("dac_write", &[I32, I32], &[], Allow),
+    imp("restart", &[I32, I32, I32], &[I32], Allow),
 ];
 
 /// Import ids by name, for hosts that dispatch with `match`.
@@ -157,6 +158,23 @@ pub mod id {
     pub const YIELD: usize = 30;
     pub const BUS: usize = 31;
     pub const DAC_WRITE: usize = 32;
+    pub const RESTART: usize = 33;
+}
+
+/// Operations of `crab.restart(op, a, b) -> i32` (`specs/restart`): the module asks the master to
+/// restart the board; the master does it at the end of a scan, after the outputs of every module
+/// went to their safe state.
+pub mod restart_op {
+    /// `REQUEST(delay_ms, 0)`: restart after `delay_ms` (clamped to 0..=60000); an earlier request
+    /// stays when it is due sooner. Returns 1.
+    pub const REQUEST: i32 = 0;
+    /// `CANCEL(0, 0)`: drops a request that has not been carried out. Returns 1 when there was one.
+    pub const CANCEL: i32 = 1;
+    /// `REASON(ptr, cap)`: writes why the board last started into the module memory (`poweron`,
+    /// `software`, `pin`, `wdt`, `panic`, `brownout`, `other`); returns the length written.
+    pub const REASON: i32 = 2;
+    /// Largest delay of a request, ms.
+    pub const MAX_DELAY_MS: i32 = 60_000;
 }
 
 /// Operation codes and error codes of `crab.bus(op, a, b, c, d)`: GPIO, I²C and UART of the board
@@ -334,11 +352,12 @@ mod tests {
             (id::YIELD, "yield"),
             (id::BUS, "bus"),
             (id::DAC_WRITE, "dac_write"),
+            (id::RESTART, "restart"),
         ];
         for (i, name) in named {
             assert_eq!(IMPORTS[i].name, name);
         }
-        assert_eq!(IMPORTS.len(), id::DAC_WRITE + 1);
+        assert_eq!(IMPORTS.len(), id::RESTART + 1);
     }
 
     #[test]

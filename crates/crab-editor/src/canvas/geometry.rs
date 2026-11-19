@@ -160,7 +160,7 @@ pub(super) fn port_pos(rect: Rect, kind: Kind, index: usize, output: bool, z: f3
     }
 }
 
-pub(super) fn signal_color(p: &Palette, ty: SignalType) -> Color32 {
+pub(crate) fn signal_color(p: &Palette, ty: SignalType) -> Color32 {
     match ty {
         SignalType::Bool => p.bool_signal,
         SignalType::Int => p.int_signal,

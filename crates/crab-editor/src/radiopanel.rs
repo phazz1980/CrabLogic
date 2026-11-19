@@ -18,23 +18,6 @@ pub enum RadioAction {
     /// Adds a tag to the owner with this id (a slave device or a slave-role block), at the next
     /// free address of its holding table.
     AddTag(String),
-    /// Sets one parameter of a block (the type, address or word order of a tag).
-    SetParam {
-        id: String,
-        name: String,
-        value: ParamValue,
-    },
-    /// Sets the table of a tag and its type, which the table may force, in one edit.
-    SetTagTable {
-        id: String,
-        table: String,
-        kind: String,
-    },
-    /// Renames a block (the name of a tag).
-    Rename {
-        old: String,
-        new: String,
-    },
     Focus(String),
     Remove(String),
     Settings(String),
@@ -132,19 +115,32 @@ pub(crate) fn row(
         .resolve(&doc.project.logic, b)
         .map(|l| l.def.info.name.clone())
         .unwrap_or_else(|| b.kind.clone());
-    let placed = doc.project.layout.blocks.contains_key(&b.id);
-    let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
     let caption = if show_kind {
         format!("{}  ·  {}", b.id, crate::i18n::tr(&name))
     } else {
         b.id.clone()
     };
-    // An arrow when the block is on a sheet, a cross when it only waits in the tree.
-    let text = if placed {
-        egui::RichText::new(format!("→ {caption}"))
-    } else {
-        egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
-    };
+    row_captioned(app, ui, b, caption, None, actions);
+}
+
+/// The same row with a caption of the caller (a Modbus tag shows its table, type and address).
+pub(crate) fn row_captioned(
+    app: &EditorApp,
+    ui: &mut Ui,
+    b: &crab_core::Block,
+    caption: String,
+    color: Option<egui::Color32>,
+    actions: &mut Vec<RadioAction>,
+) {
+    let Some(doc) = &app.doc else { return };
+    let placed = doc.project.layout.blocks.contains_key(&b.id);
+    let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+    let text = crate::panels::row_label(
+        ui,
+        caption,
+        color,
+        crate::panels::off_sheet_cross(ui, !placed),
+    );
     let resp = crate::panels::drag_row(
         ui,
         Id::unique(("radio", &b.id)),
@@ -270,35 +266,6 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
                     )?;
                     p.set_param(&lib, &auto, "reg", Some(ParamValue::Int(i64::from(reg))))?;
                     p.rename_block(&auto, &id)
-                });
-                if let Err(e) = result {
-                    app.info(LogLevel::Error, e.to_string());
-                }
-            }
-            RadioAction::SetParam { id, name, value } => {
-                let Some(doc) = &mut app.doc else { return };
-                let key = Some(format!("tag:{id}.{name}"));
-                if let Err(e) = doc.edit(&lib, key, |p| p.set_param(&lib, &id, &name, Some(value)))
-                {
-                    app.info(LogLevel::Error, e.to_string());
-                }
-            }
-            RadioAction::SetTagTable { id, table, kind } => {
-                let Some(doc) = &mut app.doc else { return };
-                let result = doc.edit(&lib, None, |p| {
-                    p.set_param(&lib, &id, "table", Some(ParamValue::Text(table)))?;
-                    p.set_param(&lib, &id, "kind", Some(ParamValue::Text(kind)))
-                });
-                if let Err(e) = result {
-                    app.info(LogLevel::Error, e.to_string());
-                }
-            }
-            RadioAction::Rename { old, new } => {
-                let Some(doc) = &mut app.doc else { continue };
-                // The tags and devices that name the block follow its new id.
-                let result = doc.edit(&lib, None, |p| {
-                    p.rename_block(&old, &new)
-                        .map(|()| crate::modbuspanel::follow_rename(&mut p.logic, &old, &new))
                 });
                 if let Err(e) = result {
                     app.info(LogLevel::Error, e.to_string());

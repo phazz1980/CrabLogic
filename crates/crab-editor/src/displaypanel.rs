@@ -97,11 +97,12 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
     // double click opens its parameters, the context menu has the rest.
     let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
     let caption = format!("{} ({model_label})", b.id);
-    let text = if placed {
-        egui::RichText::new(format!("→ {caption}"))
-    } else {
-        egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
-    };
+    let text = crate::panels::row_label(
+        ui,
+        caption,
+        None,
+        crate::panels::off_sheet_cross(ui, !placed),
+    );
     let resp = crate::panels::drag_row(
         ui,
         Id::unique(("display", &b.id)),

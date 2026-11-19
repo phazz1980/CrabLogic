@@ -28,6 +28,7 @@ mod paint;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use self::geometry::signal_color;
 pub use self::menus::sheet_delete_dialog;
 pub use self::paint::block_preview;
 use self::{apply::*, draw::*, geometry::*, menus::*, paint::*};
@@ -51,7 +52,9 @@ pub enum DragItem {
     Block(String),
     /// Variable: the side the first link comes to decides read or write.
     Var(String),
-    /// Setting or port of a service block (Wi-Fi...) taken out to the board.
+    /// Setting or port of a service block (Wi-Fi...) taken out to the board. No panel offers it
+    /// since the topic rows became flat; the drop handler stays for it.
+    #[allow(dead_code)]
     Setting {
         id: String,
         name: String,

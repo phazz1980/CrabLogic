@@ -862,21 +862,8 @@ impl EditorApp {
 
     pub fn open_board_settings(&mut self, ctx: &egui::Context) {
         let Some(doc) = &self.doc else { return };
-        let users = crab_core::uart::block_uarts(&doc.project.logic, &self.lib)
-            .into_iter()
-            .map(|u| (u.number, u.block))
-            .collect();
-        let from_blocks = crab_core::uart::block_configs(&doc.project.logic, &self.lib)
-            .into_iter()
-            .map(|(id, u)| (u.number, id))
-            .collect();
-        let dialog = crate::boardcfg::BoardDialog::new(
-            &doc.project.config.board,
-            &doc.project.config.uart,
-            users,
-            from_blocks,
-            self.lib.boards(),
-        );
+        let dialog =
+            crate::boardcfg::BoardDialog::new(&doc.project.config.board, self.lib.boards());
         self.dialog = Some(Dialog::Board(dialog));
         self.scan_ports(ctx);
     }

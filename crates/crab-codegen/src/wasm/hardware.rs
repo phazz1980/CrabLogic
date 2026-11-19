@@ -135,6 +135,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             || self.uart_block(inst)?
             || self.text_block(inst)?
             || self.net_block(inst)?
+            || self.restart_block(inst)?
             || self.mqtt_block(inst)?
             || self.sparkplug_block(inst)?
             || self.web_block(inst)?

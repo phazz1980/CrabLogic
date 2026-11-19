@@ -1882,3 +1882,104 @@ to = "sink_b.in"
         "period default of the master"
     );
 }
+
+const RESTART_LOGIC: &str = r#"
+[[block]]
+id = "btn"
+type = "digital_in"
+pin = 4
+
+[[block]]
+id = "stop"
+type = "digital_in"
+pin = 35
+
+[[block]]
+id = "rst"
+type = "restart"
+delay = "500ms"
+guard = "10s"
+
+[[block]]
+id = "pend"
+type = "digital_out"
+pin = 5
+
+[[block]]
+id = "blk"
+type = "digital_out"
+pin = 18
+
+[[link]]
+from = "btn.out"
+to = "rst.go"
+
+[[link]]
+from = "stop.out"
+to = "rst.cancel"
+
+[[link]]
+from = "rst.pending"
+to = "pend.in"
+
+[[link]]
+from = "rst.blocked"
+to = "blk.in"
+"#;
+
+#[test]
+fn restart_block_asks_once_after_the_guard_and_can_be_cancelled() {
+    let lib = library();
+    let project = Project::from_sources(
+        "restart",
+        "[project]\nname = \"restart\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n",
+        RESTART_LOGIC,
+        "",
+    )
+    .unwrap();
+    let built = Program::build(&project, &lib)
+        .unwrap()
+        .wasm_module(1)
+        .unwrap();
+    assert!(
+        built.needs.iter().any(|n| n == "restart"),
+        "{:?}",
+        built.needs
+    );
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert!(manifest.allow.iter().any(|n| n == "restart"));
+    let mut m = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    m.io_mut().restart_reason = "wdt".into();
+    let level = |m: &McuModule, pin: i32| m.io().gpio_out.get(&pin).copied().unwrap_or(0);
+
+    // Inside the guard the command is ignored and `blocked` is on.
+    m.io_mut().gpio_in.insert(4, 1);
+    m.step(50).unwrap();
+    assert_eq!(m.io().restart_request, None);
+    assert_eq!((level(&m, 5), level(&m, 18)), (0, 1));
+
+    // A held `go` is no new edge: after the guard nothing happens until it falls and rises again.
+    for _ in 0..220 {
+        m.step(50).unwrap();
+    }
+    assert_eq!(level(&m, 18), 0, "guard is over");
+    assert_eq!(m.io().restart_request, None, "held go is not an edge");
+    m.io_mut().gpio_in.insert(4, 0);
+    m.step(50).unwrap();
+    m.io_mut().gpio_in.insert(4, 1);
+    m.step(50).unwrap();
+    assert_eq!(m.io().restart_request, Some(500));
+    assert_eq!(level(&m, 5), 1, "pending");
+
+    // The master has not carried it out yet: `cancel` drops it.
+    m.io_mut().gpio_in.insert(35, 1);
+    m.step(50).unwrap();
+    assert_eq!(m.io().restart_request, None);
+    assert_eq!(level(&m, 5), 0);
+    // While `cancel` is held a new edge does nothing.
+    m.io_mut().gpio_in.insert(4, 0);
+    m.step(50).unwrap();
+    m.io_mut().gpio_in.insert(4, 1);
+    m.step(50).unwrap();
+    assert_eq!(m.io().restart_request, None);
+}

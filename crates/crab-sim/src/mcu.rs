@@ -116,6 +116,11 @@ pub struct StubIo {
     pub retain_text: HashMap<i32, Vec<u8>>,
     /// How many times the module wrote to "flash" (`retain` and `retain_text`, op 1).
     pub retain_writes: u32,
+    /// The restart the module asked for (`crab.restart`): the delay in ms; the stub does not
+    /// restart, the caller reads this (and clears it to simulate a start).
+    pub restart_request: Option<i32>,
+    /// The reason of the last start `crab.restart` reports (empty: `poweron`).
+    pub restart_reason: String,
     /// Modbus settings the module handed over, as `(code, value)` in order (the apply call is code 63).
     pub modbus_cfg: Vec<(i32, i32)>,
     /// What a Modbus read returns, by `(slave, table | kind << 4 | master << 8, register)`; the bits of an int or float.
@@ -390,6 +395,29 @@ impl Devices for StubIo {
             id::NATIVE => int(self.native(a(0), a(1), a(2), a(3), mem)),
             id::NET => int(self.net([a(0), a(1), a(2), a(3), a(4)], &mut mem)),
             id::BUS => int(self.bus([a(0), a(1), a(2), a(3), a(4)], &mut mem)),
+            id::RESTART => int(match a(0) {
+                abi::restart_op::REQUEST => {
+                    let delay = a(1).clamp(0, abi::restart_op::MAX_DELAY_MS);
+                    self.restart_request =
+                        Some(self.restart_request.map_or(delay, |d| d.min(delay)));
+                    1
+                }
+                abi::restart_op::CANCEL => i32::from(self.restart_request.take().is_some()),
+                abi::restart_op::REASON => {
+                    let reason = if self.restart_reason.is_empty() {
+                        "poweron"
+                    } else {
+                        self.restart_reason.as_str()
+                    };
+                    let n = reason.len().min(a(2).max(0) as usize);
+                    if mem.write(a(1), &reason.as_bytes()[..n]) {
+                        n as i32
+                    } else {
+                        0
+                    }
+                }
+                _ => 0,
+            }),
             _ => None,
         }
     }

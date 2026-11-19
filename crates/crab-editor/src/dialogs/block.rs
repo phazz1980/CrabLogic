@@ -84,10 +84,18 @@ pub(super) fn block_settings(
         .iter()
         .filter_map(|(k, v)| Some((k.clone(), v.clone()?)))
         .collect();
+    // A slave under an RTU master has neither an IP address nor a port.
+    let hide_net = d.kind == "modbus_device"
+        && matches!(current.get("master"), Some(ParamValue::Text(m))
+            if doc.project.logic.block(m).is_some_and(|b| !crate::modbuspanel::shows_net_fields(&b.kind)));
     let params: Vec<&ParamDef> = def
         .active_params(&current)
         .filter(|p| {
             !p.fixed
+                && !(hide_net && matches!(p.name.as_str(), "ip" | "port"))
+                // The owner of a tag or a slave is the row it stands under in the tree.
+                && !(d.kind == "modbus_tag" && p.name == "device")
+                && !(d.kind == "modbus_device" && p.name == "master")
                 && !(is_widget_kind(&d.kind)
                     && (matches!(
                         p.name.as_str(),
@@ -250,7 +258,7 @@ pub(super) fn block_settings(
 }
 
 /// An on / off switch: a rounded track with a knob that slides to the side of the state.
-pub(super) fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
+pub(crate) fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
     let size = egui::vec2(34.0, 18.0);
     let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
     if response.clicked() {

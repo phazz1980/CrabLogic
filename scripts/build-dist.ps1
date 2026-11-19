@@ -165,6 +165,17 @@ foreach ($m in $masters) {
     Write-Host "Мастер $($m.chip): $([math]::Round((Get-Item $elf).Length / 1MB, 1)) МБ (ELF)"
 }
 
+# Leftovers of the self-update of the editor that ran from this folder (`.update_backup` and
+# `name (1)` copies) are not part of a distribution: the archive was 2x bigger with them. A
+# folder that exists only as `name (1)` is renamed back first.
+foreach ($copy in Get-ChildItem $dist -Force -Directory | Where-Object { $_.Name -match ' \(\d+\)$' }) {
+    $orig = Join-Path $dist ($copy.Name -replace ' \(\d+\)$', '')
+    if (-not (Test-Path $orig)) { Rename-Item $copy.FullName $orig; continue }
+    Remove-Item $copy.FullName -Recurse -Force
+}
+$backup = Join-Path $dist '.update_backup'
+if (Test-Path $backup) { Remove-Item $backup -Recurse -Force }
+
 if (-not $NoZip) {
     Write-Host '== Архив dist\CrabLogic.zip ==' -ForegroundColor Cyan
     Add-Type -AssemblyName System.IO.Compression.FileSystem

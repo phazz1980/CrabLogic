@@ -223,19 +223,7 @@ pub fn answer_info() {
     println!("master=crab-master-rs {}", env!("CARGO_PKG_VERSION"));
     // Why the board last started (a crash shows as `panic` or a watchdog), and the bad starts in a
     // row: for bug reports (`specs/bug-report`).
-    // SAFETY: a plain query of ESP-IDF.
-    let reason = match unsafe { sys::esp_reset_reason() } {
-        sys::esp_reset_reason_t_ESP_RST_POWERON => "poweron",
-        sys::esp_reset_reason_t_ESP_RST_EXT => "pin",
-        sys::esp_reset_reason_t_ESP_RST_SW => "software",
-        sys::esp_reset_reason_t_ESP_RST_PANIC => "panic",
-        sys::esp_reset_reason_t_ESP_RST_INT_WDT => "int_wdt",
-        sys::esp_reset_reason_t_ESP_RST_TASK_WDT => "task_wdt",
-        sys::esp_reset_reason_t_ESP_RST_WDT => "wdt",
-        sys::esp_reset_reason_t_ESP_RST_BROWNOUT => "brownout",
-        sys::esp_reset_reason_t_ESP_RST_DEEPSLEEP => "deepsleep",
-        _ => "other",
-    };
+    let reason = super::reboot::reason();
     let bad = snap().bad_boots;
     // `trip=scan:<ms>`: the scan watchdog restarted the board (the step ran past that limit).
     match super::watchdog::boot_trip() {

@@ -28,6 +28,7 @@ mod lora;
 mod modbus;
 mod mqtt;
 mod net;
+mod restart;
 mod retain;
 mod sparkplug;
 mod text;
@@ -91,9 +92,11 @@ const HW_BUS: u32 = HW_BASE + 16;
 const HW_LOG: u32 = HW_BASE + 17;
 /// `crab.dac_write(pin | fault bits, code)`: the DAC of an ESP32 (GPIO25/26), code 0..255.
 const HW_DAC_WRITE: u32 = HW_BASE + 18;
+/// `crab.restart(op, a, b) -> i32`: asks the master to restart the board (`specs/restart`).
+const HW_RESTART: u32 = HW_BASE + 19;
 /// Placeholder of the module's own text append function (see `Emitter::append`), defined last.
 const APPEND_FN: u32 = HW_BASE - 1;
-const HW_NAMES: [&str; 19] = [
+const HW_NAMES: [&str; 20] = [
     "gpio_read",
     "gpio_write",
     "adc_read",
@@ -113,6 +116,7 @@ const HW_NAMES: [&str; 19] = [
     "bus",
     "log",
     "dac_write",
+    "restart",
 ];
 /// Bit of the pin number passed to `gpio_read` that asks for the pull-up.
 const PIN_PULLUP: i32 = 0x100;
@@ -132,7 +136,7 @@ const F_LOCAL_BASE: u32 = 1000;
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 13] = [
+pub const MASTER_CAPS: [&str; 14] = [
     "math",
     "retain",
     "tag_text",
@@ -150,6 +154,8 @@ pub const MASTER_CAPS: [&str; 13] = [
     "modbus",
     // The DAC outputs (`dac_write`, ESP32 only): `analog_out` always needs it.
     "dac",
+    // The restart block (`restart`, `specs/restart`).
+    "restart",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.
@@ -1108,7 +1114,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 HW_UART | HW_NATIVE | HW_TAG_TEXT | HW_RETAIN_TEXT => 12,
                 HW_TEXT => 13,
                 HW_MATH => 14,
-                HW_RETAIN => 10,
+                HW_RETAIN | HW_RESTART => 10,
                 HW_BUS => 11,
                 _ => 2,
             };

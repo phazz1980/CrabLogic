@@ -99,6 +99,9 @@ impl EditorApp {
                                     | "mqtt_publish"
                                     | "mqtt_subscribe"
                                     | "web_ui"
+                                    | "lora_e220"
+                                    | "lora_point"
+                                    | "lora_centre"
                             )
                         ) {
                             p.take_service_off_board(id)

@@ -1,0 +1,6 @@
+[project]
+name = "restart_on_offline"
+description = "Нет связи с брокером MQTT 10 минут — плата перезапускается; причина последнего старта уходит в MQTT"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

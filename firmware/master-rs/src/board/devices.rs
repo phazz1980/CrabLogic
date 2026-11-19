@@ -3,7 +3,7 @@
 
 use super::analog;
 use super::bus::Bus;
-use super::{eth, modbus, mqtt, net, pcf, retain, sparkplug, uart, web};
+use super::{eth, modbus, mqtt, net, pcf, reboot, retain, sparkplug, uart, web};
 use crab_kernel::abi::id;
 use crab_kernel::host::{Devices, Mem, Val};
 use crab_kernel::lease::{Fault, Hal, PinUse};
@@ -245,6 +245,10 @@ impl BoardDevices {
                 Some(Val::I32(uart::call(a(0), a(1), a(2), a(3), &mut mem)))
             }
             id::RETAIN => Some(Val::I32(retain::retain(a(0), a(1), a(2)))),
+            id::RESTART => {
+                let mut mem = mem;
+                Some(Val::I32(reboot::call(a(0), a(1), a(2), &mut mem)))
+            }
             id::MODBUS => Some(Val::I32(modbus::call(a(0), a(1), a(2), a(3), a(4)))),
             id::RETAIN_TEXT => {
                 let mut mem = mem;

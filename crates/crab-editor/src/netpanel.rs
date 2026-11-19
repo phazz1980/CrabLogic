@@ -124,92 +124,113 @@ fn service(
     let logic = &doc.project.logic;
     let block = logic.blocks.iter().find(|b| b.kind == kind);
     ui.add_space(4.0);
-    let id = ui.make_persistent_id(("net", kind));
-    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, block.is_some())
-        .show_header(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.label(egui::RichText::new(title).strong());
-            // The buttons follow the title on the first row.
-            if let Some(b) = block {
-                if crate::iconbtn::icon_button(
+    // The web page is switched by a parameter: its settings and widgets stay.
+    let web_switch = kind == WEB_UI && block.is_some();
+    let mut on = match block {
+        Some(b) if web_switch => !matches!(b.params.get("enabled"), Some(ParamValue::Bool(false))),
+        _ => block.is_some(),
+    };
+    let toggle = |on: bool, actions: &mut Vec<NetAction>| match block {
+        Some(b) if web_switch => actions.push(NetAction::SetParam {
+            id: b.id.clone(),
+            name: "enabled".into(),
+            value: ParamValue::Bool(on),
+        }),
+        _ => actions.push(NetAction::Toggle { kind, on }),
+    };
+    let pullable = block.is_some_and(|b| {
+        app.lib
+            .resolve(logic, b)
+            .is_some_and(|l| l.def.info.pullable)
+    });
+    // A flat row like a variable: the title is dragged onto a sheet with the whole block,
+    // a double click opens the settings, the switch turns the service on and off.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let title_text = egui::RichText::new(title).strong();
+        let resp = match block {
+            Some(b) if pullable => {
+                let placed = doc.project.layout.blocks.contains_key(&b.id);
+                let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+                crate::panels::drag_row(
                     ui,
-                    true,
-                    crate::iconbtn::Icon::Settings,
-                    crate::i18n::tr("Настройки..."),
+                    Id::unique(("service", &b.id)),
+                    DragItem::Topic(b.id.clone()),
+                    selected,
+                    title_text,
                 )
-                .clicked()
-                {
+                .on_hover_text(if placed {
+                    crate::i18n::tr(
+                        "Двойной щелчок — настройки; перетащите, чтобы переставить блок на плате",
+                    )
+                } else {
+                    crate::i18n::tr("Двойной щелчок — настройки; перетащите весь блок на плату")
+                })
+            }
+            _ => ui.selectable_label(false, title_text),
+        };
+        if let Some(b) = block {
+            if resp.double_clicked() {
+                actions.push(NetAction::Settings(b.id.clone()));
+            } else if resp.clicked() && doc.project.layout.blocks.contains_key(&b.id) {
+                actions.push(NetAction::Focus(b.id.clone()));
+            }
+        }
+        resp.context_menu(|ui| {
+            if let Some(b) = block {
+                if ui.button(crate::i18n::tr("Настройки...")).clicked() {
                     actions.push(NetAction::Settings(b.id.clone()));
+                    ui.close();
                 }
             }
-            if kind == WEB_UI
-                && crate::iconbtn::icon_button(
-                    ui,
-                    true,
-                    crate::iconbtn::Icon::Designer,
-                    crate::i18n::tr("Конструктор страницы..."),
+            let mut menu_on = on;
+            if ui
+                .add_enabled(
+                    available || on,
+                    egui::Checkbox::new(&mut menu_on, crate::i18n::tr("Включить")),
                 )
                 .clicked()
             {
-                actions.push(NetAction::Designer);
+                toggle(menu_on, actions);
+                ui.close();
             }
-        })
-        .body(|ui| {
-            // The web page is switched by a parameter: its settings and widgets stay.
-            let web_switch = kind == WEB_UI && block.is_some();
-            let mut on = match block {
-                Some(b) if web_switch => {
-                    !matches!(b.params.get("enabled"), Some(ParamValue::Bool(false)))
-                }
-                _ => block.is_some(),
-            };
-            let check = ui.add_enabled(
-                available || on,
-                egui::Checkbox::new(&mut on, crate::i18n::tr("Включить")),
-            );
-            if !available {
-                check.on_hover_text(crate::i18n::tr("Сначала включите Wi-Fi или Ethernet"));
-            } else if check.changed() {
-                match block {
-                    Some(b) if web_switch => actions.push(NetAction::SetParam {
-                        id: b.id.clone(),
-                        name: "enabled".into(),
-                        value: ParamValue::Bool(on),
-                    }),
-                    _ => actions.push(NetAction::Toggle { kind, on }),
-                }
+            if block.is_some() && ui.button(crate::i18n::tr("Блок целиком удалить")).clicked()
+            {
+                actions.push(NetAction::Toggle { kind, on: false });
+                ui.close();
             }
-            if let Some(b) = block {
-                // The whole block with its ports goes to the board, like a topic.
-                let pullable = app
-                    .lib
-                    .resolve(logic, b)
-                    .is_some_and(|l| l.def.info.pullable);
-                let placed = doc.project.layout.blocks.contains_key(&b.id);
-                if pullable {
-                    ui.horizontal(|ui| {
-                        ui.dnd_drag_source(
-                            Id::unique(("service", &b.id)),
-                            DragItem::Topic(b.id.clone()),
-                            |ui| ui.label(if placed { "▣" } else { "▢" }),
-                        )
-                        .response
-                        .on_hover_text(if placed {
-                            crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
-                        } else {
-                            crate::i18n::tr("Перетащите весь блок на плату")
-                        });
-                        ui.label(crate::i18n::tr("Блок целиком"));
-                    });
-                }
-                if kind == WEB_UI {
-                    pages_section(app, ui, actions);
-                }
-            }
-            if kind == MQTT && block.is_some() {
+        });
+        let switch = ui
+            .add_enabled_ui(available || on, |ui| {
+                crate::dialogs::toggle_switch(ui, &mut on)
+            })
+            .inner;
+        if !available {
+            switch.on_hover_text(crate::i18n::tr("Сначала включите Wi-Fi или Ethernet"));
+        } else if switch.changed() {
+            toggle(on, actions);
+        }
+        if kind == WEB_UI
+            && crate::iconbtn::icon_button(
+                ui,
+                true,
+                crate::iconbtn::Icon::Designer,
+                crate::i18n::tr("Конструктор страницы..."),
+            )
+            .clicked()
+        {
+            actions.push(NetAction::Designer);
+        }
+    });
+    if block.is_some() && (kind == WEB_UI || kind == MQTT) {
+        ui.indent(("net_sub", kind), |ui| {
+            if kind == WEB_UI {
+                pages_section(app, ui, actions);
+            } else {
                 topics_section(app, ui, actions);
             }
         });
+    }
     ui.separator();
 }
 
@@ -219,128 +240,80 @@ fn topics_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
     let Some(doc) = &app.doc else { return };
     let logic = &doc.project.logic;
     for (kind, title, add) in TOPICS {
-        ui.separator();
-        ui.label(egui::RichText::new(title).strong());
-        for b in logic.blocks.iter().filter(|b| b.kind == kind) {
-            let lib = app.lib.resolve(logic, b);
-            let topic = match b.params.get("topic").or_else(|| {
-                lib.as_ref()
-                    .and_then(|l| l.def.param("topic"))
-                    .and_then(|p| p.default.as_ref())
-            }) {
-                Some(ParamValue::Text(t)) if !t.is_empty() => t.as_str(),
-                _ => crate::i18n::tr("без топика"),
-            };
-            let placed = doc.project.layout.blocks.contains_key(&b.id);
-            let id = ui.make_persistent_id(("mqtt_topic", &b.id));
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-                .show_header(ui, |ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    ui.dnd_drag_source(
-                        Id::unique(("topic", &b.id)),
-                        DragItem::Topic(b.id.clone()),
-                        |ui| ui.label(if placed { "▣" } else { "▢" }),
-                    )
-                    .response
-                    .on_hover_text(if placed {
-                        crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
-                    } else {
-                        crate::i18n::tr("Перетащите на плату")
-                    });
-                    ui.label(format!("{topic} ({})", b.id));
-                    if crate::iconbtn::icon_button(
-                        ui,
-                        true,
-                        crate::iconbtn::Icon::Settings,
-                        crate::i18n::tr("Настройки..."),
-                    )
-                    .clicked()
-                    {
-                        actions.push(NetAction::Settings(b.id.clone()));
-                    }
-                    if crate::iconbtn::icon_button(
-                        ui,
-                        true,
-                        crate::iconbtn::Icon::Delete,
-                        crate::i18n::tr("Удалить"),
-                    )
-                    .clicked()
-                    {
-                        actions.push(NetAction::Remove(b.id.clone()));
-                    }
-                })
-                .body(|ui| {
-                    if let Some(lib) = &lib {
-                        topic_ports(ui, b, &lib.def);
-                    }
-                });
-        }
-        if crate::iconbtn::add_button(ui, true, crate::i18n::tr(add), "").clicked() {
+        // A group like «Входы»: the title with a small «+», the rows folded under it.
+        let pressed = crate::panels::add_group(
+            ui,
+            ("mqtt_group", kind),
+            title,
+            crate::i18n::tr(add),
+            true,
+            |ui| {
+                for b in logic.blocks.iter().filter(|b| b.kind == kind) {
+                    topic_row(app, ui, b, actions);
+                }
+            },
+        );
+        if pressed {
             actions.push(NetAction::AddTopic(kind));
         }
     }
-    ui.separator();
 }
 
-/// Ports of a topic block: each can be dragged onto the board. A port of any type
-/// takes the type chosen next to it.
-fn topic_ports(ui: &mut Ui, b: &crab_core::Block, def: &crab_core::BlockDef) {
-    ui.label(crate::i18n::tr("Порты (перетащите на плату):"));
-    let ports = def
-        .active_inputs(&b.params)
-        .map(|p| (p, true))
-        .chain(def.active_outputs(&b.params).map(|p| (p, false)));
-    for (p, feed) in ports {
-        ui.horizontal(|ui| {
-            let mut ty = p.ty;
-            let bound = b.bound.get(&p.name);
-            if ty == SignalType::Any {
-                let id = ui.make_persistent_id(("mqtt_any", &b.id, &p.name));
-                ty = ui.data_mut(|d| *d.get_temp_mut_or(id, SignalType::Float));
-                if bound.is_none() {
-                    egui::ComboBox::from_id_salt(id)
-                        .selected_text(type_label(ty))
-                        .width(80.0)
-                        .show_ui(ui, |ui| {
-                            for t in [
-                                SignalType::Bool,
-                                SignalType::Int,
-                                SignalType::Float,
-                                SignalType::String,
-                            ] {
-                                if ui.selectable_label(ty == t, type_label(t)).clicked() {
-                                    ui.data_mut(|d| d.insert_temp(id, t));
-                                }
-                            }
-                        });
-                }
-            }
-            let label = crate::i18n::tr(p.label.as_deref().unwrap_or(&p.name));
-            pull_label(
-                ui,
-                &b.id,
-                &p.name,
-                label,
-                &p.description,
-                Some(ty),
-                feed,
-                bound,
-            );
-        });
+/// One topic row, like the row of a variable: dragged onto a sheet whole, a click finds it on the
+/// board, a double click opens the settings, the context menu has the rest.
+fn topic_row(app: &EditorApp, ui: &mut Ui, b: &crab_core::Block, actions: &mut Vec<NetAction>) {
+    let Some(doc) = &app.doc else { return };
+    let logic = &doc.project.logic;
+    let lib = app.lib.resolve(logic, b);
+    let topic = match b.params.get("topic").or_else(|| {
+        lib.as_ref()
+            .and_then(|l| l.def.param("topic"))
+            .and_then(|p| p.default.as_ref())
+    }) {
+        Some(ParamValue::Text(t)) if !t.is_empty() => t.as_str(),
+        _ => crate::i18n::tr("без топика"),
+    };
+    let placed = doc.project.layout.blocks.contains_key(&b.id);
+    let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+    let caption = format!("{topic} ({})", b.id);
+    let text = crate::panels::row_label(
+        ui,
+        caption,
+        None,
+        crate::panels::off_sheet_cross(ui, !placed),
+    );
+    let resp = crate::panels::drag_row(
+        ui,
+        Id::unique(("topic", &b.id)),
+        DragItem::Topic(b.id.clone()),
+        selected,
+        text,
+    )
+    .on_hover_text(if placed {
+        crate::i18n::tr("Щелчок — найти на плате. Двойной щелчок — свойства; перетащите на плату, чтобы переставить.")
+    } else {
+        crate::i18n::tr("Перетащите на плату. Двойной щелчок — свойства.")
+    });
+    if resp.double_clicked() {
+        actions.push(NetAction::Settings(b.id.clone()));
+    } else if resp.clicked() && placed {
+        actions.push(NetAction::Focus(b.id.clone()));
     }
-}
-
-fn type_label(ty: SignalType) -> &'static str {
-    match ty {
-        SignalType::Bool => crate::i18n::tr("логический"),
-        SignalType::Int => crate::i18n::tr("целый"),
-        SignalType::Float => crate::i18n::tr("дробный"),
-        SignalType::String => crate::i18n::tr("строка"),
-        SignalType::Any => crate::i18n::tr("любой"),
-        SignalType::Number => crate::i18n::tr("число"),
-        SignalType::Same => crate::i18n::tr("однотипный"),
-    }
+    resp.context_menu(|ui| {
+        if placed && ui.button(crate::i18n::tr("Найти на плате")).clicked() {
+            actions.push(NetAction::Focus(b.id.clone()));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr("Свойства...")).clicked() {
+            actions.push(NetAction::Settings(b.id.clone()));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(crate::i18n::tr("Удалить из проекта")).clicked() {
+            actions.push(NetAction::Remove(b.id.clone()));
+            ui.close();
+        }
+    });
 }
 
 fn widget_blocks(logic: &crab_core::Logic) -> impl Iterator<Item = &crab_core::Block> {
@@ -421,42 +394,6 @@ fn pages_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
                 }
             }
         });
-    }
-}
-
-/// Name of a setting or port: dragging it onto the sheet takes the value out to the
-/// board (a variable is created automatically); a bound one shows its variable and a
-/// release button.
-#[allow(clippy::too_many_arguments)]
-fn pull_label(
-    ui: &mut Ui,
-    id: &str,
-    name: &str,
-    label: &str,
-    hint: &str,
-    ty: Option<SignalType>,
-    feed: bool,
-    bound: Option<&String>,
-) {
-    let Some(ty) = ty else {
-        ui.label(label).on_hover_text(hint);
-        return;
-    };
-    let item = DragItem::Setting {
-        id: id.to_owned(),
-        name: name.to_owned(),
-        ty,
-        feed,
-    };
-    ui.dnd_drag_source(Id::unique(("pull", id, name)), item, |ui| ui.label(label))
-        .response
-        .on_hover_text(crate::i18n::fmt(
-            "{0}
-Перетащите на плату",
-            &[&hint],
-        ));
-    if let Some(var) = bound {
-        ui.label(format!("↔ {var}"));
     }
 }
 

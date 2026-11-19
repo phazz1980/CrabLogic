@@ -11,7 +11,6 @@ use crab_core::{Block, Logic, ParamValue};
 use eframe::egui::{self, Color32, Ui};
 
 use crate::app::EditorApp;
-use crate::canvas::DragItem;
 use crate::radiopanel::RadioAction;
 
 /// Tables in the order of their combo box: (value, caption).
@@ -54,27 +53,6 @@ pub fn is_slave_role(kind: &str) -> bool {
 /// master reaches its devices by address, an RTU bus has neither.
 pub fn shows_net_fields(master_kind: &str) -> bool {
     master_kind == "modbus_tcp_master"
-}
-
-/// Whether `text` is an IPv4 address written as a dotted quad `a.b.c.d` (each part 0..=255), with
-/// surrounding spaces ignored. Empty text is valid too: it means the master's address.
-pub fn valid_ip(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() {
-        return true;
-    }
-    let mut parts = 0;
-    for part in text.split('.') {
-        parts += 1;
-        let octet = !part.is_empty()
-            && part.len() <= 3
-            && part.bytes().all(|c| c.is_ascii_digit())
-            && part.parse::<u8>().is_ok();
-        if !octet {
-            return false;
-        }
-    }
-    parts == 4
 }
 
 pub fn show(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<RadioAction>) {
@@ -126,7 +104,7 @@ pub fn show(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<RadioAction>) {
         });
 }
 
-/// Under a master: its «+ Slave» button and one row per slave device, each with its tags.
+/// Under a master: a «Slave» group (with «+») and one row per slave device, each with its tags.
 fn master_children(
     app: &EditorApp,
     ui: &mut Ui,
@@ -139,27 +117,29 @@ fn master_children(
     ui.indent(("modbus_slaves", master.id.as_str()), |ui| {
         let devices = logic.modbus_devices(&master.id);
         let full = devices.len() >= slave_limit(master);
-        if crate::iconbtn::add_button(
+        let add = crate::panels::add_group(
             ui,
-            !full,
-            crate::i18n::tr("+ Slave"),
+            ("modbus_devices", master.id.as_str()),
+            "Slave",
             crate::i18n::tr(
                 "Добавить slave (устройство Modbus) под этот master. Предел числа slave задаётся параметром «Макс. slave» в настройках master",
             ),
-        )
-        .clicked()
-        {
+            !full,
+            |ui| {
+                for device in devices {
+                    device_row(app, ui, master, device, conflicts, actions);
+                }
+            },
+        );
+        if add {
             actions.push(RadioAction::AddDevice(master.id.clone()));
-        }
-        for device in devices {
-            device_row(app, ui, master, device, conflicts, actions);
         }
     });
 }
 
-/// One slave device: its id, the Unit ID (applied at once), under a TCP master also the IP address
-/// and port, and delete, which takes its tags too. Devices are never placed on a sheet, so they
-/// have no find or drag.
+/// One slave device: a flat row with its Unit ID (and under a TCP master the address and port);
+/// a double click opens its settings, the context menu deletes it with its tags. Devices are never
+/// placed on a sheet, so they have no mark, find or drag. Its tags follow in a group.
 fn device_row(
     app: &EditorApp,
     ui: &mut Ui,
@@ -168,37 +148,39 @@ fn device_row(
     conflicts: &[ModbusConflict],
     actions: &mut Vec<RadioAction>,
 ) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        ui.label(device.id.as_str());
-        ui.weak(crate::i18n::tr("Unit ID"));
-        let mut unit = int_param(device, "unit")
-            .unwrap_or(*UNIT_RANGE.start())
-            .clamp(*UNIT_RANGE.start(), *UNIT_RANGE.end());
+    let unit = int_param(device, "unit").unwrap_or(*UNIT_RANGE.start());
+    let mut caption = format!("{} · Unit {unit}", device.id);
+    if shows_net_fields(&master.kind) {
+        let ip = text_param(device, "ip", "");
+        let port = int_param(device, "port").unwrap_or(0);
+        if !ip.is_empty() {
+            caption.push_str(&format!(" · {ip}"));
+        }
+        if port != 0 {
+            caption.push_str(&format!(":{port}"));
+        }
+    }
+    let resp = ui
+        .selectable_label(false, caption)
+        .on_hover_text(crate::i18n::tr(
+            "Двойной щелчок — свойства (Unit ID, адрес, порт)",
+        ));
+    if resp.double_clicked() {
+        actions.push(RadioAction::Settings(device.id.clone()));
+    }
+    resp.context_menu(|ui| {
+        if ui.button(crate::i18n::tr("Свойства...")).clicked() {
+            actions.push(RadioAction::Settings(device.id.clone()));
+            ui.close();
+        }
+        ui.separator();
         if ui
-            .add(egui::DragValue::new(&mut unit).range(UNIT_RANGE))
-            .on_hover_text(crate::i18n::tr("Адрес устройства (Unit ID), 1..247"))
-            .changed()
-        {
-            actions.push(RadioAction::SetParam {
-                id: device.id.clone(),
-                name: "unit".to_owned(),
-                value: ParamValue::Int(unit),
-            });
-        }
-        if shows_net_fields(&master.kind) {
-            ip_field(ui, master, device, actions);
-            port_field(ui, device, actions);
-        }
-        if crate::iconbtn::icon_button(
-            ui,
-            true,
-            crate::iconbtn::Icon::Delete,
-            crate::i18n::tr("Удалить slave вместе с его тегами"),
-        )
-        .clicked()
+            .button(crate::i18n::tr("Удалить из проекта"))
+            .on_hover_text(crate::i18n::tr("Вместе с его тегами"))
+            .clicked()
         {
             actions.push(RadioAction::Remove(device.id.clone()));
+            ui.close();
         }
     });
     ui.indent(("modbus_device_tags", device.id.as_str()), |ui| {
@@ -206,70 +188,7 @@ fn device_row(
     });
 }
 
-/// The IP address of a device under a TCP master. Like the tag name it is edited in a buffer of
-/// its own and applied when the field loses focus, and only if it is a valid address or empty
-/// (empty = the master's address). The text is red while it is not an address.
-fn ip_field(ui: &mut Ui, master: &Block, device: &Block, actions: &mut Vec<RadioAction>) {
-    let saved = text_param(device, "ip", "");
-    let master_ip = text_param(master, "ip", "");
-    let hint = if master_ip.is_empty() {
-        crate::i18n::tr("адрес master")
-    } else {
-        master_ip
-    };
-    let buffer_id = ui.scope_id().with(("modbus_device_ip", device.id.as_str()));
-    let mut ip = ui
-        .data(|d| d.get_temp::<String>(buffer_id))
-        .unwrap_or_else(|| saved.to_owned());
-    let red = (!valid_ip(&ip)).then_some(Color32::RED);
-    let edit = ui
-        .add(
-            egui::TextEdit::singleline(&mut ip)
-                .desired_width(110.0)
-                .hint_text(hint.to_owned())
-                .text_color_opt(red),
-        )
-        .on_hover_text(crate::i18n::tr(
-            "IP-адрес slave, вид a.b.c.d; пусто — адрес master",
-        ));
-    if edit.lost_focus() {
-        ui.data_mut(|d| d.remove::<String>(buffer_id));
-        let new = ip.trim();
-        if valid_ip(new) && new != saved {
-            actions.push(RadioAction::SetParam {
-                id: device.id.clone(),
-                name: "ip".to_owned(),
-                value: ParamValue::Text(new.to_owned()),
-            });
-        }
-    } else if edit.changed() {
-        ui.data_mut(|d| d.insert_temp(buffer_id, ip));
-    }
-}
-
-/// The port of a device under a TCP master; 0 means the master's port.
-fn port_field(ui: &mut Ui, device: &Block, actions: &mut Vec<RadioAction>) {
-    let mut port = int_param(device, "port")
-        .unwrap_or(0)
-        .clamp(0, i64::from(u16::MAX));
-    if ui
-        .add(
-            egui::DragValue::new(&mut port)
-                .range(0..=i64::from(u16::MAX))
-                .prefix(crate::i18n::tr("порт ")),
-        )
-        .on_hover_text(crate::i18n::tr("0 — порт master"))
-        .changed()
-    {
-        actions.push(RadioAction::SetParam {
-            id: device.id.clone(),
-            name: "port".to_owned(),
-            value: ParamValue::Int(port),
-        });
-    }
-}
-
-/// Under a slave-role block: its tags, with the «+ Тег» button.
+/// Under a slave-role block: its tags group.
 fn slave_tags(
     app: &EditorApp,
     ui: &mut Ui,
@@ -282,7 +201,7 @@ fn slave_tags(
     });
 }
 
-/// The «+ Тег» button of one owner (a device or a slave-role block) and its tag rows.
+/// The «Теги» group of one owner (a device or a slave-role block): «+» and the tag rows.
 fn tag_group(
     app: &EditorApp,
     ui: &mut Ui,
@@ -292,28 +211,30 @@ fn tag_group(
 ) {
     let Some(doc) = &app.doc else { return };
     let logic = &doc.project.logic;
-    if crate::iconbtn::add_button(
+    let add = crate::panels::add_group(
         ui,
-        true,
-        crate::i18n::tr("+ Тег"),
+        ("modbus_tags", owner),
+        crate::i18n::tr("Теги"),
         crate::i18n::tr(
             "Добавить тег: регистр или бит. Адрес — следующий свободный в таблице Holding",
         ),
-    )
-    .clicked()
-    {
+        true,
+        |ui| {
+            for slot in logic.modbus_tags_of(owner) {
+                // Copies of a tag (blocks with `tag` set) are not listed.
+                if let Some(b) = logic.block(&slot.id).filter(|b| b.tag.is_none()) {
+                    tag_row(app, ui, b, conflicts, actions);
+                }
+            }
+        },
+    );
+    if add {
         actions.push(RadioAction::AddTag(owner.to_owned()));
-    }
-    for slot in logic.modbus_tags_of(owner) {
-        // Copies of a tag (blocks with `tag` set) are not listed.
-        if let Some(b) = logic.block(&slot.id).filter(|b| b.tag.is_none()) {
-            tag_row(app, ui, b, conflicts, actions);
-        }
     }
 }
 
-/// One tag: placed marker and drag handle, name, find button, table, type, address, «слова
-/// наоборот» for float, size, direction, delete. The conflicts of the tag follow in red.
+/// One tag: a flat row like a variable (name, table, type, address, size, direction, mark),
+/// everything is edited in its settings (double click). The conflicts of the tag follow in red.
 fn tag_row(
     app: &EditorApp,
     ui: &mut Ui,
@@ -323,159 +244,31 @@ fn tag_row(
 ) {
     let Some(doc) = &app.doc else { return };
     let id = b.id.as_str();
-    let placed = doc.project.layout.blocks.contains_key(&b.id);
     let direction = doc.project.logic.modbus_tag_direction(id);
     let table = text_param(b, "table", NEW_TAG_TABLE);
     let kind = text_param(b, "kind", "int");
-    let reg = match b.params.get("reg") {
-        Some(ParamValue::Int(n)) => (*n).clamp(0, i64::from(u16::MAX)),
-        _ => 0,
+    let reg = int_param(b, "reg").unwrap_or(0);
+    let caption = format!(
+        "{id} · {} {kind} {reg} · {} · {}",
+        table_caption(table),
+        size_text(table, kind),
+        crate::i18n::tr(direction_caption(direction)),
+    );
+    let color = match kind {
+        "bool" => Some(crate::canvas::signal_color(
+            &app.theme.palette,
+            crab_core::SignalType::Bool,
+        )),
+        "float" => Some(crate::canvas::signal_color(
+            &app.theme.palette,
+            crab_core::SignalType::Float,
+        )),
+        _ => Some(crate::canvas::signal_color(
+            &app.theme.palette,
+            crab_core::SignalType::Int,
+        )),
     };
-    let swap = matches!(b.params.get("swap"), Some(ParamValue::Bool(true)));
-
-    ui.horizontal_wrapped(|ui| {
-        ui.dnd_drag_source(
-            ui.scope_id().with(("modbus_tag_drag", id)),
-            DragItem::Topic(b.id.clone()),
-            |ui| ui.label(if placed { "▣" } else { "▢" }),
-        )
-        .response
-        .on_hover_text(if placed {
-            crate::i18n::tr("Тег уже на плате; перетащите, чтобы переставить")
-        } else {
-            crate::i18n::tr("Перетащите на плату")
-        });
-
-        // The name is edited in a buffer of its own and renamed when the field loses focus.
-        let name_id = ui.scope_id().with(("modbus_tag_name", id));
-        let mut name = ui
-            .data(|d| d.get_temp::<String>(name_id))
-            .unwrap_or_else(|| id.to_owned());
-        let edit = ui.add(egui::TextEdit::singleline(&mut name).desired_width(110.0));
-        if edit.lost_focus() {
-            ui.data_mut(|d| d.remove::<String>(name_id));
-            let new = name.trim();
-            if new != id {
-                actions.push(RadioAction::Rename {
-                    old: id.to_owned(),
-                    new: new.to_owned(),
-                });
-            }
-        } else if edit.changed() {
-            ui.data_mut(|d| d.insert_temp(name_id, name));
-        }
-
-        if crate::iconbtn::icon_button(
-            ui,
-            placed,
-            crate::iconbtn::Icon::Find,
-            crate::i18n::tr("Найти на плате"),
-        )
-        .clicked()
-        {
-            actions.push(RadioAction::Focus(b.id.clone()));
-        }
-
-        let mut picked_table = None;
-        egui::ComboBox::from_id_salt(("modbus_tag_table", id))
-            .width(90.0)
-            .selected_text(table_caption(table))
-            .show_ui(ui, |ui| {
-                for (value, caption) in TABLES {
-                    if ui.selectable_label(table == value, caption).clicked() {
-                        picked_table = Some(value);
-                    }
-                }
-            })
-            .response
-            .on_hover_text(crate::i18n::tr("Таблица регистров Modbus"));
-        if let Some(value) = picked_table {
-            if value != table {
-                actions.push(RadioAction::SetTagTable {
-                    id: b.id.clone(),
-                    table: value.to_owned(),
-                    kind: kind_for_table(value, kind),
-                });
-            }
-        }
-
-        let mut picked_kind = None;
-        egui::ComboBox::from_id_salt(("modbus_tag_kind", id))
-            .width(70.0)
-            .selected_text(kind)
-            .show_ui(ui, |ui| {
-                for allowed in allowed_kinds(table) {
-                    if ui.selectable_label(kind == *allowed, *allowed).clicked() {
-                        picked_kind = Some(*allowed);
-                    }
-                }
-            })
-            .response
-            .on_hover_text(crate::i18n::tr("Тип значения"));
-        if let Some(value) = picked_kind {
-            if value != kind {
-                actions.push(RadioAction::SetParam {
-                    id: b.id.clone(),
-                    name: "kind".to_owned(),
-                    value: ParamValue::Text(value.to_owned()),
-                });
-            }
-        }
-
-        let mut address = reg;
-        if ui
-            .add(egui::DragValue::new(&mut address).range(0..=i64::from(u16::MAX)))
-            .on_hover_text(crate::i18n::tr("Адрес в таблице"))
-            .changed()
-        {
-            actions.push(RadioAction::SetParam {
-                id: b.id.clone(),
-                name: "reg".to_owned(),
-                value: ParamValue::Int(address),
-            });
-        }
-
-        if kind == "float" {
-            let mut word_swap = swap;
-            if ui
-                .checkbox(&mut word_swap, crate::i18n::tr("слова наоборот"))
-                .on_hover_text(crate::i18n::tr(
-                    "Поменять местами два регистра float (порядок CDAB вместо ABCD)",
-                ))
-                .changed()
-            {
-                actions.push(RadioAction::SetParam {
-                    id: b.id.clone(),
-                    name: "swap".to_owned(),
-                    value: ParamValue::Bool(word_swap),
-                });
-            }
-        }
-
-        ui.weak(size_text(table, kind));
-
-        let text = crate::i18n::tr(direction_caption(direction));
-        let hint = crate::i18n::tr(
-            "Направление задаёт связь на листе: подключён выход — тег читается из устройства, подключён вход — пишется в него",
-        );
-        if direction == TagDirection::Both {
-            ui.colored_label(Color32::RED, text).on_hover_text(hint);
-        } else {
-            ui.weak(text).on_hover_text(hint);
-        }
-
-        if crate::iconbtn::icon_button(
-            ui,
-            true,
-            crate::iconbtn::Icon::Delete,
-            crate::i18n::tr("Удалить из проекта"),
-        )
-        .clicked()
-        {
-            actions.push(RadioAction::Remove(b.id.clone()));
-        }
-    });
-
+    crate::radiopanel::row_captioned(app, ui, b, caption, color, actions);
     for conflict in conflicts.iter().filter(|c| conflict_mentions(c, id)) {
         ui.colored_label(Color32::RED, conflict_message(conflict));
     }
@@ -503,27 +296,6 @@ fn table_caption(table: &str) -> &str {
         .iter()
         .find(|(value, _)| *value == table)
         .map_or(table, |(_, caption)| caption)
-}
-
-/// Types a table takes: coil and discrete tables are bits (`bool`), holding and input tables are
-/// registers (`int` or `float`).
-pub fn allowed_kinds(table: &str) -> &'static [&'static str] {
-    match table {
-        "coil" | "discrete" => &["bool"],
-        _ => &["int", "float"],
-    }
-}
-
-/// The type a tag has after its table changes to `table`: `kind` when the table takes it,
-/// otherwise the table's first type (`bool` in a bit table, `int` in a register table).
-pub fn kind_for_table(table: &str, kind: &str) -> String {
-    let allowed = allowed_kinds(table);
-    let kept = allowed
-        .iter()
-        .find(|k| **k == kind)
-        .copied()
-        .unwrap_or(allowed[0]);
-    kept.to_owned()
 }
 
 /// Cells a tag takes, as text for the row: bits for coil and discrete, registers otherwise.
@@ -703,27 +475,6 @@ mod tests {
             blocks,
             ..Default::default()
         }
-    }
-
-    #[test]
-    fn bit_tables_take_bool_only() {
-        assert_eq!(allowed_kinds("coil"), ["bool"]);
-        assert_eq!(allowed_kinds("discrete"), ["bool"]);
-        assert_eq!(allowed_kinds("holding"), ["int", "float"]);
-        assert_eq!(allowed_kinds("input"), ["int", "float"]);
-    }
-
-    #[test]
-    fn table_change_corrects_the_type() {
-        // Bit tables: anything that is not bool becomes bool.
-        assert_eq!(kind_for_table("coil", "int"), "bool");
-        assert_eq!(kind_for_table("discrete", "float"), "bool");
-        assert_eq!(kind_for_table("coil", "bool"), "bool");
-        // Register tables: bool becomes int, int and float stay.
-        assert_eq!(kind_for_table("holding", "bool"), "int");
-        assert_eq!(kind_for_table("input", "bool"), "int");
-        assert_eq!(kind_for_table("input", "float"), "float");
-        assert_eq!(kind_for_table("holding", "int"), "int");
     }
 
     #[test]
@@ -913,35 +664,5 @@ mod tests {
         assert!(!shows_net_fields("modbus_rtu_master"));
         assert!(!shows_net_fields("modbus_tcp_slave"));
         assert!(!shows_net_fields(""));
-    }
-
-    #[test]
-    fn ip_must_be_a_dotted_quad_or_empty() {
-        for good in [
-            "",
-            "   ",
-            "192.168.1.10",
-            "0.0.0.0",
-            "255.255.255.255",
-            " 10.0.0.5 ",
-        ] {
-            assert!(valid_ip(good), "{good:?} should be valid");
-        }
-        for bad in [
-            "256.1.1.1",
-            "1.2.3",
-            "1.2.3.4.5",
-            "1.2.3.",
-            "1..2.3",
-            ".1.2.3",
-            "1.2.3.-1",
-            "+1.2.3.4",
-            "1234.1.1.1",
-            "a.b.c.d",
-            "1.2.3.4 5",
-            "1.2.3.4/24",
-        ] {
-            assert!(!valid_ip(bad), "{bad:?} should be invalid");
-        }
     }
 }

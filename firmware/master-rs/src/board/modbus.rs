@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(2);
 /// A TCP master that cannot reach its server tries again this often.
 const RECONNECT: Duration = Duration::from_secs(2);
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Default pins of a Modbus UART when the block leaves them at -1 (those of `uart.rs`).
 #[cfg(target_arch = "riscv32")]

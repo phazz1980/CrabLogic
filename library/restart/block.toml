@@ -1,0 +1,50 @@
+[block]
+type = "restart"
+name = "Перезапуск платы"
+symbol = "RST"
+group = "Система"
+description = "Перезапускает плату по фронту входа go через время delay. Первые guard секунд после старта команда игнорируется (защита от петли перезапусков). Выход reason: почему плата стартовала в прошлый раз."
+memory = true
+single = true
+
+[[input]]
+name = "go"
+type = "bool"
+description = "Перезапуск по переходу false → true"
+
+[[input]]
+name = "cancel"
+type = "bool"
+optional = true
+description = "true отменяет перезапуск, который ждёт своего времени, и не даёт запустить новый"
+
+[[output]]
+name = "pending"
+type = "bool"
+description = "true, пока перезапуск ждёт своего времени"
+
+[[output]]
+name = "blocked"
+type = "bool"
+description = "true в первые guard секунд после старта: команда go игнорируется"
+
+[[output]]
+name = "reason"
+type = "string"
+description = "Почему плата стартовала: poweron, software, pin, panic, int_wdt, task_wdt, wdt, brownout, other"
+
+[[param]]
+name = "delay"
+type = "duration"
+default = "1s"
+min = 0
+max = 60000
+description = "Пауза между фронтом на go и перезапуском (до 60 с): успевает уйти ответ по MQTT или Modbus"
+
+[[param]]
+name = "guard"
+type = "duration"
+default = "30s"
+min = 10000
+max = 600000
+description = "Сколько после старта блок игнорирует go (10 с … 10 мин)"

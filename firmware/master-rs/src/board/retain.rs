@@ -224,6 +224,12 @@ fn count_write() {
     WRITES.lock_ceiling().record(uptime_ms());
 }
 
+/// True when no value waits for the writing thread (before a restart of the board).
+pub fn is_flushed() -> bool {
+    let p = PENDING.lock_ceiling();
+    !p.ints.iter().any(|e| e.used) && !p.texts.iter().any(|e| e.used)
+}
+
 /// `(writes since boot, writes in the last hour)` of actual NVS writes.
 pub fn write_counts() -> (u32, u32) {
     let mut w = WRITES.lock_ceiling();

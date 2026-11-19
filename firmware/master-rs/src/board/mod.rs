@@ -33,6 +33,7 @@ mod note_queue;
 mod notes;
 mod pcf;
 mod pulse;
+mod reboot;
 mod retain;
 mod snapshot;
 mod sparkplug;
@@ -86,11 +87,11 @@ const MAX_TICKS: u32 = 100_000;
 /// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
 /// `retain` and `retain_text` keep values in NVS (`retain.rs`); UART blocks: `uart.rs`; PCF8574 expanders: `pcf.rs`.
 #[cfg(target_arch = "riscv32")]
-const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,rv32imc";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,restart,rv32imc";
 /// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
 /// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
 #[cfg(not(target_arch = "riscv32"))]
-const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,dac,xtensa-esp32";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,dac,restart,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
@@ -693,6 +694,26 @@ impl Master {
         println!("ok");
     }
 
+    /// A module asked for a restart of the board (`crab.restart`): every module is unloaded, so its
+    /// outputs go to their safe state, then the chip restarts. The reason of the next start is
+    /// `software`, which does not count as a bad reset.
+    fn reboot(&mut self) -> ! {
+        self.log("restart", "перезапуск платы по запросу схемы");
+        for slot in &mut self.slots {
+            if let Some(handle) = slot.handle.take() {
+                drop(self.kernel.unload(handle));
+            }
+        }
+        // The saved values still queued (`retain`) are written first, but not for long.
+        let wait = Instant::now();
+        while !retain::is_flushed() && wait.elapsed() < Duration::from_millis(500) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Let the line reach the host.
+        std::thread::sleep(Duration::from_millis(50));
+        reboot::now()
+    }
+
     fn restart(&mut self, name: &str) {
         let Some(index) = self.slot(name) else {
             println!("err");
@@ -1147,6 +1168,9 @@ impl Master {
             self.scan(dt);
             let overran = self.cycle.end(tick::now_us());
             self.publish();
+            if reboot::due() {
+                self.reboot();
+            }
             if overran {
                 // As a PLC: a step that ran over waits for the next mark of the grid, the marks
                 // passed during it are dropped. The wait also lets the idle task of the core run.

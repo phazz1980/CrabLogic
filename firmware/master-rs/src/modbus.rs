@@ -923,6 +923,8 @@ struct Remote {
     last_error: u8,
     /// No requests to this slave before this time (after a timeout).
     pause_until: u64,
+    /// Timeouts in a row; each doubles the pause, so a dead slave steals ever less time.
+    fails: u8,
 }
 
 impl Remote {
@@ -949,6 +951,7 @@ impl Remote {
             online: true,
             last_error: 0,
             pause_until: 0,
+            fails: 0,
         }
     }
 
@@ -1014,6 +1017,8 @@ struct Telegram {
 /// Most remote slaves one master polls (the editor's «Макс. slave» is at most this). Each takes
 /// eight setting codes from 16; code 63 (commit) falls in the gap after the fifth one's last code.
 pub const MAX_REMOTES: usize = 32;
+/// Longest pause before a slave that keeps timing out is asked again.
+const OFFLINE_PAUSE_MAX_MS: u64 = 10_000;
 /// Size of the setting table: codes below 16 and eight per remote slave.
 /// First setting code of the per-slave server addresses of a TCP master: slave n has its IP at
 /// `ENDPOINT_BASE + 2n` (first octet lowest, 0 = the master's) and its port at `+ 2n + 1` (0 = the
@@ -1042,13 +1047,13 @@ pub struct Master {
 }
 
 impl Master {
-    /// A master over `remotes` (at most four are used). `speed` is the UART speed (RTU timing).
+    /// A master over `remotes` (at most [`MAX_REMOTES`] are used). `speed` is the UART speed (RTU timing).
     pub fn new(framing: Framing, speed: u32, remotes: &[RemoteConfig]) -> Self {
         let speed = if speed == 0 { 9600 } else { speed };
         Master {
             framing,
             speed,
-            remotes: remotes.iter().take(4).map(Remote::new).collect(),
+            remotes: remotes.iter().take(MAX_REMOTES).map(Remote::new).collect(),
             state: MasterState::Ready,
             current: None,
             cur_table: Table::Coil,
@@ -1433,6 +1438,7 @@ impl Master {
                 return Some(ERR_FRAME);
             }
             remote.online = true;
+            remote.fails = 0;
             return Some(body[2]);
         }
         if body[1] != function {
@@ -1467,6 +1473,7 @@ impl Master {
             _ => {}
         }
         remote.online = true;
+        remote.fails = 0;
         None
     }
 
@@ -1483,16 +1490,16 @@ impl Master {
     }
 
     fn on_timeout<T: Transport>(&mut self, now: u64, t: &mut T) {
-        let pause: u64 = self
-            .remotes
-            .iter()
-            .map(|r| r.period_ms + r.timeout_ms)
-            .sum();
         if let Some(tele) = &self.tele {
             let r = &mut self.remotes[tele.remote];
             r.last_error = ERR_TIMEOUT;
             r.online = false;
-            r.pause_until = now + pause;
+            r.fails = r.fails.saturating_add(1);
+            // Own period and timeout, doubled per failure in a row, capped: a dead slave must not
+            // hold up the live ones (one request per timeout) for long.
+            let base = r.period_ms + r.timeout_ms;
+            let shift = u32::from(r.fails - 1).min(4);
+            r.pause_until = now + (base << shift).clamp(base, OFFLINE_PAUSE_MAX_MS.max(base));
         }
         self.rx.clear();
         if self.framing == Framing::Tcp {
@@ -2085,6 +2092,25 @@ mod tests {
         assert!(master.slave_status(5));
         assert_eq!(master.last_error(5), 0);
         assert_eq!(master.tables(5).unwrap().read_int(Table::Holding, 1), 42);
+    }
+
+    #[test]
+    fn silent_slave_backs_off_and_pause_is_capped() {
+        let mut master = Master::new(Framing::Rtu, 9600, &[cfg(5, [4, 0, 0, 0])]);
+        let (mut m, _s) = wire();
+        let mut pauses = Vec::new();
+        let mut last_fails = 0;
+        for t in 0..60_000 {
+            master.poll(t, &mut m);
+            let r = &master.remotes[0];
+            if r.fails != last_fails {
+                last_fails = r.fails;
+                pauses.push(r.pause_until - t);
+            }
+        }
+        assert!(pauses.len() >= 4, "{pauses:?}");
+        assert!(pauses.windows(2).all(|w| w[1] >= w[0]), "{pauses:?}");
+        assert!(pauses.iter().all(|p| *p <= OFFLINE_PAUSE_MAX_MS + 1000));
     }
 
     #[test]
