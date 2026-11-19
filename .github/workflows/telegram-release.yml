@@ -42,13 +42,47 @@ jobs:
           title=$(gh release view "$tag" --repo "$REPO" --json name --jq .name)
           body=$(gh release view "$tag" --repo "$REPO" --json body --jq .body)
           url="https://github.com/$REPO/releases/tag/$tag"
+          # Turn the Markdown of the release into Telegram HTML: bold title and headings,
+          # bullets, inline code, links; cut on a whole line so no tag is left open.
           # Telegram takes up to 4096 characters; keep room for the title and the link.
-          body=$(printf '%s' "$body" | head -c 3300)
-          text=$(printf '%s\n\n%s\n\n%s' "$title" "$body" "$url")
+          text=$(TITLE="$title" BODY="$body" URL="$url" python3 - <<'PY'
+          import html, os, re
+
+          def inline(s):
+              s = html.escape(s, quote=False)
+              s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+              s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+              s = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r'<a href="\2">\1</a>', s)
+              return s
+
+          lines, size, cut = [], 0, False
+          for raw in os.environ["BODY"].replace("\r", "").split("\n"):
+              line = raw.rstrip()
+              m = re.match(r"^#{1,6}\s+(.*)$", line)
+              if m:
+                  out = "<b>" + inline(m.group(1)) + "</b>"
+              elif re.match(r"^\s*[-*]\s+", line):
+                  out = "• " + inline(re.sub(r"^\s*[-*]\s+", "", line))
+              else:
+                  out = inline(line)
+              if size + len(out) > 3300:
+                  cut = True
+                  break
+              lines.append(out)
+              size += len(out) + 1
+          body = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+          if cut:
+              body += "\n…"
+          url = os.environ["URL"]
+          print("🦀 <b>" + html.escape(os.environ["TITLE"], quote=False) + "</b>\n\n" + body
+                + '\n\n<a href="' + url + '">Полные заметки на GitHub</a>')
+          PY
+          )
           # --fail-with-body puts the answer of Telegram (a wrong token or chat) into the log.
           curl --fail-with-body --silent --show-error \
             --data-urlencode "chat_id=$TELEGRAM_CHAT" \
             --data-urlencode "text=$text" \
+            --data-urlencode "parse_mode=HTML" \
             --data-urlencode "disable_web_page_preview=true" \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
           echo "sent $tag"
