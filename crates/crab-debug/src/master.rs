@@ -311,6 +311,11 @@ fn handle_line(
         l.events = aux.events;
         return false;
     }
+    // `list` answer: what the master offers to modules; the editor reads it before uploads, so
+    // here it is only kept out of the console.
+    if text.starts_with("modcaps=") {
+        return false;
+    }
     // `list` answer: `free=<bytes> largest=<bytes> min=<bytes>`.
     if let Some(rest) = text.strip_prefix("free=") {
         let mut words = rest.split_whitespace();
@@ -746,6 +751,23 @@ mod tests {
             entries: vec![entry("a", SignalType::Int), entry("b", SignalType::Float)],
             texts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_modcaps_line_of_list_stays_out_of_the_console() {
+        let live = Arc::new(Mutex::new(Live::default()));
+        let changed = handle_line(
+            "modcaps=flashmod,abi5,aot,restart,rv32imc",
+            &table(),
+            &[],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Aux::default(),
+            Instant::now(),
+            &live,
+        );
+        assert!(!changed);
+        assert_eq!(live.lock().unwrap().console_total, 0);
     }
 
     #[test]

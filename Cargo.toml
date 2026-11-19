@@ -6,7 +6,7 @@ members = ["crates/*"]
 exclude = ["drivers/display", "drivers/lora_e220"]
 
 [workspace.package]
-version = "2.2.0"
+version = "2.2.1"
 edition = "2021"
 
 [workspace.dependencies]
