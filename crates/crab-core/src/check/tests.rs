@@ -722,6 +722,40 @@ fn retain_fast_report(retain: bool, fast: bool) -> Report {
     check(&logic, &lib, None)
 }
 
+/// Report for one block with a single `bool` input left unconnected; `optional` sets the flag.
+fn unconnected_input_report(optional: bool) -> Report {
+    let mut lib = library();
+    let def: BlockDef = toml::from_str(&format!(
+        "[block]\ntype = \"sink\"\nname = \"sink\"\ngroup = \"Тест\"\n\
+         [[input]]\nname = \"in\"\ntype = \"bool\"\noptional = {optional}\n"
+    ))
+    .unwrap();
+    lib.insert(LibraryBlock {
+        def,
+        dir: Default::default(),
+    });
+    let logic: Logic = toml::from_str("[[block]]\nid = \"s\"\ntype = \"sink\"\n").unwrap();
+    check(&logic, &lib, None)
+}
+
+fn has_input_empty(r: &Report) -> bool {
+    r.diagnostics
+        .iter()
+        .any(|d| d.kind == DiagKind::InputEmpty && d.block.as_deref() == Some("s"))
+}
+
+#[test]
+fn optional_input_left_unconnected_is_not_reported() {
+    let r = unconnected_input_report(true);
+    assert!(!has_input_empty(&r), "{:?}", r.diagnostics);
+}
+
+#[test]
+fn required_input_left_unconnected_is_reported() {
+    let r = unconnected_input_report(false);
+    assert!(has_input_empty(&r), "{:?}", r.diagnostics);
+}
+
 fn has_retain_fast(r: &Report) -> bool {
     r.diagnostics
         .iter()

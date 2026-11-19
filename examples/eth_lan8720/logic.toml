@@ -19,21 +19,24 @@ inverted = true
 
 [[block]]
 id = "button_reg"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "discrete"
 kind = "bool"
 reg = 0
 
 [[block]]
 id = "online_reg"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "discrete"
 kind = "bool"
 reg = 1
 
 [[block]]
 id = "relay_reg"
-type = "modbus_read"
+type = "modbus_tag"
+device = "slave"
 table = "coil"
 kind = "bool"
 reg = 0

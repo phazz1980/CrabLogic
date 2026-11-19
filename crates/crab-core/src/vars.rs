@@ -293,6 +293,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                 description: String::new(),
                 sim: None,
                 fast: false,
+                optional: false,
             };
             let def = BlockDef {
                 info: BlockInfo {
@@ -338,6 +339,7 @@ pub(crate) fn builtin_blocks() -> BTreeMap<String, LibraryBlock> {
                             description: "Разрешение записи".to_owned(),
                             sim: None,
                             fast: false,
+                            optional: false,
                         },
                     ],
                 },

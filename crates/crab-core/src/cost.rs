@@ -132,22 +132,9 @@ pub fn family_of(kind: &str) -> Family {
         "pcf8574_in" | "pcf8574_out" => Family::I2c,
         "uart_read" | "uart_send" | "uart_config" => Family::Uart,
         "flash_store" => Family::Retain,
-        "modbus_read"
-        | "modbus_write"
-        | "modbus_master_read"
-        | "modbus_master_write"
-        | "modbus_rtu_master"
-        | "modbus_rtu_slave"
-        | "modbus_tcp_master"
-        | "modbus_tcp_slave"
-        | "mqtt"
-        | "mqtt_publish"
-        | "mqtt_subscribe"
-        | "sparkplug_metric"
-        | "sparkplug_node"
-        | "wifi"
-        | "ethernet"
-        | "ntp" => Family::Net,
+        "modbus_tag" | "modbus_device" | "modbus_rtu_master" | "modbus_rtu_slave"
+        | "modbus_tcp_master" | "modbus_tcp_slave" | "mqtt" | "mqtt_publish" | "mqtt_subscribe"
+        | "sparkplug_metric" | "sparkplug_node" | "wifi" | "ethernet" | "ntp" => Family::Net,
         _ => Family::Other,
     }
 }
@@ -344,7 +331,7 @@ mod tests {
             h.load + h.slot + h.logic + h.timers + h.text + 600
         );
         assert_eq!(h.block_bytes("web_label"), 0);
-        assert_eq!(h.block_bytes("modbus_write"), h.modbus);
+        assert_eq!(h.block_bytes("modbus_tag"), h.modbus);
         assert!(h.block_bytes("no_such_block") >= h.logic);
         assert_eq!(h.project_bytes(&[100, 200]), h.first_load + 300);
         assert!(heap_for(Some(Chip::Esp32C3)).modbus > h.modbus);

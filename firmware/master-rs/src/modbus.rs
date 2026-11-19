@@ -676,6 +676,9 @@ pub trait Transport {
     fn connect(&mut self) {}
     /// TCP master: drop the connection (after a timeout).
     fn close(&mut self) {}
+    /// TCP master: the next calls are about the slave with this index (each slave may have its
+    /// own server address, so its own connection). Called whenever a request is chosen.
+    fn select(&mut self, _remote: usize) {}
 }
 
 fn drain<T: Transport>(t: &mut T) {
@@ -1008,7 +1011,17 @@ struct Telegram {
     count: usize,
 }
 
-/// Modbus master (RTU or TCP): polls up to four remote slaves in turn and writes what the program
+/// Most remote slaves one master polls (the editor's «Макс. slave» is at most this). Each takes
+/// eight setting codes from 16; code 63 (commit) falls in the gap after the fifth one's last code.
+pub const MAX_REMOTES: usize = 32;
+/// Size of the setting table: codes below 16 and eight per remote slave.
+/// First setting code of the per-slave server addresses of a TCP master: slave n has its IP at
+/// `ENDPOINT_BASE + 2n` (first octet lowest, 0 = the master's) and its port at `+ 2n + 1` (0 = the
+/// master's).
+pub const ENDPOINT_BASE: usize = 16 + 8 * MAX_REMOTES;
+const SETTINGS: usize = ENDPOINT_BASE + 2 * MAX_REMOTES;
+
+/// Modbus master (RTU or TCP): polls up to [`MAX_REMOTES`] remote slaves in turn and writes what the program
 /// changed. Drive it with [`Master::poll`].
 #[derive(Debug, Clone)]
 pub struct Master {
@@ -1047,6 +1060,29 @@ impl Master {
             txn: 1,
             pause_ms: 10u64.max(u64::from(t35_us(speed)).div_ceil(1000)),
         }
+    }
+
+    /// Index of the slave a module names: a plain address (0..=255, the first slave with it), or
+    /// `(index + 1) << 8`, which picks the slave by its place in the list (two slaves may share a
+    /// Unit ID when they sit at different addresses).
+    pub fn index_of(&self, key: i32) -> Option<usize> {
+        if key >= 256 {
+            let index = usize::try_from(key >> 8).ok()?.checked_sub(1)?;
+            (index < self.remotes.len()).then_some(index)
+        } else {
+            self.remotes.iter().position(|r| r.address as i32 == key)
+        }
+    }
+
+    /// The tables of the slave named by `key`, see [`Master::index_of`].
+    pub fn tables_key_mut(&mut self, key: i32) -> Option<&mut Tables> {
+        let index = self.index_of(key)?;
+        Some(&mut self.remotes[index].tables)
+    }
+
+    /// `slaveStatus` of the slave named by `key`.
+    pub fn status_key(&self, key: i32) -> bool {
+        self.index_of(key).is_some_and(|i| self.remotes[i].online)
     }
 
     fn remote_at(&self, address: u8) -> Option<&Remote> {
@@ -1132,6 +1168,9 @@ impl Master {
         };
         if !made {
             return;
+        }
+        if let Some(tele) = &self.tele {
+            t.select(tele.remote);
         }
         if self.framing == Framing::Tcp && !t.is_connected() {
             t.connect();
@@ -1488,6 +1527,13 @@ pub struct UartSettings {
     pub de: i32,
 }
 
+/// Where a TCP master connects to reach one slave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Endpoint {
+    pub ip: [u8; 4],
+    pub port: u16,
+}
+
 /// TCP settings of a TCP role (setting codes 1 to 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TcpSettings {
@@ -1496,6 +1542,10 @@ pub struct TcpSettings {
     pub port: u16,
     /// Server address of a TCP master (all zeros for a slave).
     pub server_ip: [u8; 4],
+    /// TCP master: the address of each slave (the first `remote_count`), the master's own where a
+    /// slave sets none.
+    pub remotes: [Endpoint; MAX_REMOTES],
+    pub remote_count: usize,
 }
 
 /// What the board glue needs to open a port for a committed role.
@@ -1527,10 +1577,10 @@ fn float_words(bits: u32, swap: bool) -> u32 {
 /// Setting codes: 0 role (1 RTU master, 2 RTU slave, 3 TCP master, 4 TCP slave), 1 uart (TCP:
 /// interface), 2 speed (TCP: port), 3 parity (TCP master: server IP bits, first octet lowest),
 /// 4 rx, 5 tx, 6 de, 7 count (slave: address), 8..11 slave tables (holding, input, coils,
-/// discrete), 16 + 8 n + k master slave n: 0 address, 1 period, 2 timeout, 3..6 table sizes.
+/// discrete), 16 + 8 n + k master slave n (n < 32): 0 address, 1 period, 2 timeout, 3..6 table sizes.
 #[derive(Debug, Clone)]
 pub struct ModbusHost {
-    settings: [i32; 64],
+    settings: [i32; SETTINGS],
     rtu_master: Option<Master>,
     rtu_slave: Option<RtuSlave>,
     tcp_master: Option<Master>,
@@ -1548,7 +1598,7 @@ impl Default for ModbusHost {
 impl ModbusHost {
     pub fn new() -> Self {
         ModbusHost {
-            settings: [0; 64],
+            settings: [0; SETTINGS],
             rtu_master: None,
             rtu_slave: None,
             tcp_master: None,
@@ -1618,11 +1668,11 @@ impl ModbusHost {
         match op {
             0 => {
                 if a == 0 {
-                    self.settings = [0; 64];
+                    self.settings = [0; SETTINGS];
                 }
                 if a == 63 {
                     self.commit();
-                } else if (0..63).contains(&a) {
+                } else if (0..SETTINGS as i32).contains(&a) {
                     self.settings[a as usize] = b;
                 }
                 0
@@ -1650,11 +1700,10 @@ impl ModbusHost {
     /// The tables a read or write goes to. Flprog: C++ sent a TCP call to the TCP master whenever
     /// one existed; here the master bit decides, as for RTU.
     fn tables(&mut self, tcp: bool, master: bool, unit: i32) -> Option<&mut Tables> {
-        let address = unit as u8;
         match (tcp, master) {
-            (false, true) => self.rtu_master.as_mut()?.tables_mut(address),
+            (false, true) => self.rtu_master.as_mut()?.tables_key_mut(unit),
             (false, false) => self.rtu_slave.as_mut().map(|s| &mut s.unit.tables),
-            (true, true) => self.tcp_master.as_mut()?.tables_mut(address),
+            (true, true) => self.tcp_master.as_mut()?.tables_key_mut(unit),
             (true, false) => self.tcp_slave.as_mut().map(|s| &mut s.unit.tables),
         }
     }
@@ -1666,7 +1715,7 @@ impl ModbusHost {
             } else {
                 &self.rtu_master
             };
-            i32::from(master.as_ref().is_some_and(|m| m.slave_status(a as u8)))
+            i32::from(master.as_ref().is_some_and(|m| m.status_key(a)))
         } else if tcp {
             self.tcp_slave
                 .as_ref()
@@ -1679,7 +1728,7 @@ impl ModbusHost {
     }
 
     fn remotes(&self) -> Vec<RemoteConfig> {
-        let n = self.settings[7].clamp(1, 4) as usize;
+        let n = self.settings[7].clamp(1, MAX_REMOTES as i32) as usize;
         (0..n)
             .map(|i| {
                 let b = 16 + 8 * i;
@@ -1714,10 +1763,30 @@ impl ModbusHost {
             tx: s[5],
             de: s[6],
         };
+        let remote_count = self.settings[7].clamp(1, MAX_REMOTES as i32) as usize;
+        let mut remotes = [Endpoint::default(); MAX_REMOTES];
+        for (n, slot) in remotes.iter_mut().enumerate().take(remote_count) {
+            let ip = s[ENDPOINT_BASE + 2 * n];
+            let port = s[ENDPOINT_BASE + 2 * n + 1];
+            *slot = Endpoint {
+                ip: if ip != 0 {
+                    ip.to_le_bytes()
+                } else {
+                    s[3].to_le_bytes()
+                },
+                port: if port > 0 && port <= i32::from(u16::MAX) {
+                    port as u16
+                } else {
+                    s[2] as u16
+                },
+            };
+        }
         let tcp = TcpSettings {
             interface: s[1],
             port: s[2] as u16,
             server_ip: s[3].to_le_bytes(),
+            remotes,
+            remote_count,
         };
         let role = match s[0] {
             1 if self.rtu_master.is_none() => {
@@ -1755,6 +1824,7 @@ impl ModbusHost {
                     uart: None,
                     tcp: Some(TcpSettings {
                         server_ip: [0; 4],
+                        remote_count: 0,
                         ..tcp
                     }),
                 }
@@ -2258,6 +2328,122 @@ mod tests {
     }
 
     #[test]
+    fn host_tcp_master_slaves_have_their_own_addresses() {
+        let mut host = ModbusHost::new();
+        set(&mut host, 0, 3);
+        set(&mut host, 2, 502);
+        set(&mut host, 3, i32::from_le_bytes([192, 168, 0, 5]));
+        set(&mut host, 7, 3);
+        // Slave 0: the master's address; 1: its own IP, the master's port; 2: IP and port of its own.
+        let ip = |n: usize| ENDPOINT_BASE as i32 + 2 * n as i32;
+        set(&mut host, ip(1), i32::from_le_bytes([192, 168, 0, 6]));
+        set(&mut host, ip(2), i32::from_le_bytes([10, 0, 0, 7]));
+        set(&mut host, ip(2) + 1, 1502);
+        set(&mut host, 63, 0);
+        let roles = host.take_new_roles();
+        let tcp = roles[0].tcp.expect("tcp settings");
+        assert_eq!(tcp.remote_count, 3);
+        assert_eq!(tcp.remotes[0].ip, [192, 168, 0, 5]);
+        assert_eq!(tcp.remotes[0].port, 502);
+        assert_eq!(tcp.remotes[1].ip, [192, 168, 0, 6]);
+        assert_eq!(tcp.remotes[1].port, 502);
+        assert_eq!(tcp.remotes[2].ip, [10, 0, 0, 7]);
+        assert_eq!(tcp.remotes[2].port, 1502);
+    }
+
+    /// A transport that logs the slaves the master selects.
+    struct Selecting {
+        end: End,
+        log: Vec<usize>,
+    }
+
+    impl Transport for Selecting {
+        fn send(&mut self, bytes: &[u8]) {
+            self.end.send(bytes);
+        }
+        fn receive(&mut self, buf: &mut Vec<u8>) {
+            self.end.receive(buf);
+        }
+        fn is_connected(&mut self) -> bool {
+            self.end.is_connected()
+        }
+        fn select(&mut self, remote: usize) {
+            self.log.push(remote);
+        }
+    }
+
+    #[test]
+    fn tcp_master_selects_the_slave_before_each_request() {
+        let mut master = Master::new(
+            Framing::Tcp,
+            0,
+            &[cfg(1, [2, 0, 0, 0]), cfg(2, [2, 0, 0, 0])],
+        );
+        let (m, _s) = wire();
+        let mut t = Selecting {
+            end: m,
+            log: Vec::new(),
+        };
+        for now in 0..400 {
+            master.poll(now, &mut t);
+        }
+        assert!(t.log.contains(&0) && t.log.contains(&1), "{:?}", t.log);
+    }
+
+    #[test]
+    fn a_slave_is_named_by_address_or_by_place() {
+        let mut master = Master::new(
+            Framing::Tcp,
+            0,
+            &[
+                cfg(1, [4, 0, 0, 0]),
+                cfg(1, [8, 0, 0, 0]),
+                cfg(5, [2, 0, 0, 0]),
+            ],
+        );
+        // A plain address finds the first slave with it.
+        assert_eq!(master.index_of(1), Some(0));
+        assert_eq!(master.index_of(5), Some(2));
+        assert_eq!(master.index_of(7), None);
+        // `(index + 1) << 8` picks the slave by its place, so a repeated Unit ID is reachable.
+        assert_eq!(master.index_of(1 << 8), Some(0));
+        assert_eq!(master.index_of(2 << 8), Some(1));
+        assert_eq!(master.index_of(3 << 8), Some(2));
+        assert_eq!(master.index_of(4 << 8), None);
+        assert_eq!(
+            master.tables_key_mut(2 << 8).unwrap().size(Table::Holding),
+            8
+        );
+        assert_eq!(master.tables_key_mut(1).unwrap().size(Table::Holding), 4);
+    }
+
+    #[test]
+    fn host_master_takes_more_than_four_slaves() {
+        let mut host = ModbusHost::new();
+        set(&mut host, 0, 1);
+        set(&mut host, 2, 9600);
+        set(&mut host, 7, 8);
+        for n in 0..8 {
+            let b = 16 + 8 * n;
+            set(&mut host, b, 10 + n);
+            set(&mut host, b + 1, 50);
+            set(&mut host, b + 2, 100);
+            set(&mut host, b + 3, 4 + n);
+        }
+        let remotes = host.remotes();
+        assert_eq!(remotes.len(), 8);
+        // The slaves after the fifth sit past the commit code 63 and keep their own values.
+        assert_eq!(remotes[7].address, 17);
+        assert_eq!(remotes[7].sizes[0], 11);
+        assert_eq!(remotes[5].address, 15);
+        // Code 63 is the commit, not a stored value.
+        assert_eq!(host.settings[63], 0);
+        // More than the limit is cut.
+        set(&mut host, 7, 99);
+        assert_eq!(host.remotes().len(), MAX_REMOTES);
+    }
+
+    #[test]
     fn host_master_to_host_slave() {
         let mut master = ModbusHost::new();
         let mut slave = ModbusHost::new();
@@ -2338,12 +2524,19 @@ mod tests {
         let roles = host.take_new_roles();
         assert_eq!(roles.len(), 1);
         assert_eq!(roles[0].role, Role::TcpMaster);
+        let mut remotes = [Endpoint::default(); MAX_REMOTES];
+        remotes[0] = Endpoint {
+            ip: [192, 168, 1, 10],
+            port: 502,
+        };
         assert_eq!(
             roles[0].tcp,
             Some(TcpSettings {
                 interface: 1,
                 port: 502,
-                server_ip: [192, 168, 1, 10]
+                server_ip: [192, 168, 1, 10],
+                remotes,
+                remote_count: 1,
             })
         );
         assert!(host.has_tcp_master());

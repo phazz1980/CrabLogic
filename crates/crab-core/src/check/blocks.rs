@@ -360,7 +360,7 @@ pub(super) fn check_unconnected_inputs(
         let Some(def) = defs[bi] else { continue };
         let required = def
             .active_inputs(&block.params)
-            .filter(|i| i.default.is_none());
+            .filter(|i| i.default.is_none() && !i.optional);
         for input in required {
             // Any link counts: an invalid one was already reported, don't pile up.
             let fed = logic

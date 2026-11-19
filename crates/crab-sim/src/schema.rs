@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crab_blocks::{ds18b20_channel, Bench, Signal, Types, OWN_SLAVE};
+use crab_blocks::{ds18b20_channel, Bench, ModbusTag, Signal, TagLink, Types, OWN_SLAVE};
+use crab_core::modbus_map::TagDirection;
 use crab_core::value::{parse_duration_ms, ParamValue};
 use crab_core::vars::{VAR_GET, VAR_SET};
-use crab_core::{check, Library, Logic, Severity};
+use crab_core::{check, Block, Library, Logic, Severity};
 use crab_core::{BlockDef, ParamKind, SignalType};
 
 use crate::builtin::{self, Behavior, Ctx};
@@ -53,6 +54,8 @@ struct Node {
     wasm: Option<(PathBuf, Option<SystemTime>)>,
     /// Variable a `var_get` / `var_set` block accesses.
     var: Option<String>,
+    /// Owner and direction of a `modbus_tag` (see [`tag_link`]).
+    tag: Option<TagLink>,
     sources: Vec<Source>,
     invert_in: Vec<bool>,
     active: Vec<bool>,
@@ -87,10 +90,48 @@ fn reads_bench(kind: &str) -> bool {
             | "wifi"
             | "ethernet"
             | "mqtt"
-            | "modbus_master_read"
-            | "modbus_read"
+            | "modbus_tag"
             | "uart_read"
     )
+}
+
+/// Owner and direction of a `modbus_tag`: the Unit ID of its `modbus_device` (polled by a master)
+/// or the own slave of the board, and write when an input is connected. `None` when the owner is
+/// missing or the direction is not one of read and write (the check reports both).
+fn tag_link(logic: &Logic, block: &Block) -> Option<TagLink> {
+    let Some(ParamValue::Text(device)) = block.params.get("device") else {
+        return None;
+    };
+    let owner = logic.block(device)?;
+    let (unit, device) = match owner.kind.as_str() {
+        "modbus_device" => match owner.params.get("unit") {
+            Some(ParamValue::Int(n)) => (*n, true),
+            _ => (1, true),
+        },
+        "modbus_rtu_slave" | "modbus_tcp_slave" => (OWN_SLAVE, false),
+        _ => return None,
+    };
+    let write = match logic.modbus_tag_direction(&block.id) {
+        TagDirection::Write => true,
+        TagDirection::Read => false,
+        TagDirection::Both | TagDirection::None => return None,
+    };
+    Some(TagLink {
+        unit,
+        device,
+        write,
+    })
+}
+
+/// Behaviour of a block as the simulation starts it (and again after a reset): a `modbus_tag`
+/// takes its link to the owner, every other block its built-in behaviour.
+fn behavior_for(kind: &str, tag: Option<TagLink>, types: &Types) -> Option<Box<dyn Behavior>> {
+    let mut behavior: Box<dyn Behavior> = match tag {
+        Some(link) if kind == "modbus_tag" => Box::new(ModbusTag::new(link)),
+        _ => builtin::behavior(kind)?,
+    };
+    behavior.set_types(types);
+    Some(behavior)
 }
 
 /// What the bench lets the user set for an output of a block.
@@ -338,13 +379,15 @@ impl Simulation {
                     .collect(),
                 params: def.params.iter().map(|p| p.kind).collect(),
             };
+            let tag = if block.kind == "modbus_tag" {
+                tag_link(logic, block)
+            } else {
+                None
+            };
             let behavior = if module.is_some() {
                 None
             } else {
-                builtin::behavior(&def.info.kind).map(|mut b| {
-                    b.set_types(&types);
-                    b
-                })
+                behavior_for(&def.info.kind, tag, &types)
             };
             index.insert(block.id.clone(), nodes.len());
             nodes.push(Node {
@@ -372,6 +415,7 @@ impl Simulation {
                 module,
                 wasm,
                 var: block.var_name().map(str::to_owned),
+                tag,
                 def,
             });
         }
@@ -610,11 +654,10 @@ impl Simulation {
             node.texts_out.iter_mut().for_each(String::clear);
             node.inputs.iter_mut().for_each(|v| *v = 0.0);
             node.apply_initial();
-            if let Some(mut b) =
-                builtin::behavior(&node.def.info.kind).filter(|_| node.module.is_none())
-            {
-                b.set_types(&node.types);
-                node.behavior = Some(b);
+            if node.module.is_none() {
+                if let Some(b) = behavior_for(&node.def.info.kind, node.tag, &node.types) {
+                    node.behavior = Some(b);
+                }
             }
             if let Some(m) = &mut node.module {
                 m.reset()?;
@@ -692,17 +735,19 @@ impl Simulation {
                 }
                 if let (Some(pin), Some(state)) = (pin, b.drive()) {
                     self.bench.set_driven(pin, state);
-                } else if let (Some(state), "modbus_write") =
-                    (b.drive(), node.def.info.kind.as_str())
-                {
+                } else if let (Some(state), Some(link)) = (b.drive(), node.tag) {
+                    // A written tag puts its value into the register of its device, while the
+                    // device answers (the own slave always does).
                     let at = |name: &str| node.def.params.iter().position(|p| p.name == name);
                     if let (Some(t), Some(r)) = (at("table"), at("reg")) {
-                        self.bench.set_register(
-                            OWN_SLAVE,
-                            &node.param_texts[t],
-                            node.params[r] as i64,
-                            state,
-                        );
+                        if !(link.device && self.bench.silent(link.unit)) {
+                            self.bench.set_register(
+                                link.unit,
+                                &node.param_texts[t],
+                                node.params[r] as i64,
+                                state,
+                            );
+                        }
                     }
                 }
             }
@@ -799,18 +844,12 @@ impl Simulation {
                     port: node.params[at] as i64,
                 })
             }
-            ("modbus_read", _) => {
+            ("modbus_tag", _) => {
+                // Only a read tag takes its value from the bench.
+                let link = node.tag.filter(|l| !l.write)?;
                 let at = |name: &str| node.def.params.iter().position(|p| p.name == name);
                 Some(BenchInput::Modbus {
-                    slave: OWN_SLAVE,
-                    table: node.param_texts[at("table")?].clone(),
-                    reg: node.params[at("reg")?] as i64,
-                })
-            }
-            ("modbus_master_read", _) => {
-                let at = |name: &str| node.def.params.iter().position(|p| p.name == name);
-                Some(BenchInput::Modbus {
-                    slave: node.params[at("slave")?] as i64,
+                    slave: link.unit,
                     table: node.param_texts[at("table")?].clone(),
                     reg: node.params[at("reg")?] as i64,
                 })

@@ -470,7 +470,10 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
                     };
                     p.set_block_expander(&lib, &d.id, Some((&target, *pin)))?;
                 }
-                p.rename_block(&d.id, &new_id)
+                p.rename_block(&d.id, &new_id)?;
+                // The tags and devices that name the block follow its new id.
+                crate::modbuspanel::follow_rename(&mut p.logic, &d.id, &new_id);
+                Ok(())
             })
             .map_err(|e| e.to_string())?;
             // Passwords stay in the program, under the SSID set above.

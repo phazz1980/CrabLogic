@@ -127,6 +127,7 @@ fn service(
     let id = ui.make_persistent_id(("net", kind));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, block.is_some())
         .show_header(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
             ui.label(egui::RichText::new(title).strong());
             // The buttons follow the title on the first row.
             if let Some(b) = block {
@@ -234,6 +235,8 @@ fn topics_section(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<NetAction>) {
             let id = ui.make_persistent_id(("mqtt_topic", &b.id));
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
                 .show_header(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().item_spacing.x = 3.0;
                     ui.dnd_drag_source(
                         Id::unique(("topic", &b.id)),
                         DragItem::Topic(b.id.clone()),

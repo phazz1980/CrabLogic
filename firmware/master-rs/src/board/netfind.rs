@@ -7,8 +7,8 @@ use std::net::UdpSocket;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use crab_netfind::{encode_reply, is_request, Board, ReplyLimiter, MIN_INTERVAL_MS, PORT};
 use crab_master_rs::netauth;
+use crab_netfind::{encode_reply, is_request, Board, ReplyLimiter, MIN_INTERVAL_MS, PORT};
 use esp_idf_svc::sys;
 
 use super::spin::Spin;
@@ -30,7 +30,9 @@ static NAME: Spin<String> = Spin::new(String::new());
 
 /// Loads the name from NVS (key `name` of namespace `crab_net`) at start.
 fn load_name() {
-    let Some(h) = super::netcmd::nvs() else { return };
+    let Some(h) = super::netcmd::nvs() else {
+        return;
+    };
     let mut buf = [0u8; crab_master_rs::protocol::BOARD_NAME_MAX + 1];
     let mut len = buf.len();
     // SAFETY: the buffer and its length live through the call; the handle is closed after.

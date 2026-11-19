@@ -1,17 +1,38 @@
 [block]
-type = "modbus_read"
-name = "Чтение Modbus"
-symbol = "MB ←"
+type = "modbus_tag"
+name = "Modbus: тег"
+symbol = "MB TAG"
 group = "Сеть"
 shared = "network"
-description = "Читает значение из таблицы Modbus TCP Slave (то, что записал мастер)."
+description = "Значение регистра или бита устройства Modbus: читается из устройства или пишется в него, в зависимости от связей."
+
+[[input]]
+name = "in"
+type = "int"
+when = 'kind == "int"'
+optional = true
+description = "Значение для записи в устройство (подключите, чтобы писать)"
+
+[[input]]
+name = "in_f"
+type = "float"
+when = 'kind == "float"'
+optional = true
+description = "Значение float для записи в устройство (займёт два регистра)"
+
+[[input]]
+name = "in_b"
+type = "bool"
+when = 'kind == "bool"'
+optional = true
+description = "Состояние бита для записи в устройство"
 
 [[output]]
 name = "out"
 type = "int"
 fast = true
 when = 'kind == "int"'
-description = "Значение регистра"
+description = "Значение регистра, прочитанное из устройства"
 
 [[output]]
 name = "out_f"
@@ -26,19 +47,16 @@ type = "bool"
 when = 'kind == "bool"'
 description = "Состояние бита"
 
+[[output]]
+name = "ok"
+type = "bool"
+description = "true, пока устройство отвечает"
+
 [[param]]
-name = "slave"
+name = "device"
 type = "string"
-default = "tcp"
-description = "Чьи таблицы: tcp (Modbus TCP Slave) или rtu (Modbus RTU Slave)"
-
-[[param.choice]]
-value = "tcp"
-label = "Modbus TCP Slave"
-
-[[param.choice]]
-value = "rtu"
-label = "Modbus RTU Slave"
+default = ""
+description = "Идентификатор устройства: блока «Modbus: slave у master» или блока Modbus Slave этой платы"
 
 [[param]]
 name = "table"
@@ -89,8 +107,8 @@ description = "Адрес в таблице"
 
 [[param]]
 name = "swap"
-label = "Слова наоборот"
 type = "bool"
 default = false
 when = 'kind == "float"'
-description = "Поменять местами два регистра float (порядок CDAB вместо ABCD): так делают некоторые системы SCADA и панели"
+label = "Слова наоборот"
+description = "Поменять местами два 16-битных слова float (младшее слово первым)"

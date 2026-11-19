@@ -55,17 +55,23 @@ pub struct ImportReport {
 }
 
 impl Logic {
-    /// The registers this project serves: one tag per "Modbus read" / "Modbus write" block,
-    /// named by the block id.
+    /// The registers this project serves as a slave: one tag per "Modbus tag" block whose
+    /// `device` is a slave role block of the project, named by the block id.
     pub fn published_tags(&self) -> Vec<PublishedTag> {
         self.blocks
             .iter()
             .filter_map(|b| {
-                let default_table = match b.kind.as_str() {
-                    "modbus_write" => "input",
-                    "modbus_read" => "holding",
-                    _ => return None,
-                };
+                if b.kind != "modbus_tag" {
+                    return None;
+                }
+                let on_slave = matches!(b.params.get("device"), Some(ParamValue::Text(d))
+                if self.block(d).is_some_and(|o| {
+                    matches!(o.kind.as_str(), "modbus_rtu_slave" | "modbus_tcp_slave")
+                }));
+                if !on_slave {
+                    return None;
+                }
+                let default_table = "holding";
                 let text = |name: &str, default: &str| match b.params.get(name) {
                     Some(ParamValue::Text(t)) => t.clone(),
                     _ => default.to_owned(),
@@ -262,15 +268,28 @@ type = \"{kind}\""
     #[test]
     fn tags_come_from_modbus_blocks() {
         let mut l = Logic::default();
+        l.blocks.push(block("panel", "modbus_tcp_slave", &[]));
         l.blocks.push(block(
             "level",
-            "modbus_write",
+            "modbus_tag",
             &[
+                ("device", ParamValue::Text("panel".into())),
+                ("table", ParamValue::Text("input".into())),
                 ("kind", ParamValue::Text("float".into())),
                 ("reg", ParamValue::Int(4)),
             ],
         ));
-        l.blocks.push(block("cmd", "modbus_read", &[]));
+        l.blocks.push(block(
+            "cmd",
+            "modbus_tag",
+            &[("device", ParamValue::Text("panel".into()))],
+        ));
+        // A tag of a master's device is not served by this project.
+        l.blocks.push(block(
+            "remote",
+            "modbus_tag",
+            &[("device", ParamValue::Text("dev".into()))],
+        ));
         l.blocks.push(block("led", "digital_out", &[]));
         let tags = l.published_tags();
         assert_eq!(tags.len(), 2);

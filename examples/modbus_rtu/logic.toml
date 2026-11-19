@@ -8,14 +8,19 @@
 id = "master"
 type = "modbus_rtu_master"
 uart = 2
-count = 2
-slave1 = 10
-slave2 = 11
 period = "500ms"
-holding = 0
-input = 2
-coils = 1
-discrete = 0
+
+[[block]]
+id = "temp_dev"
+type = "modbus_device"
+master = "master"
+unit = 10
+
+[[block]]
+id = "relay_dev"
+type = "modbus_device"
+master = "master"
+unit = 11
 
 [[block]]
 id = "panel"
@@ -25,40 +30,40 @@ address = 1
 
 [[block]]
 id = "temp"
-type = "modbus_master_read"
-slave = 10
+type = "modbus_tag"
+device = "temp_dev"
 table = "input"
 kind = "float"
 reg = 0
 
 [[block]]
 id = "temp_out"
-type = "modbus_write"
-slave = "rtu"
+type = "modbus_tag"
+device = "panel"
 table = "input"
 kind = "float"
 reg = 0
 
 [[block]]
 id = "sensor_ok"
-type = "modbus_write"
-slave = "rtu"
+type = "modbus_tag"
+device = "panel"
 table = "discrete"
 kind = "bool"
 reg = 0
 
 [[block]]
 id = "relay_cmd"
-type = "modbus_read"
-slave = "rtu"
+type = "modbus_tag"
+device = "panel"
 table = "coil"
 kind = "bool"
 reg = 0
 
 [[block]]
 id = "relay"
-type = "modbus_master_write"
-slave = 11
+type = "modbus_tag"
+device = "relay_dev"
 table = "coil"
 kind = "bool"
 reg = 0

@@ -7,7 +7,7 @@
 //! so a step never waits for the network (a TCP connect may take up to [`CONNECT_TIMEOUT`]).
 
 use super::spin::Spin;
-use crab_master_rs::modbus::{ModbusHost, Role, RoleSettings, Transport};
+use crab_master_rs::modbus::{Endpoint, ModbusHost, Role, RoleSettings, Transport};
 use esp_idf_svc::sys;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -37,7 +37,7 @@ struct State {
 struct Ports {
     rtu_master: Option<Uart>,
     rtu_slave: Option<Uart>,
-    tcp_master: Option<TcpClient>,
+    tcp_master: Option<TcpClients>,
     tcp_slave: Option<TcpServer>,
 }
 
@@ -61,12 +61,43 @@ pub fn call(op: i32, a: i32, b: i32, c: i32, d: i32) -> i32 {
     result
 }
 
+/// A port as the task polls it: one or more connections (a TCP master keeps one per different slave
+/// address) and, for each slave of a master, the connection it uses.
+trait Port: Transport {
+    /// Slaves of the master this port serves (1 for a UART or a TCP slave).
+    fn remotes(&self) -> usize {
+        1
+    }
+    /// Connections of the port.
+    fn clients(&self) -> usize {
+        1
+    }
+    /// The connection of slave `remote`.
+    fn client_of(&self, _remote: usize) -> usize {
+        0
+    }
+    /// The slave selected last.
+    fn active(&self) -> usize {
+        0
+    }
+    fn client_connected(&mut self, _client: usize) -> bool {
+        self.is_connected()
+    }
+    fn client_receive(&mut self, _client: usize, buf: &mut Vec<u8>) {
+        self.receive(buf)
+    }
+}
+
 /// One step of a transport: what came is read before the protocol runs, what it does is done after,
-/// both without the lock of the tables.
+/// both without the lock of the tables. A port with several connections is staged per connection:
+/// `select` picks the slave, and with it the connection the next calls are about.
 #[derive(Default)]
 struct Staged {
-    inbox: Vec<u8>,
-    connected: bool,
+    inboxes: Vec<Vec<u8>>,
+    connected: Vec<bool>,
+    /// Slave -> connection.
+    map: Vec<usize>,
+    cur: usize,
     ops: Vec<Op>,
 }
 
@@ -74,6 +105,13 @@ enum Op {
     Send(Vec<u8>),
     Connect,
     Close,
+    Select(usize),
+}
+
+impl Staged {
+    fn client(&self) -> usize {
+        self.map.get(self.cur).copied().unwrap_or(0)
+    }
 }
 
 impl Transport for Staged {
@@ -81,28 +119,48 @@ impl Transport for Staged {
         self.ops.push(Op::Send(bytes.to_vec()));
     }
     fn receive(&mut self, buf: &mut Vec<u8>) {
-        buf.append(&mut self.inbox);
+        let client = self.client();
+        if let Some(inbox) = self.inboxes.get_mut(client) {
+            buf.append(inbox);
+        }
     }
     fn is_connected(&mut self) -> bool {
-        self.connected
+        self.connected.get(self.client()).copied().unwrap_or(false)
     }
     fn connect(&mut self) {
         self.ops.push(Op::Connect);
     }
     fn close(&mut self) {
-        self.connected = false;
+        let client = self.client();
+        if let Some(c) = self.connected.get_mut(client) {
+            *c = false;
+        }
         self.ops.push(Op::Close);
+    }
+    fn select(&mut self, remote: usize) {
+        self.cur = remote.min(self.map.len().saturating_sub(1));
+        self.ops.push(Op::Select(remote));
     }
 }
 
 /// Polls one role: the port is read, the protocol runs under the lock of the tables, then the
 /// port does what the protocol asked.
-fn poll_port<T: Transport>(port: &mut T, poll: impl FnOnce(&mut ModbusHost, &mut Staged)) {
+fn poll_port<T: Port>(port: &mut T, poll: impl FnOnce(&mut ModbusHost, &mut Staged)) {
+    let clients = port.clients().max(1);
+    let remotes = port.remotes().max(1);
     let mut staged = Staged {
-        connected: port.is_connected(),
-        ..Default::default()
+        connected: (0..clients).map(|c| port.client_connected(c)).collect(),
+        inboxes: (0..clients)
+            .map(|c| {
+                let mut inbox = Vec::new();
+                port.client_receive(c, &mut inbox);
+                inbox
+            })
+            .collect(),
+        map: (0..remotes).map(|r| port.client_of(r)).collect(),
+        cur: port.active().min(remotes - 1),
+        ops: Vec::new(),
     };
-    port.receive(&mut staged.inbox);
     {
         let mut guard = STATE.lock_ceiling();
         let Some(state) = guard.as_mut() else { return };
@@ -113,6 +171,7 @@ fn poll_port<T: Transport>(port: &mut T, poll: impl FnOnce(&mut ModbusHost, &mut
             Op::Send(bytes) => port.send(&bytes),
             Op::Connect => port.connect(),
             Op::Close => port.close(),
+            Op::Select(remote) => port.select(remote),
         }
     }
 }
@@ -138,8 +197,7 @@ fn open(state: &mut Ports, role: RoleSettings) {
             }
         }
         (Role::TcpMaster, _, Some(t)) => {
-            let ip = Ipv4Addr::from(t.server_ip);
-            state.tcp_master = Some(TcpClient::new(SocketAddr::from((ip, t.port))));
+            state.tcp_master = Some(TcpClients::new(&t.remotes[..t.remote_count.max(1)]));
         }
         (Role::TcpSlave, _, Some(t)) => state.tcp_slave = Some(TcpServer::new(t.port)),
         _ => note("роль без настроек порта".into()),
@@ -325,6 +383,103 @@ impl Transport for TcpClient {
         self.stream = None;
     }
 }
+
+/// The connections of a TCP master: one per different slave address (slaves with the same address
+/// share it). `select` says which slave the next calls are about.
+struct TcpClients {
+    clients: Vec<TcpClient>,
+    /// Slave -> index in `clients`.
+    map: Vec<usize>,
+    active: usize,
+}
+
+impl TcpClients {
+    fn new(endpoints: &[Endpoint]) -> Self {
+        let mut clients: Vec<TcpClient> = Vec::new();
+        let mut addrs: Vec<SocketAddr> = Vec::new();
+        let mut map = Vec::with_capacity(endpoints.len());
+        for e in endpoints {
+            let addr = SocketAddr::from((Ipv4Addr::from(e.ip), e.port));
+            let index = match addrs.iter().position(|a| *a == addr) {
+                Some(i) => i,
+                None => {
+                    addrs.push(addr);
+                    clients.push(TcpClient::new(addr));
+                    clients.len() - 1
+                }
+            };
+            map.push(index);
+        }
+        Self {
+            clients,
+            map,
+            active: 0,
+        }
+    }
+
+    fn current(&mut self) -> Option<&mut TcpClient> {
+        let index = *self.map.get(self.active)?;
+        self.clients.get_mut(index)
+    }
+}
+
+impl Transport for TcpClients {
+    fn send(&mut self, bytes: &[u8]) {
+        if let Some(c) = self.current() {
+            c.send(bytes);
+        }
+    }
+    fn receive(&mut self, buf: &mut Vec<u8>) {
+        if let Some(c) = self.current() {
+            c.receive(buf);
+        }
+    }
+    fn is_connected(&mut self) -> bool {
+        self.current().is_some_and(|c| c.is_connected())
+    }
+    fn connect(&mut self) {
+        if let Some(c) = self.current() {
+            c.connect();
+        }
+    }
+    fn close(&mut self) {
+        if let Some(c) = self.current() {
+            c.close();
+        }
+    }
+    fn select(&mut self, remote: usize) {
+        self.active = remote.min(self.map.len().saturating_sub(1));
+    }
+}
+
+impl Port for TcpClients {
+    fn remotes(&self) -> usize {
+        self.map.len()
+    }
+    fn clients(&self) -> usize {
+        self.clients.len()
+    }
+    fn client_of(&self, remote: usize) -> usize {
+        self.map.get(remote).copied().unwrap_or(0)
+    }
+    fn active(&self) -> usize {
+        self.active
+    }
+    fn client_connected(&mut self, client: usize) -> bool {
+        self.clients
+            .get_mut(client)
+            .is_some_and(|c| c.is_connected())
+    }
+    fn client_receive(&mut self, client: usize, buf: &mut Vec<u8>) {
+        if let Some(c) = self.clients.get_mut(client) {
+            c.receive(buf);
+        }
+    }
+}
+
+impl Port for Uart {}
+
+impl Port for TcpServer {}
 
 /// A TCP slave: one client at a time, a new connection replaces the old one.
 struct TcpServer {

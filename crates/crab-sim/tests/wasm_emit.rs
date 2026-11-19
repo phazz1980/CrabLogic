@@ -283,80 +283,6 @@ fn pcf8574_goes_through_the_master() {
 }
 
 #[test]
-fn modbus_rtu_goes_through_the_master() {
-    let lib = library();
-    let project = Project::load(repo_path("examples/modbus_rtu")).unwrap();
-    let program = Program::build(&project, &lib).unwrap();
-    let built = program.wasm_module(1).unwrap();
-    let manifest = Manifest::parse(&built.manifest).unwrap();
-    assert_eq!(manifest.allow, ["modbus"]);
-    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
-    // Master reads: slave 10, input table (1), float (1), master (1); the coil of the panel is a slave read.
-    let temp = (10, 1 | 1 << 4 | 1 << 8, 0);
-    let coil = (0, 2 | 2 << 4, 0);
-    module
-        .io_mut()
-        .modbus_in
-        .insert(temp, 21.5f32.to_bits() as i32);
-    module.io_mut().modbus_in.insert(coil, 1);
-    module.io_mut().modbus_status.insert(10, 1);
-    module.step(50).unwrap();
-    let io = module.io();
-    // Both roles are set up once, each list starting with its role (code 0) and ending with code 63.
-    let roles: Vec<_> = io.modbus_cfg.iter().filter(|(c, _)| *c == 0).collect();
-    assert_eq!(roles, [&(0, 1), &(0, 2)]);
-    assert_eq!(io.modbus_cfg.iter().filter(|(c, _)| *c == 63).count(), 2);
-    assert!(
-        io.modbus_cfg.contains(&(2, 9600)),
-        "master speed from UART2"
-    );
-    assert!(
-        io.modbus_cfg.contains(&(2, 19200)),
-        "slave speed from UART1"
-    );
-    assert!(io.modbus_cfg.contains(&(16, 10)) && io.modbus_cfg.contains(&(24, 11)));
-    // The temperature goes to the panel's input registers, the relay command to slave 11.
-    assert_eq!(io.modbus_out[&(0, 1 | 1 << 4, 0)], 21.5f32.to_bits() as i32);
-    assert_eq!(io.modbus_out[&(0, 3 | 2 << 4, 0)], 1);
-    assert_eq!(io.modbus_out[&(11, 2 | 2 << 4 | 1 << 8, 0)], 1);
-    let n = module.io().modbus_cfg.len();
-    module.step(50).unwrap();
-    assert_eq!(module.io().modbus_cfg.len(), n, "settings are sent once");
-}
-
-#[test]
-fn modbus_tcp_master_goes_through_the_master() {
-    let lib = library();
-    let project = Project::load(repo_path("examples/modbus_tcp_master")).unwrap();
-    let program = Program::build(&project, &lib).unwrap();
-    let built = program.wasm_module(1).unwrap();
-    let manifest = Manifest::parse(&built.manifest).unwrap();
-    assert!(manifest.allow.contains(&"modbus".to_string()));
-    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
-    // Unit 1, input table (1), float (1), master (1), TCP (bit 9).
-    let tcp = 1 << 8 | 1 << 9;
-    let temp = (1, 1 | 1 << 4 | tcp, 0);
-    module
-        .io_mut()
-        .modbus_in
-        .insert(temp, 21.5f32.to_bits() as i32);
-    module.io_mut().modbus_status.insert(1, 1);
-    module.step(50).unwrap();
-    let io = module.io();
-    assert!(io.modbus_cfg.contains(&(0, 3)), "TCP master role");
-    assert!(io.modbus_cfg.contains(&(1, 0)), "Wi-Fi interface");
-    assert!(io.modbus_cfg.contains(&(2, 502)), "port");
-    // 192.168.1.50 with the first octet in the lowest byte.
-    assert!(io
-        .modbus_cfg
-        .contains(&(3, i32::from_le_bytes([192, 168, 1, 50]))));
-    assert!(io.modbus_cfg.contains(&(16, 1)), "Unit ID");
-    assert_eq!(io.modbus_cfg.iter().filter(|(c, _)| *c == 63).count(), 1);
-    // The button is inverted with a pull-up: released reads as 1 on the coil.
-    assert_eq!(io.modbus_out[&(1, 2 | 2 << 4 | tcp, 0)], 1);
-}
-
-#[test]
 fn sensors_example_switches_pins_from_sensor_values() {
     let lib = library();
     let project = Project::load(repo_path("examples/sensors")).unwrap();
@@ -528,6 +454,15 @@ fn wifi_and_ntp_work_in_a_module() {
 fn lan8720_settings_go_to_the_master() {
     let lib = library();
     let mut project = Project::load(repo_path("examples/eth_lan8720")).unwrap();
+    // The example's tags are the old kinds: here they are the same tags of its slave block.
+    for block in project.logic.blocks.iter_mut() {
+        if matches!(block.kind.as_str(), "modbus_write" | "modbus_read") {
+            block.kind = "modbus_tag".into();
+            block
+                .params
+                .insert("device".into(), ParamValue::Text("slave".into()));
+        }
+    }
     let step = |project: &Project| {
         let program = Program::build(project, &lib).unwrap();
         let built = program.wasm_module_with(1, true).unwrap();
@@ -1265,82 +1200,344 @@ fn analog_out_clamps_the_code_and_asks_for_the_dac_capability() {
     assert_eq!(built.needs, ["abi5", "dac"]);
 }
 
+/// Board of the Modbus tests: UART1 at 19200 (the slave), UART2 at 9600 (the master).
+fn modbus_project(logic: &str) -> Project {
+    const BOARD: &str = "[project]\nname = \"modbus\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n\n\
+        [[uart]]\nnumber = 1\nspeed = 19200\nformat = \"8N1\"\nrx = 25\ntx = 27\n\n\
+        [[uart]]\nnumber = 2\nspeed = 9600\nformat = \"8N1\"\nrx = 16\ntx = 17\n";
+    Project::from_sources("modbus", BOARD, logic, "").unwrap()
+}
+
+#[test]
+fn modbus_rtu_goes_through_the_master() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+period = "500ms"
+
+[[block]]
+id = "temp_dev"
+type = "modbus_device"
+master = "master"
+unit = 10
+
+[[block]]
+id = "relay_dev"
+type = "modbus_device"
+master = "master"
+unit = 11
+
+[[block]]
+id = "temp"
+type = "modbus_tag"
+device = "temp_dev"
+table = "input"
+kind = "float"
+reg = 0
+
+[[block]]
+id = "relay"
+type = "modbus_tag"
+device = "relay_dev"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "panel"
+type = "modbus_rtu_slave"
+uart = 1
+address = 1
+
+[[block]]
+id = "panel_temp"
+type = "modbus_tag"
+device = "panel"
+table = "input"
+kind = "float"
+reg = 0
+
+[[block]]
+id = "panel_relay"
+type = "modbus_tag"
+device = "panel"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "temp.out_f"
+to = "panel_temp.in_f"
+
+[[link]]
+from = "panel_relay.out_b"
+to = "relay.in_b"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert_eq!(manifest.allow, ["modbus"]);
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    // Master read of the first device (key `(0 + 1) << 8`: a slave is named by its place in the
+    // master's list; input table 1, float 1, master bit 8); the panel's coil is a slave read.
+    let temp = (1 << 8, 1 | 1 << 4 | 1 << 8, 0);
+    let coil = (0, 2 | 2 << 4, 0);
+    module
+        .io_mut()
+        .modbus_in
+        .insert(temp, 21.5f32.to_bits() as i32);
+    module.io_mut().modbus_in.insert(coil, 1);
+    module.io_mut().modbus_status.insert(1 << 8, 1);
+    module.step(50).unwrap();
+    let io = module.io();
+    // Both roles are set up once, each list starting with its role (code 0) and ending with code 63.
+    let roles: Vec<_> = io.modbus_cfg.iter().filter(|(c, _)| *c == 0).collect();
+    assert_eq!(roles, [&(0, 1), &(0, 2)]);
+    assert_eq!(io.modbus_cfg.iter().filter(|(c, _)| *c == 63).count(), 2);
+    assert!(
+        io.modbus_cfg.contains(&(2, 9600)),
+        "master speed from UART2"
+    );
+    assert!(
+        io.modbus_cfg.contains(&(2, 19200)),
+        "slave speed from UART1"
+    );
+    // Two devices: slave blocks at 16 and 24 (unit, period, timeout, four table sizes).
+    assert!(io.modbus_cfg.contains(&(7, 2)), "slave count");
+    assert!(io.modbus_cfg.contains(&(16, 10)) && io.modbus_cfg.contains(&(24, 11)));
+    assert!(io.modbus_cfg.contains(&(17, 500)), "period of the master");
+    assert!(
+        io.modbus_cfg.contains(&(20, 2)),
+        "input table of unit 10: one float"
+    );
+    assert!(
+        io.modbus_cfg.contains(&(29, 1)),
+        "coil table of unit 11: one bit"
+    );
+    // The panel's own tables: input 2 (the temperature), coil 1 (the relay).
+    assert!(io.modbus_cfg.contains(&(9, 2)), "panel input table");
+    assert!(io.modbus_cfg.contains(&(10, 1)), "panel coil table");
+    // The temperature goes to the panel's input registers, the relay command to unit 11.
+    assert_eq!(io.modbus_out[&(0, 1 | 1 << 4, 0)], 21.5f32.to_bits() as i32);
+    assert_eq!(io.modbus_out[&(2 << 8, 2 | 2 << 4 | 1 << 8, 0)], 1);
+    let n = module.io().modbus_cfg.len();
+    module.step(50).unwrap();
+    assert_eq!(module.io().modbus_cfg.len(), n, "settings are sent once");
+}
+
+#[test]
+fn modbus_tcp_master_goes_through_the_master() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "master"
+type = "modbus_tcp_master"
+ip = "192.168.1.50"
+
+[[block]]
+id = "dev"
+type = "modbus_device"
+master = "master"
+unit = 1
+
+[[block]]
+id = "alarm"
+type = "modbus_tag"
+device = "dev"
+table = "discrete"
+kind = "bool"
+reg = 1
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "led_reg"
+type = "modbus_tag"
+device = "dev"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "online_led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "button.out"
+to = "led_reg.in_b"
+
+[[link]]
+from = "alarm.out_b"
+to = "online_led.in"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    assert!(manifest.allow.contains(&"modbus".to_string()));
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    // The first device (key `1 << 8`), discrete table (3), bool (2), master (bit 8) and TCP (bit 9).
+    let tcp = 1 << 8 | 1 << 9;
+    module
+        .io_mut()
+        .modbus_in
+        .insert((1 << 8, 3 | 2 << 4 | tcp, 1), 1);
+    module.io_mut().modbus_status.insert(1 << 8, 1);
+    module.step(50).unwrap();
+    let io = module.io();
+    assert!(io.modbus_cfg.contains(&(0, 3)), "TCP master role");
+    assert!(io.modbus_cfg.contains(&(1, 0)), "Wi-Fi interface");
+    assert!(io.modbus_cfg.contains(&(2, 502)), "port");
+    // 192.168.1.50 with the first octet in the lowest byte.
+    assert!(io
+        .modbus_cfg
+        .contains(&(3, i32::from_le_bytes([192, 168, 1, 50]))));
+    assert!(io.modbus_cfg.contains(&(7, 1)), "one slave");
+    assert!(io.modbus_cfg.contains(&(16, 1)), "Unit ID");
+    assert!(
+        io.modbus_cfg.contains(&(21, 1)),
+        "coil table of the device: one bit"
+    );
+    assert!(
+        io.modbus_cfg.contains(&(22, 2)),
+        "discrete table: bits up to 1"
+    );
+    assert_eq!(io.modbus_cfg.iter().filter(|(c, _)| *c == 63).count(), 1);
+    // The button is inverted with a pull-up: released reads as 1 on the coil.
+    assert_eq!(io.modbus_out[&(1 << 8, 2 | 2 << 4 | tcp, 0)], 1);
+}
+
 #[test]
 fn slave_table_sizes_come_from_the_tags() {
     let lib = library();
-    let mut project = Project::load(repo_path("examples/modbus_wifi")).unwrap();
     // A float at holding register 0 takes two registers, an int at register 10 takes eleven.
-    let tags: crab_core::Logic = toml::from_str(
+    let project = modbus_project(
         r#"
 [[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "slave"
+type = "modbus_tcp_slave"
+
+[[block]]
+id = "zero"
+type = "constant"
+value = 0.0
+
+[[block]]
+id = "zero_i"
+type = "float_to_int"
+
+[[block]]
 id = "hold_f"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "holding"
 kind = "float"
 reg = 0
 
-[block.const]
-in_f = 0.0
-
 [[block]]
 id = "hold_i"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "holding"
 kind = "int"
 reg = 10
 
-[block.const]
-in = 0
+[[link]]
+from = "zero.out"
+to = "hold_f.in_f"
+
+[[link]]
+from = "zero.out"
+to = "zero_i.in"
+
+[[link]]
+from = "zero_i.out"
+to = "hold_i.in"
 "#,
-    )
-    .unwrap();
-    project.logic.blocks.extend(tags.blocks);
+    );
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module(1).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
     let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
     module.step(50).unwrap();
     let io = module.io();
-    // Holding (8) from the tags, then input (2, the temperature), coil (1) and discrete (2).
+    // Holding (8) from the tags, the other tables are empty.
     assert!(
         io.modbus_cfg.contains(&(8, 11)),
         "holding is the farthest tag"
     );
-    assert!(io.modbus_cfg.contains(&(9, 2)), "input");
-    assert!(io.modbus_cfg.contains(&(10, 1)), "coil");
-    assert!(io.modbus_cfg.contains(&(11, 2)), "discrete");
+    assert!(io.modbus_cfg.contains(&(9, 0)), "input");
+    assert!(io.modbus_cfg.contains(&(10, 0)), "coil");
+    assert!(io.modbus_cfg.contains(&(11, 0)), "discrete");
 }
 
 #[test]
 fn float_write_with_swap_sets_bit_ten() {
     let lib = library();
-    let mut project = Project::load(repo_path("examples/modbus_wifi")).unwrap();
-    let tags: crab_core::Logic = toml::from_str(
+    let project = modbus_project(
         r#"
 [[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "slave"
+type = "modbus_tcp_slave"
+
+[[block]]
+id = "zero"
+type = "constant"
+value = 0.0
+
+[[block]]
 id = "swapped"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "holding"
 kind = "float"
 reg = 0
 swap = true
 
-[block.const]
-in_f = 0.0
-
 [[block]]
 id = "plain"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "holding"
 kind = "float"
 reg = 2
 
-[block.const]
-in_f = 0.0
+[[link]]
+from = "zero.out"
+to = "swapped.in_f"
+
+[[link]]
+from = "zero.out"
+to = "plain.in_f"
 "#,
-    )
-    .unwrap();
-    project.logic.blocks.extend(tags.blocks);
+    );
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module(1).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
@@ -1358,4 +1555,330 @@ in_f = 0.0
         "no swap bit without swap"
     );
     assert!(!io.modbus_out.contains_key(&(0, tcp, 0)));
+}
+
+/// Two devices of one TCP master at two addresses: each device's IP goes to code 272 + 2n and its
+/// port to 273 + 2n (0 is the master's address).
+#[test]
+fn tcp_devices_send_their_own_address() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "master"
+type = "modbus_tcp_master"
+ip = "192.168.1.50"
+slaves = 2
+
+[[block]]
+id = "a"
+type = "modbus_device"
+master = "master"
+unit = 1
+ip = "192.168.0.10"
+port = 0
+
+[[block]]
+id = "b"
+type = "modbus_device"
+master = "master"
+unit = 1
+ip = "192.168.0.11"
+port = 1502
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "tag_a"
+type = "modbus_tag"
+device = "a"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "tag_b"
+type = "modbus_tag"
+device = "b"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "button.out"
+to = "tag_a.in_b"
+
+[[link]]
+from = "button.out"
+to = "tag_b.in_b"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    let io = module.io();
+    assert!(io.modbus_cfg.contains(&(7, 2)), "two slaves");
+    assert!(io
+        .modbus_cfg
+        .contains(&(3, i32::from_le_bytes([192, 168, 1, 50]))));
+    assert!(io
+        .modbus_cfg
+        .contains(&(272, i32::from_le_bytes([192, 168, 0, 10]))));
+    assert!(
+        io.modbus_cfg.contains(&(273, 0)),
+        "first device: master's port"
+    );
+    assert!(io
+        .modbus_cfg
+        .contains(&(274, i32::from_le_bytes([192, 168, 0, 11]))));
+    assert!(
+        io.modbus_cfg.contains(&(275, 1502)),
+        "second device: own port"
+    );
+}
+
+/// A device IP that is not a dotted quad gives no module.
+#[test]
+fn tcp_device_with_bad_ip_is_refused() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "master"
+type = "modbus_tcp_master"
+
+[[block]]
+id = "a"
+type = "modbus_device"
+master = "master"
+unit = 1
+ip = "192.168.0"
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "tag_a"
+type = "modbus_tag"
+device = "a"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "button.out"
+to = "tag_a.in_b"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let error = program
+        .wasm_module(1)
+        .expect_err("a device IP that is not a dotted quad gives no module")
+        .to_string();
+    assert!(
+        error.contains("адрес slave «a» должен быть вида 192.168.1.10"),
+        "{error}"
+    );
+}
+
+/// An RTU master sends no device addresses, even when the devices carry them.
+#[test]
+fn rtu_devices_send_no_address() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+
+[[block]]
+id = "a"
+type = "modbus_device"
+master = "master"
+unit = 5
+ip = "10.0.0.5"
+port = 1502
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "tag_a"
+type = "modbus_tag"
+device = "a"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "button.out"
+to = "tag_a.in_b"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    let io = module.io();
+    assert!(io.modbus_cfg.contains(&(16, 5)), "the device is polled");
+    assert!(
+        !io.modbus_cfg.iter().any(|(c, _)| (272..336).contains(c)),
+        "no address codes for RTU: {:?}",
+        io.modbus_cfg
+    );
+}
+
+/// A tag with both an output and an input connected is refused before the module is built.
+#[test]
+fn tag_with_both_directions_is_refused() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "slave"
+type = "modbus_tcp_slave"
+
+[[block]]
+id = "btn"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "both"
+type = "modbus_tag"
+device = "slave"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "btn.out"
+to = "both.in_b"
+
+[[link]]
+from = "both.out_b"
+to = "led.in"
+"#,
+    );
+    // The schema check of the generator does not know the Modbus rules: the module generator
+    // refuses the tag itself (the editor's check reports it earlier, see `check::modbus`).
+    let program = Program::build(&project, &lib).unwrap();
+    let error = program
+        .wasm_module(1)
+        .expect_err("a tag that reads and writes gives no module")
+        .to_string();
+    assert!(error.contains("читается и записывается"), "{error}");
+}
+
+/// Two devices of one master: each slave block gets its own unit and table sizes.
+#[test]
+fn master_with_two_devices_sets_two_slaves() {
+    let lib = library();
+    let project = modbus_project(
+        r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+
+[[block]]
+id = "a"
+type = "modbus_device"
+master = "master"
+unit = 5
+
+[[block]]
+id = "b"
+type = "modbus_device"
+master = "master"
+unit = 6
+
+[[block]]
+id = "ta"
+type = "modbus_tag"
+device = "a"
+table = "coil"
+kind = "bool"
+reg = 3
+
+[[block]]
+id = "tb"
+type = "modbus_tag"
+device = "b"
+table = "discrete"
+kind = "bool"
+reg = 7
+
+[[block]]
+id = "sink_a"
+type = "digital_out"
+pin = 2
+
+[[block]]
+id = "sink_b"
+type = "digital_out"
+pin = 4
+
+[[link]]
+from = "ta.out_b"
+to = "sink_a.in"
+
+[[link]]
+from = "tb.out_b"
+to = "sink_b.in"
+"#,
+    );
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module(1).unwrap();
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, 0).unwrap();
+    module.step(50).unwrap();
+    let io = module.io();
+    assert!(io.modbus_cfg.contains(&(7, 2)), "two slaves");
+    // Unit 5 at 16: coil size 4 (bit 3 + 1) at 16 + 3 + 2; unit 6 at 24: discrete size 8 at 24 + 3 + 3.
+    assert!(io.modbus_cfg.contains(&(16, 5)) && io.modbus_cfg.contains(&(21, 4)));
+    assert!(io.modbus_cfg.contains(&(24, 6)) && io.modbus_cfg.contains(&(30, 8)));
+    assert!(
+        io.modbus_cfg.contains(&(17, 1000)),
+        "period default of the master"
+    );
 }

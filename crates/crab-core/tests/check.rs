@@ -751,8 +751,17 @@ fn external_tags_follow_the_source_project() {
 
     let root = std::env::temp_dir().join(format!("crab-exttags-{}", std::process::id()));
     let (slave, master) = (root.join("slave"), root.join("master"));
-    let slave_logic = "[[block]]\nid = \"level\"\ntype = \"modbus_write\"\n\
-                       table = \"holding\"\nkind = \"float\"\nreg = 4\n";
+    let slave_logic = "[[block]]
+id = \"panel\"
+type = \"modbus_tcp_slave\"
+                       [[block]]
+id = \"level\"
+type = \"modbus_tag\"
+                       device = \"panel\"
+table = \"holding\"
+kind = \"float\"
+reg = 4
+";
     write_project(&slave, slave_logic);
     write_project(&master, "");
 

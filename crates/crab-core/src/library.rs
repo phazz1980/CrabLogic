@@ -357,6 +357,10 @@ pub struct PortDef {
     /// variable fed from it wears the flash (check `retain_fast`). Only outputs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fast: bool,
+    /// An input that may stay unconnected (`optional = true`): the check does not report it.
+    /// Its block then works without a value, so the block itself must handle it. Only inputs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1218,6 +1222,7 @@ impl Library {
                     description: param.description.clone(),
                     sim: None,
                     fast: false,
+                    optional: false,
                 });
             }
             Box::leak(Box::new(derived))

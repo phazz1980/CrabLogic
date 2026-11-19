@@ -12,9 +12,12 @@ use crate::dialogs::Dialog;
 
 pub enum RadioAction {
     Add(&'static str),
-    /// Adds a slave tag: `modbus_write` («из схемы») or `modbus_read` («в схему»), at the next free
-    /// address of its table.
-    AddTag(&'static str),
+    /// Adds a slave device under the master with this id (`modbus_device`, with the next free
+    /// Unit ID).
+    AddDevice(String),
+    /// Adds a tag to the owner with this id (a slave device or a slave-role block), at the next
+    /// free address of its holding table.
+    AddTag(String),
     /// Sets one parameter of a block (the type, address or word order of a tag).
     SetParam {
         id: String,
@@ -94,17 +97,20 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<RadioAction> {
                 .iter()
                 .filter(|b| b.tag.is_none() && RADIO_KINDS.contains(&b.kind.as_str()))
             {
-                row(app, ui, b, &mut actions);
+                row(app, ui, b, true, &mut actions);
             }
         });
     ui.separator();
     actions
 }
 
+/// One block row: placed marker, id, and the find / settings / delete buttons. `show_kind` adds the
+/// block name after the id (for lists that mix kinds under one header).
 pub(crate) fn row(
     app: &EditorApp,
     ui: &mut Ui,
     b: &crab_core::Block,
+    show_kind: bool,
     actions: &mut Vec<RadioAction>,
 ) {
     let Some(doc) = &app.doc else { return };
@@ -115,6 +121,7 @@ pub(crate) fn row(
         .unwrap_or_else(|| b.kind.clone());
     let placed = doc.project.layout.blocks.contains_key(&b.id);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
         ui.dnd_drag_source(
             Id::unique(("radio", &b.id)),
             DragItem::Topic(b.id.clone()),
@@ -126,7 +133,12 @@ pub(crate) fn row(
         } else {
             crate::i18n::tr("Перетащите на плату")
         });
-        ui.label(format!("{}  ·  {}", b.id, crate::i18n::tr(&name)));
+        ui.label(if show_kind {
+            format!("{}  ·  {}", b.id, crate::i18n::tr(&name))
+        } else {
+            b.id.clone()
+        });
+        ui.add_space(4.0);
         if crate::iconbtn::icon_button(
             ui,
             placed,
@@ -181,35 +193,88 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
             RadioAction::Add(kind) => {
                 let pos = crate::panels::free_spot(app);
                 let Some(doc) = &mut app.doc else { return };
-                match doc.edit(&lib, None, |p| p.add_block(&lib, kind, pos)) {
-                    Ok(id) => app.focus_block(&id),
+                // A Modbus block waits in the panel until it is dragged onto a sheet.
+                let waits = MODBUS_KINDS.contains(&kind);
+                let result = doc.edit(&lib, None, |p| {
+                    p.add_block(&lib, kind, pos).inspect(|id| {
+                        if waits {
+                            p.layout.blocks.remove(id);
+                        }
+                    })
+                });
+                match result {
+                    Ok(id) if !waits => app.focus_block(&id),
+                    Ok(_) => {}
                     Err(e) => app.info(LogLevel::Error, e.to_string()),
                 }
             }
             RadioAction::Remove(id) => {
-                let Some(doc) = &mut app.doc else { return };
-                if let Err(e) = doc.edit(&lib, None, |p| p.remove_block(&id)) {
+                let Some(doc) = &mut app.doc else { continue };
+                // A master, a slave device or a slave-role block takes its devices and tags along;
+                // the whole removal is one undo step.
+                let ids = crate::modbuspanel::cascade_ids(&doc.project.logic, &id);
+                let result = doc.edit(&lib, None, |p| {
+                    ids.iter().try_for_each(|x| p.remove_block(x))
+                });
+                if let Err(e) = result {
                     app.info(LogLevel::Error, e.to_string());
                 }
             }
-            RadioAction::AddTag(kind) => {
+            RadioAction::AddDevice(master) => {
+                let full = app
+                    .doc
+                    .as_ref()
+                    .is_some_and(|d| crate::modbuspanel::slaves_full(&d.project.logic, &master));
+                if full {
+                    app.info(
+                        LogLevel::Error,
+                        crate::i18n::tr("Лимит slave у этого master исчерпан: поднимите «Макс. slave» в его настройках")
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 let pos = crate::panels::free_spot(app);
-                let Some(doc) = &mut app.doc else { return };
-                let table = crate::modbuspanel::default_table(kind);
+                let Some(doc) = &mut app.doc else { continue };
+                let unit = crate::modbuspanel::next_unit(&doc.project.logic, &master);
                 let result = doc.edit(&lib, None, |p| {
-                    let id = p.add_block(&lib, kind, pos)?;
-                    // The tag waits in the panel until it is dragged onto a sheet.
+                    let id = p.add_block(&lib, "modbus_device", pos)?;
+                    // A device waits in the panel: it is never placed on a sheet.
                     p.layout.blocks.remove(&id);
-                    let reg = p.logic.modbus_next_free(table, "int");
-                    p.set_param(&lib, &id, "table", Some(ParamValue::Text(table.to_owned())))?;
-                    p.set_param(&lib, &id, "kind", Some(ParamValue::Text("int".to_owned())))?;
-                    p.set_param(&lib, &id, "reg", Some(ParamValue::Int(i64::from(reg))))?;
-                    let named = crate::modbuspanel::default_id(reg);
-                    if p.logic.block(&named).is_none() {
-                        p.rename_block(&id, &named)
-                    } else {
-                        Ok(())
-                    }
+                    p.set_param(&lib, &id, "master", Some(ParamValue::Text(master.clone())))?;
+                    p.set_param(&lib, &id, "unit", Some(ParamValue::Int(unit)))
+                });
+                if let Err(e) = result {
+                    app.info(LogLevel::Error, e.to_string());
+                }
+            }
+            RadioAction::AddTag(owner) => {
+                let pos = crate::panels::free_spot(app);
+                let Some(doc) = &mut app.doc else { continue };
+                let reg = doc
+                    .project
+                    .logic
+                    .modbus_next_free(&owner, crate::modbuspanel::NEW_TAG_TABLE);
+                let id = crate::modbuspanel::free_tag_id(&doc.project.logic, reg);
+                let result = doc.edit(&lib, None, |p| {
+                    let auto = p.add_block(&lib, "modbus_tag", pos)?;
+                    // The tag waits in the panel until it is dragged onto a sheet.
+                    p.layout.blocks.remove(&auto);
+                    let table = crate::modbuspanel::NEW_TAG_TABLE;
+                    p.set_param(&lib, &auto, "device", Some(ParamValue::Text(owner.clone())))?;
+                    p.set_param(
+                        &lib,
+                        &auto,
+                        "table",
+                        Some(ParamValue::Text(table.to_owned())),
+                    )?;
+                    p.set_param(
+                        &lib,
+                        &auto,
+                        "kind",
+                        Some(ParamValue::Text("int".to_owned())),
+                    )?;
+                    p.set_param(&lib, &auto, "reg", Some(ParamValue::Int(i64::from(reg))))?;
+                    p.rename_block(&auto, &id)
                 });
                 if let Err(e) = result {
                     app.info(LogLevel::Error, e.to_string());
@@ -234,8 +299,13 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
                 }
             }
             RadioAction::Rename { old, new } => {
-                let Some(doc) = &mut app.doc else { return };
-                if let Err(e) = doc.edit(&lib, None, |p| p.rename_block(&old, &new)) {
+                let Some(doc) = &mut app.doc else { continue };
+                // The tags and devices that name the block follow its new id.
+                let result = doc.edit(&lib, None, |p| {
+                    p.rename_block(&old, &new)
+                        .map(|()| crate::modbuspanel::follow_rename(&mut p.logic, &old, &new))
+                });
+                if let Err(e) = result {
                     app.info(LogLevel::Error, e.to_string());
                 }
             }

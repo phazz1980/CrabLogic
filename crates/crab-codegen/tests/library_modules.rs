@@ -57,6 +57,17 @@ fn every_library_block_builds_a_module() {
             !crab_core::project::is_screen_kind(kind)
                 && kind != "menu"
                 && !matches!(kind, "lora_e220" | "lora_point" | "lora_centre")
+                // A Modbus tag or device needs its master and owner: `modbus_tags_and_devices_build_modules`.
+                // The four old kinds are replaced by `modbus_tag` and have no code any more.
+                && !matches!(
+                    kind,
+                    "modbus_tag"
+                        | "modbus_device"
+                        | "modbus_master_read"
+                        | "modbus_master_write"
+                        | "modbus_read"
+                        | "modbus_write"
+                )
         })
         .collect();
     blocks.sort_by(|a, b| a.def.info.kind.cmp(&b.def.info.kind));
@@ -74,6 +85,88 @@ fn every_library_block_builds_a_module() {
     }
     let _ = std::fs::remove_dir_all(&root);
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Board of the Modbus test: UART1 for the slave role, UART2 for the master.
+const MODBUS_BOARD: &str =
+    "[project]\nname = \"modbus\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n\n\
+    [[uart]]\nnumber = 1\nspeed = 19200\nformat = \"8N1\"\nrx = 25\ntx = 27\n\n\
+    [[uart]]\nnumber = 2\nspeed = 9600\nformat = \"8N1\"\nrx = 16\ntx = 17\n";
+
+/// `modbus_device` and `modbus_tag` in one project: a master with two devices, a tag of each
+/// device read (output connected) and written (input connected), and the slave role of the board
+/// with a read and a write tag.
+#[test]
+fn modbus_tags_and_devices_build_modules() {
+    let lib = library();
+    let logic = r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+
+[[block]]
+id = "temp_dev"
+type = "modbus_device"
+master = "master"
+unit = 10
+
+[[block]]
+id = "relay_dev"
+type = "modbus_device"
+master = "master"
+unit = 11
+
+[[block]]
+id = "temp"
+type = "modbus_tag"
+device = "temp_dev"
+table = "input"
+kind = "float"
+reg = 0
+
+[[block]]
+id = "relay"
+type = "modbus_tag"
+device = "relay_dev"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "panel"
+type = "modbus_rtu_slave"
+uart = 1
+address = 1
+
+[[block]]
+id = "panel_temp"
+type = "modbus_tag"
+device = "panel"
+table = "input"
+kind = "float"
+reg = 0
+
+[[block]]
+id = "panel_relay"
+type = "modbus_tag"
+device = "panel"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "temp.out_f"
+to = "panel_temp.in_f"
+
+[[link]]
+from = "panel_relay.out_b"
+to = "relay.in_b"
+"#;
+    let project = Project::from_sources("modbus", MODBUS_BOARD, logic, "").unwrap();
+    if let Err(e) = modules(&project, &lib) {
+        panic!("{e}");
+    }
 }
 
 #[test]

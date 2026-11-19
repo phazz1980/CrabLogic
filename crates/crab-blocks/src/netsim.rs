@@ -87,27 +87,6 @@ impl Behavior for Mqtt {
     }
 }
 
-/// Read of a register of a Modbus slave: the value from the bench, `ok` off while the slave
-/// is silent (the last value stays, as in the firmware).
-pub struct ModbusMasterRead;
-
-impl Behavior for ModbusMasterRead {
-    fn step(&mut self, c: &Ctx, out: &mut [f64]) {
-        let slave = c.param(0) as i64;
-        let ok = !c.bench.silent(slave);
-        if out.len() < 4 {
-            return;
-        }
-        if ok {
-            let v = c.bench.register(slave, c.param_text(1), c.param(3) as i64);
-            out[0] = v.round();
-            out[1] = v;
-            out[2] = b(v != 0.0);
-        }
-        out[3] = b(ok);
-    }
-}
-
 /// Read from a UART port: what was sent into the port on the bench comes as a line with a
 /// `ready` pulse, or byte by byte (one per scan, `new` on each).
 #[derive(Default)]
@@ -164,44 +143,64 @@ impl Behavior for UartRead {
 /// under this number, where the master (set by hand) and the program meet.
 pub const OWN_SLAVE: i64 = 0;
 
-/// Read of a table of the own Modbus slave: what the master wrote, or the program itself.
-pub struct ModbusRead;
+/// Where a `modbus_tag` sits in the simulation, from its owner and the links of the tag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TagLink {
+    /// Unit ID of the device on the bench, or [`OWN_SLAVE`] for the slave role of this board.
+    pub unit: i64,
+    /// The owner is a `modbus_device` polled by a master (it can be silent and sends `ok`).
+    pub device: bool,
+    /// An input is connected: the tag writes its value, else it reads the bench.
+    pub write: bool,
+}
 
-impl Behavior for ModbusRead {
+/// One register or bit of a Modbus table (`modbus_tag`). Parameters, in block order: `device`,
+/// `table`, `kind`, `reg`, `swap`; inputs `in`, `in_f`, `in_b`; outputs `out`, `out_f`, `out_b`, `ok`.
+///
+/// Read: the value from the bench; while a device is silent `ok` is off and the last value stays,
+/// as in the firmware. Write: the value is handed to the bench register (see `drive`).
+#[derive(Default)]
+pub struct ModbusTag {
+    link: TagLink,
+    value: f64,
+}
+
+impl ModbusTag {
+    pub fn new(link: TagLink) -> Self {
+        Self { link, value: 0.0 }
+    }
+
+    /// The device answers (the slave role of this board always does).
+    fn answers(&self, bench: &crate::Bench) -> bool {
+        !self.link.device || !bench.silent(self.link.unit)
+    }
+}
+
+impl Behavior for ModbusTag {
     fn step(&mut self, c: &Ctx, out: &mut [f64]) {
-        let v = c
-            .bench
-            .register(OWN_SLAVE, c.param_text(1), c.param(3) as i64);
-        // The three ports are `out`, `out_f` and `out_b`, as in the master read.
-        if out.len() >= 3 {
+        let ok = self.answers(c.bench);
+        if self.link.write {
+            // The inputs are `in`, `in_f` and `in_b`: the one of the kind counts.
+            self.value = match c.param_text(2) {
+                "bool" => b(c.flag(2)),
+                "float" => c.input(1),
+                _ => c.input(0).round(),
+            };
+        } else if ok && out.len() >= 3 {
+            let v = c
+                .bench
+                .register(self.link.unit, c.param_text(1), c.param(3) as i64);
             out[0] = v.round();
             out[1] = v;
             out[2] = b(v != 0.0);
         }
-    }
-}
-
-/// Write into a table of the own Modbus slave: the value the master would read.
-#[derive(Default)]
-pub struct ModbusWrite {
-    value: f64,
-}
-
-impl Behavior for ModbusWrite {
-    fn step(&mut self, c: &Ctx, _: &mut [f64]) {
-        // The inputs are `in`, `in_f` and `in_b`, all present or only the one of the kind.
-        let kind = c.param_text(2);
-        let all = c.inputs.len() >= 3;
-        let at = |i: usize| if all { i } else { 0 };
-        self.value = match kind {
-            "bool" => b(c.flag(at(2))),
-            "float" => c.input(at(1)),
-            _ => c.input(at(0)).round(),
-        };
+        if self.link.device && out.len() >= 4 {
+            out[3] = b(ok);
+        }
     }
 
     fn drive(&self) -> Option<f64> {
-        Some(self.value)
+        self.link.write.then_some(self.value)
     }
 }
 
@@ -274,23 +273,58 @@ mod tests {
     }
 
     #[test]
-    fn modbus_read_gives_the_register_and_keeps_it_when_silent() {
+    fn modbus_tag_read_gives_the_register_and_keeps_it_when_silent() {
         let mut bench = Bench::new();
         bench.set_register(3, "input", 7, 21.5);
-        // slave, table, kind, reg
-        let params = [3.0, 0.0, 0.0, 7.0];
+        // device, table, kind, reg, swap
+        let params = [0.0, 0.0, 0.0, 7.0, 0.0];
         let texts = vec![
             String::new(),
             "input".to_owned(),
             String::new(),
             String::new(),
+            String::new(),
         ];
+        let link = TagLink {
+            unit: 3,
+            device: true,
+            write: false,
+        };
+        let mut tag = ModbusTag::new(link);
         let mut out = [0.0; 4];
-        ModbusMasterRead.step(&ctx(&bench, &params, &texts, &[], &[]), &mut out);
+        tag.step(&ctx(&bench, &params, &texts, &[], &[]), &mut out);
         assert_eq!(out, [22.0, 21.5, 1.0, 1.0]);
+        assert_eq!(tag.drive(), None);
         bench.set_silent(3, true);
         bench.set_register(3, "input", 7, 99.0);
-        ModbusMasterRead.step(&ctx(&bench, &params, &texts, &[], &[]), &mut out);
+        tag.step(&ctx(&bench, &params, &texts, &[], &[]), &mut out);
         assert_eq!(out, [22.0, 21.5, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn modbus_tag_write_drives_the_value_of_its_kind() {
+        let bench = Bench::new();
+        let params = [0.0, 0.0, 0.0, 7.0, 0.0];
+        let texts = vec![
+            String::new(),
+            "holding".to_owned(),
+            "float".to_owned(),
+            String::new(),
+            String::new(),
+        ];
+        let link = TagLink {
+            unit: OWN_SLAVE,
+            device: false,
+            write: true,
+        };
+        let mut tag = ModbusTag::new(link);
+        let mut out = [0.0; 4];
+        // `in`, `in_f`, `in_b`: the float input is the one that counts.
+        tag.step(
+            &ctx(&bench, &params, &texts, &[], &[9.0, 2.5, 1.0]),
+            &mut out,
+        );
+        assert_eq!(tag.drive(), Some(2.5));
+        assert_eq!(out, [0.0; 4], "a write leaves the outputs alone");
     }
 }

@@ -158,7 +158,8 @@ impl<'a> Program<'a> {
                         Source::Default(zero_value(same))
                     }
                     (None, None, Some(value)) => Source::Default(value.clone()),
-                    (None, None, None) if project.is_widget(&block.id) => {
+                    // An optional input (a Modbus tag's value for the other direction) reads zero.
+                    (None, None, None) if project.is_widget(&block.id) || port.optional => {
                         Source::Default(zero_value(port.ty))
                     }
                     (None, None, None) => unreachable!("unconnected inputs checked"),

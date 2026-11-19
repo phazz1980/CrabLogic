@@ -405,19 +405,111 @@ fn bench_network_outage_reaches_the_outputs() {
     assert_eq!(s.output_text("wifi", "address"), Some(""));
 }
 
+/// A simulation of the schema `logic` on a board with two UARTs (as the block checks set them).
+fn sim_logic(logic: &str) -> Simulation {
+    const BOARD: &str = "[project]\nname = \"modbus\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n\n\
+        [[uart]]\nnumber = 1\nspeed = 19200\nformat = \"8N1\"\nrx = 25\ntx = 27\n\n\
+        [[uart]]\nnumber = 2\nspeed = 9600\nformat = \"8N1\"\nrx = 16\ntx = 17\n";
+    let (lib, _) = Library::load(repo("library")).unwrap();
+    let project = Project::from_sources("modbus", BOARD, logic, "").unwrap();
+    Simulation::new(&project.logic, &lib).unwrap()
+}
+
 #[test]
 fn bench_modbus_master_reads_a_register_and_loses_the_slave() {
-    let mut s = sim("modbus_rtu");
-    let Some(BenchInput::Modbus { slave, table, reg }) = s.bench_input("temp", "out_f") else {
-        panic!("modbus_master_read reads the bench");
+    let mut s = sim_logic(
+        r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+
+[[block]]
+id = "sensor"
+type = "modbus_device"
+master = "master"
+unit = 10
+
+[[block]]
+id = "alarm"
+type = "modbus_tag"
+device = "sensor"
+table = "discrete"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "alarm.out_b"
+to = "led.in"
+"#,
+    );
+    let Some(BenchInput::Modbus { slave, table, reg }) = s.bench_input("alarm", "out_b") else {
+        panic!("a read modbus_tag reads the bench");
     };
-    s.set_register(slave, &table, reg, 36.6);
+    assert_eq!((slave, table.as_str(), reg), (10, "discrete", 0));
+    s.set_register(slave, &table, reg, 1.0);
     s.step(10).unwrap();
-    assert_eq!(s.output("temp", "out_f"), Some(f64::from(36.6f32))); // a float signal is an f32
-    assert_eq!(s.output("temp", "ok"), Some(1.0));
+    assert_eq!(s.output("alarm", "out_b"), Some(1.0));
+    assert_eq!(s.output("alarm", "ok"), Some(1.0));
+    assert_eq!(s.output_pin("led"), Some((2, 1.0)));
     s.set_silent(slave, true);
     s.step(10).unwrap();
-    assert_eq!(s.output("temp", "ok"), Some(0.0));
+    assert_eq!(s.output("alarm", "ok"), Some(0.0));
+    // The last value stays while the device is silent.
+    assert_eq!(s.output("alarm", "out_b"), Some(1.0));
+}
+
+#[test]
+fn bench_written_modbus_tag_puts_its_value_into_the_device() {
+    let mut s = sim_logic(
+        r#"
+[[block]]
+id = "master"
+type = "modbus_rtu_master"
+uart = 2
+
+[[block]]
+id = "sensor"
+type = "modbus_device"
+master = "master"
+unit = 10
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "relay"
+type = "modbus_tag"
+device = "sensor"
+table = "coil"
+kind = "bool"
+reg = 3
+
+[[link]]
+from = "button.out"
+to = "relay.in_b"
+"#,
+    );
+    put(&mut s, "button", 1.0);
+    s.step(10).unwrap();
+    assert_eq!(s.bench().register(10, "coil", 3), 1.0);
+    s.set_silent(10, true);
+    put(&mut s, "button", 0.0);
+    s.step(10).unwrap();
+    assert_eq!(
+        s.bench().register(10, "coil", 3),
+        1.0,
+        "a silent device gets nothing"
+    );
 }
 
 #[test]
@@ -437,10 +529,63 @@ fn mqtt_publish_waits_for_the_broker() {
 
 #[test]
 fn bench_own_modbus_slave_meets_the_master_and_the_program() {
-    let mut s = sim("modbus_wifi");
+    let mut s = sim_logic(
+        r#"
+[[block]]
+id = "wifi"
+type = "wifi"
+ssid = "MyNetwork"
+
+[[block]]
+id = "slave"
+type = "modbus_tcp_slave"
+
+[[block]]
+id = "led_reg"
+type = "modbus_tag"
+device = "slave"
+table = "coil"
+kind = "bool"
+reg = 0
+
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "button_reg"
+type = "modbus_tag"
+device = "slave"
+table = "discrete"
+kind = "bool"
+reg = 0
+
+[[link]]
+from = "led_reg.out_b"
+to = "led.in"
+
+[[link]]
+from = "button.out"
+to = "button_reg.in_b"
+"#,
+    );
     let Some(BenchInput::Modbus { slave, table, reg }) = s.bench_input("led_reg", "out_b") else {
-        panic!("modbus_read reads the bench");
+        panic!("a read modbus_tag reads the bench");
     };
+    assert_eq!((slave, table.as_str(), reg), (0, "coil", 0));
+    assert_eq!(
+        s.bench_input("button_reg", "in_b"),
+        None,
+        "a written tag does not read"
+    );
     s.step(10).unwrap();
     assert_eq!(s.output("led_reg", "out_b"), Some(0.0));
     // The master writes a coil, the program reads it.

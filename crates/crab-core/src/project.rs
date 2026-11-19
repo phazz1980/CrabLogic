@@ -53,15 +53,13 @@ pub const RADIO_KINDS: [&str; 3] = ["lora_e220", "lora_point", "lora_centre"];
 
 /// Modbus blocks: added and removed from the «Сеть → Modbus» folder of the left panel, not from the
 /// library.
-pub const MODBUS_KINDS: [&str; 8] = [
+pub const MODBUS_KINDS: [&str; 6] = [
     "modbus_rtu_master",
     "modbus_rtu_slave",
     "modbus_tcp_master",
     "modbus_tcp_slave",
-    "modbus_master_read",
-    "modbus_master_write",
-    "modbus_read",
-    "modbus_write",
+    "modbus_device",
+    "modbus_tag",
 ];
 
 /// A block with pins that is a device and not a tag: no row in the tag tree, no copies, it is

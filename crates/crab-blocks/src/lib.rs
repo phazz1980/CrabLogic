@@ -14,7 +14,7 @@ mod web;
 pub use bench::{Bench, Signal, NO_BENCH};
 pub use hardware::ds18b20_channel;
 pub use more::{next_random, RANDOM_SEED};
-pub use netsim::OWN_SLAVE;
+pub use netsim::{ModbusTag, TagLink, OWN_SLAVE};
 pub use num::{Types, V};
 pub use wasm::{get as wasm_block, Instruction, WTy, WasmEmit, WasmFn};
 pub use web::device_page;

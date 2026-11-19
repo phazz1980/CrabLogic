@@ -111,6 +111,7 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
     let id = ui.make_persistent_id(("display", &b.id));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
         .show_header(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
             ui.dnd_drag_source(
                 Id::unique(("display", &b.id)),
                 DragItem::Topic(b.id.clone()),

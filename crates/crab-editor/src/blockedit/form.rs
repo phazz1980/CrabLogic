@@ -34,6 +34,8 @@ pub(super) struct PortRow {
     pub(super) sim: String,
     /// Output changes often (`fast` in `block.toml`): retained variables fed by it wear the flash.
     pub(super) fast: bool,
+    /// The input may stay unconnected (`optional` in `block.toml`): the check does not report it.
+    pub(super) optional: bool,
 }
 
 impl PortRow {
@@ -47,6 +49,7 @@ impl PortRow {
             description: String::new(),
             sim: String::new(),
             fast: false,
+            optional: false,
         }
     }
 
@@ -60,6 +63,7 @@ impl PortRow {
             description: p.description.clone(),
             sim: p.sim.as_ref().map(value_text).unwrap_or_default(),
             fast: p.fast,
+            optional: p.optional,
         }
     }
 
@@ -75,6 +79,7 @@ impl PortRow {
             sim: parse_signal(self.ty, &self.sim)
                 .map_err(|e| format!("«{}», значение в симуляции: {e}", self.name))?,
             fast: self.fast,
+            optional: self.optional,
         })
     }
 }

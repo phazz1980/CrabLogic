@@ -1,0 +1,36 @@
+[block]
+type = "modbus_device"
+name = "Modbus: slave у master"
+symbol = "MB DEV"
+group = "Сеть"
+shared = "network"
+hidden = true
+description = "Ведомое устройство, которое опрашивает блок «Modbus RTU Master» или «Modbus TCP Master». Добавляется в левой панели под master."
+
+[[param]]
+name = "master"
+type = "string"
+default = ""
+description = "Идентификатор блока Modbus Master, который опрашивает это устройство"
+
+[[param]]
+name = "unit"
+type = "int"
+default = 1
+min = 1
+max = 247
+description = "Адрес устройства (Unit ID)"
+
+[[param]]
+name = "ip"
+type = "string"
+default = ""
+description = "IP-адрес slave: пусто — адрес master (для Modbus TCP)"
+
+[[param]]
+name = "port"
+type = "int"
+default = 0
+min = 0
+max = 65535
+description = "Порт slave: 0 — порт master"

@@ -208,12 +208,6 @@ pub(super) fn block_settings(
                 ui.end_row();
             }
         });
-    if matches!(
-        d.kind.as_str(),
-        "modbus_master_read" | "modbus_master_write"
-    ) {
-        external_tag_picker(ui, d, &doc.project.logic);
-    }
     let from_board = pins.layout.is_some() && pending_board_index(d, &pins).is_some();
     if pins.can_expander && d.source == PinSource::New && !from_board {
         ui.add_space(6.0);
@@ -253,43 +247,6 @@ pub(super) fn block_settings(
                 }
             });
     }
-}
-
-/// Fills table, value type and address of a Modbus master read / write block from a tag
-/// taken from another project.
-pub(super) fn external_tag_picker(ui: &mut Ui, d: &mut BlockDialog, logic: &crab_core::Logic) {
-    if logic.externals.is_empty() {
-        return;
-    }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(crate::i18n::tr("Внешний тег"));
-        egui::ComboBox::from_id_salt("external_tag")
-            .selected_text(crate::i18n::tr("выбрать..."))
-            .show_ui(ui, |ui| {
-                for e in &logic.externals {
-                    if !ui.selectable_label(false, &e.name).clicked() {
-                        continue;
-                    }
-                    let kind = match e.ty {
-                        crab_core::VarType::Bool => "bool",
-                        crab_core::VarType::Float | crab_core::VarType::Double => "float",
-                        _ => "int",
-                    };
-                    for (name, text) in [("table", e.table.as_str()), ("kind", kind)] {
-                        d.texts.insert(name.into(), text.into());
-                        d.values
-                            .insert(name.into(), Some(ParamValue::Text(text.into())));
-                    }
-                    d.values
-                        .insert("reg".into(), Some(ParamValue::Int(i64::from(e.address))));
-                }
-            })
-            .response
-            .on_hover_text(crate::i18n::tr(
-                "Подставляет таблицу, тип и адрес тега, перенесённого из другого проекта",
-            ));
-    });
 }
 
 /// An on / off switch: a rounded track with a knob that slides to the side of the state.

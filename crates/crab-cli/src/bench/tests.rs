@@ -390,9 +390,12 @@ fn modbus_stand_needs_wifi_only_and_feeds_twenty_registers() {
         "sizes are not parameters"
     );
     // Ten floats at holding registers 0, 2, ..., 18 take twenty registers.
-    assert_eq!(built.project.logic.modbus_table_sizes(), [20, 0, 0, 0]);
+    assert_eq!(
+        built.project.logic.modbus_table_sizes("slave"),
+        [20, 0, 0, 0]
+    );
     // Ten floats take twenty registers, each fed by a tap of the 100-block chain.
-    let writers = blocks.iter().filter(|b| b.kind == "modbus_write").count();
+    let writers = blocks.iter().filter(|b| b.kind == "modbus_tag").count();
     assert_eq!(writers, 10);
     let chain = blocks.iter().filter(|b| b.id.starts_with('f')).count();
     assert_eq!(chain, 100);

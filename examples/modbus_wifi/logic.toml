@@ -18,7 +18,8 @@ pin = 4
 
 [[block]]
 id = "temp_reg"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "input"
 kind = "float"
 reg = 0
@@ -32,21 +33,24 @@ inverted = true
 
 [[block]]
 id = "button_reg"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "discrete"
 kind = "bool"
 reg = 0
 
 [[block]]
 id = "online_reg"
-type = "modbus_write"
+type = "modbus_tag"
+device = "slave"
 table = "discrete"
 kind = "bool"
 reg = 1
 
 [[block]]
 id = "led_reg"
-type = "modbus_read"
+type = "modbus_tag"
+device = "slave"
 table = "coil"
 kind = "bool"
 reg = 0
