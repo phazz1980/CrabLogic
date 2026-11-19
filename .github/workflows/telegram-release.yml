@@ -25,6 +25,8 @@ jobs:
           EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          # A token pasted into the secret may carry a newline or spaces: they break the URL.
+          TELEGRAM_BOT_TOKEN=$(printf '%s' "${TELEGRAM_BOT_TOKEN:-}" | tr -d '[:space:]')
           if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
             echo "TELEGRAM_BOT_TOKEN is not set; nothing to send"
             exit 1
@@ -39,7 +41,8 @@ jobs:
           # Telegram takes up to 4096 characters; keep room for the title and the link.
           body=$(printf '%s' "$body" | head -c 3300)
           text=$(printf '%s\n\n%s\n\n%s' "$title" "$body" "$url")
-          curl --fail --silent --show-error \
+          # --fail-with-body puts the answer of Telegram (a wrong token or chat) into the log.
+          curl --fail-with-body --silent --show-error \
             --data-urlencode "chat_id=$TELEGRAM_CHAT" \
             --data-urlencode "text=$text" \
             --data-urlencode "disable_web_page_preview=true" \
