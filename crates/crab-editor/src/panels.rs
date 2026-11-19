@@ -611,6 +611,32 @@ pub(crate) fn group(
     }
 }
 
+/// A group like «Переменные»: the name of the role and a small «+» right next to it. The body
+/// (the blocks of the role) is folded under the title. Returns true when «+» was pressed;
+/// `enabled` is false when the role is already used up (a block that is single per board).
+pub(crate) fn add_group(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    caption: &str,
+    hint: &str,
+    enabled: bool,
+    body: impl FnOnce(&mut Ui),
+) -> bool {
+    let title = caption.trim_start_matches('+').trim_start();
+    let mut pressed = false;
+    let tools = |ui: &mut Ui| {
+        let button = ui.add_enabled(enabled, egui::Button::new("+").small());
+        let button = if hint.is_empty() {
+            button
+        } else {
+            button.on_hover_text(hint)
+        };
+        pressed = button.clicked();
+    };
+    group(ui, id, title, Level::Sub, tools, body);
+    pressed
+}
+
 /// Project tree: controller → tags (inputs, outputs, variables) → sheets.
 pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let pal = app.theme.palette;
@@ -772,12 +798,12 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                                 d.inputs.iter().find(|(p, _)| p.block == *id).map(|&(_, i)| i)
                             });
                             let shown = live_text(text, debug.as_ref(), index);
-                            // Like an unused variable: in the tree, but not on any sheet.
+                            // A mark instead of a caption: an arrow when the tag is on a sheet, a
+                            // cross (in the warning colour) when it is only in the tree.
                             let shown = if placed {
-                                RichText::new(shown)
+                                RichText::new(format!("→ {shown}"))
                             } else {
-                                RichText::new(crate::i18n::fmt("{0}  (не используется)", &[&shown]))
-                                    .color(pal.warning)
+                                RichText::new(format!("✕ {shown}")).color(pal.warning)
                             };
                             let resp = drag_row(
                                 ui,
@@ -1318,7 +1344,7 @@ fn placed_images<'a>(project: &Project, ids: impl Iterator<Item = &'a str>) -> V
     images.into_iter().map(|(_, id)| id.to_owned()).collect()
 }
 
-fn drag_row(
+pub(crate) fn drag_row(
     ui: &mut Ui,
     id: Id,
     item: DragItem,

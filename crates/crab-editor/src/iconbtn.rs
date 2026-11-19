@@ -51,18 +51,14 @@ pub fn icon_button(ui: &mut Ui, enabled: bool, icon: Icon, hint: &str) -> Respon
     .on_hover_text(hint)
 }
 
-/// A small «add» button that keeps its name: a green plus and the caption without its own `+`.
+/// A small «add» button that keeps its name: a plus and the caption without its own `+`, in the
+/// ordinary text colour (white in the dark theme).
 pub fn add_button(ui: &mut Ui, enabled: bool, caption: &str, hint: &str) -> Response {
     let name = caption.trim_start_matches('+').trim_start();
     let text = format!("{} {name}", Icon::Add.glyph());
-    let color = if enabled {
-        Icon::Add.color()
-    } else {
-        ui.visuals().weak_text_color()
-    };
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(text).size(14.0).color(color))
+        egui::Button::new(RichText::new(text).size(14.0))
             .min_size(egui::vec2(0.0, 22.0))
             .frame_when_inactive(false),
     );

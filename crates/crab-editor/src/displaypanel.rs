@@ -26,6 +26,8 @@ pub enum DisplayAction {
     },
     Designer(String),
     Focus(String),
+    /// Opens the properties window of the block.
+    Settings(String),
     /// Deletes the display with its menu blocks.
     Remove(String),
 }
@@ -84,11 +86,14 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<DisplayAction> {
         .show(ui, |ui| {
             // One group per kind: its add button on its own line, its displays right under it.
             for (kind, caption) in [("oled", "+ OLED"), ("lcd", "+ LCD")] {
-                if crate::iconbtn::add_button(ui, true, caption, "").clicked() {
+                let add =
+                    crate::panels::add_group(ui, ("display_kind", kind), caption, "", true, |ui| {
+                        for b in logic.blocks.iter().filter(|b| b.kind == kind) {
+                            display(app, ui, b, &mut actions);
+                        }
+                    });
+                if add {
                     actions.push(DisplayAction::Add(kind));
-                }
-                for b in logic.blocks.iter().filter(|b| b.kind == kind) {
-                    display(app, ui, b, &mut actions);
                 }
             }
         });
@@ -111,54 +116,49 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
     let id = ui.make_persistent_id(("display", &b.id));
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
         .show_header(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            ui.dnd_drag_source(
+            // Like a variable: the row is dragged onto a sheet, a click finds the block there, a
+            // double click opens its parameters, the context menu has the rest.
+            let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+            let caption = format!("{} ({model_label})", b.id);
+            let text = if placed {
+                egui::RichText::new(format!("→ {caption}"))
+            } else {
+                egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
+            };
+            let resp = crate::panels::drag_row(
+                ui,
                 Id::unique(("display", &b.id)),
                 DragItem::Topic(b.id.clone()),
-                |ui| ui.label(if placed { "▣" } else { "▢" }),
+                selected,
+                text,
             )
-            .response
             .on_hover_text(if placed {
-                crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
+                crate::i18n::tr("Щелчок — найти на плате. Двойной щелчок — свойства; перетащите на плату, чтобы переставить.")
             } else {
-                crate::i18n::tr("Перетащите на плату")
+                crate::i18n::tr("Перетащите на плату. Двойной щелчок — свойства.")
             });
-            ui.label(format!("{} ({model_label})", b.id));
-            // The buttons follow the title on the first row.
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                if crate::iconbtn::icon_button(
-                    ui,
-                    true,
-                    crate::iconbtn::Icon::Designer,
-                    crate::i18n::tr("Экраны и меню..."),
-                )
-                .clicked()
-                {
-                    actions.push(DisplayAction::Designer(b.id.clone()));
-                }
-                if crate::iconbtn::icon_button(
-                    ui,
-                    placed,
-                    crate::iconbtn::Icon::Find,
-                    crate::i18n::tr("Найти на плате"),
-                )
-                .clicked()
-                {
+            if resp.double_clicked() {
+                actions.push(DisplayAction::Settings(b.id.clone()));
+            } else if resp.clicked() && placed {
+                actions.push(DisplayAction::Focus(b.id.clone()));
+            }
+            resp.context_menu(|ui| {
+                if placed && ui.button(crate::i18n::tr("Найти на плате")).clicked() {
                     actions.push(DisplayAction::Focus(b.id.clone()));
+                    ui.close();
                 }
-                if crate::iconbtn::icon_button(
-                    ui,
-                    true,
-                    crate::iconbtn::Icon::Delete,
-                    &format!(
-                        "{}: {}",
-                        crate::i18n::tr("Удалить дисплей"),
-                        crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")
-                    ),
-                )
-                .clicked()
-                {
+                if ui.button(crate::i18n::tr("Свойства...")).clicked() {
+                    actions.push(DisplayAction::Settings(b.id.clone()));
+                    ui.close();
+                }
+                if ui.button(crate::i18n::tr("Экраны и меню...")).clicked() {
+                    actions.push(DisplayAction::Designer(b.id.clone()));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button(crate::i18n::tr("Удалить дисплей")).on_hover_text(crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")).clicked() {
                     actions.push(DisplayAction::Remove(b.id.clone()));
+                    ui.close();
                 }
             });
         })
@@ -255,6 +255,9 @@ pub fn apply(app: &mut EditorApp, actions: Vec<DisplayAction>) {
         let lib = app.lib.clone();
         match action {
             DisplayAction::Focus(id) => app.focus_block(&id),
+            DisplayAction::Settings(id) => {
+                app.dialog = crate::dialogs::Dialog::for_block(app, &id);
+            }
             DisplayAction::Remove(id) => {
                 let Some(doc) = &mut app.doc else { return };
                 let result = doc.edit(&lib, None, |p| {
@@ -273,8 +276,14 @@ pub fn apply(app: &mut EditorApp, actions: Vec<DisplayAction>) {
             DisplayAction::Add(kind) => {
                 let pos = crate::panels::free_spot(app);
                 let Some(doc) = &mut app.doc else { return };
-                match doc.edit(&lib, None, |p| p.add_block(&lib, kind, pos)) {
-                    Ok(id) => app.focus_block(&id),
+                // The display waits in the panel until it is dragged onto a sheet.
+                let result = doc.edit(&lib, None, |p| {
+                    p.add_block(&lib, kind, pos).inspect(|id| {
+                        p.layout.blocks.remove(id);
+                    })
+                });
+                match result {
+                    Ok(_) => {}
                     Err(e) => app.info(LogLevel::Error, e.to_string()),
                 }
             }

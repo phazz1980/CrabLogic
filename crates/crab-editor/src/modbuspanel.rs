@@ -98,27 +98,29 @@ pub fn show(app: &EditorApp, ui: &mut Ui, actions: &mut Vec<RadioAction>) {
                 let info = app.lib.get(kind).map(|l| &l.def.info);
                 let enabled = !info.is_some_and(|i| i.single) || !has(kind);
                 let hint = info.map_or("", |i| i.description.as_str());
-                if crate::iconbtn::add_button(
+                let add = crate::panels::add_group(
                     ui,
-                    enabled,
+                    ("modbus_kind", kind),
                     crate::i18n::tr(caption),
                     crate::i18n::tr(hint),
-                )
-                .clicked()
-                {
+                    enabled,
+                    |ui| {
+                        for b in logic
+                            .blocks
+                            .iter()
+                            .filter(|b| b.tag.is_none() && b.kind == kind)
+                        {
+                            crate::radiopanel::row(app, ui, b, false, actions);
+                            if is_master(kind) {
+                                master_children(app, ui, b, &conflicts, actions);
+                            } else {
+                                slave_tags(app, ui, b, &conflicts, actions);
+                            }
+                        }
+                    },
+                );
+                if add {
                     actions.push(RadioAction::Add(kind));
-                }
-                for b in logic
-                    .blocks
-                    .iter()
-                    .filter(|b| b.tag.is_none() && b.kind == kind)
-                {
-                    crate::radiopanel::row(app, ui, b, false, actions);
-                    if is_master(kind) {
-                        master_children(app, ui, b, &conflicts, actions);
-                    } else {
-                        slave_tags(app, ui, b, &conflicts, actions);
-                    }
                 }
             }
         });

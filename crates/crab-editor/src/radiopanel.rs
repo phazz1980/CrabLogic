@@ -76,36 +76,49 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<RadioAction> {
                 .any(|b| RADIO_KINDS.contains(&b.kind.as_str())),
         )
         .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for (kind, caption, hint) in ADD {
-                    // One modem per board (`single` in the library).
-                    let enabled = kind != "lora_e220" || !modem_exists;
-                    if crate::iconbtn::add_button(
-                        ui,
-                        enabled,
-                        crate::i18n::tr(caption),
-                        crate::i18n::tr(hint),
-                    )
-                    .clicked()
-                    {
-                        actions.push(RadioAction::Add(kind));
+            // The «LoRa E220» subfolder, like «Modbus» in the network folder: one group per
+            // role, its add button on its own line, its blocks right under it.
+            egui::CollapsingHeader::new(egui::RichText::new("LoRa E220").strong())
+                .id_salt("radio_lora_e220")
+                .default_open(
+                    logic
+                        .blocks
+                        .iter()
+                        .any(|b| RADIO_KINDS.contains(&b.kind.as_str())),
+                )
+                .show(ui, |ui| {
+                    for (kind, caption, hint) in ADD {
+                        // One modem per board (`single` in the library).
+                        let enabled = kind != "lora_e220" || !modem_exists;
+                        let add = crate::panels::add_group(
+                            ui,
+                            ("radio_kind", kind),
+                            crate::i18n::tr(caption),
+                            crate::i18n::tr(hint),
+                            enabled,
+                            |ui| {
+                                for b in logic
+                                    .blocks
+                                    .iter()
+                                    .filter(|b| b.tag.is_none() && b.kind == kind)
+                                {
+                                    row(app, ui, b, false, &mut actions);
+                                }
+                            },
+                        );
+                        if add {
+                            actions.push(RadioAction::Add(kind));
+                        }
                     }
-                }
-            });
-            for b in logic
-                .blocks
-                .iter()
-                .filter(|b| b.tag.is_none() && RADIO_KINDS.contains(&b.kind.as_str()))
-            {
-                row(app, ui, b, true, &mut actions);
-            }
+                });
         });
     ui.separator();
     actions
 }
 
-/// One block row: placed marker, id, and the find / settings / delete buttons. `show_kind` adds the
-/// block name after the id (for lists that mix kinds under one header).
+/// One block row, like the row of a variable: the whole row is dragged onto a sheet, a click finds
+/// the block on the board (when it is there), a double click opens its parameters, the context menu
+/// has the rest. `show_kind` adds the block name after the id (for lists that mix kinds).
 pub(crate) fn row(
     app: &EditorApp,
     ui: &mut Ui,
@@ -120,66 +133,48 @@ pub(crate) fn row(
         .map(|l| l.def.info.name.clone())
         .unwrap_or_else(|| b.kind.clone());
     let placed = doc.project.layout.blocks.contains_key(&b.id);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        ui.dnd_drag_source(
-            Id::unique(("radio", &b.id)),
-            DragItem::Topic(b.id.clone()),
-            |ui| ui.label(if placed { "▣" } else { "▢" }),
-        )
-        .response
-        .on_hover_text(if placed {
-            crate::i18n::tr("Блок уже на плате; перетащите, чтобы переставить")
-        } else {
-            crate::i18n::tr("Перетащите на плату")
-        });
-        ui.label(if show_kind {
-            format!("{}  ·  {}", b.id, crate::i18n::tr(&name))
-        } else {
-            b.id.clone()
-        });
-        ui.add_space(4.0);
-        if crate::iconbtn::icon_button(
-            ui,
-            placed,
-            crate::iconbtn::Icon::Find,
-            crate::i18n::tr("Найти на плате"),
-        )
-        .clicked()
-        {
+    let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+    let caption = if show_kind {
+        format!("{}  ·  {}", b.id, crate::i18n::tr(&name))
+    } else {
+        b.id.clone()
+    };
+    // An arrow when the block is on a sheet, a cross when it only waits in the tree.
+    let text = if placed {
+        egui::RichText::new(format!("→ {caption}"))
+    } else {
+        egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
+    };
+    let resp = crate::panels::drag_row(
+        ui,
+        Id::unique(("radio", &b.id)),
+        DragItem::Topic(b.id.clone()),
+        selected,
+        text,
+    )
+    .on_hover_text(if placed {
+        crate::i18n::tr("Щелчок — найти на плате. Двойной щелчок — свойства; перетащите на плату, чтобы переставить.")
+    } else {
+        crate::i18n::tr("Перетащите на плату. Двойной щелчок — свойства.")
+    });
+    if resp.double_clicked() {
+        actions.push(RadioAction::Settings(b.id.clone()));
+    } else if resp.clicked() && placed {
+        actions.push(RadioAction::Focus(b.id.clone()));
+    }
+    resp.context_menu(|ui| {
+        if placed && ui.button(crate::i18n::tr("Найти на плате")).clicked() {
             actions.push(RadioAction::Focus(b.id.clone()));
+            ui.close();
         }
-        let hint = if b.kind == "lora_e220" {
-            Some("Роль, канал, скорость, ключ, UART и выводы модема")
-        } else if MODBUS_KINDS.contains(&b.kind.as_str()) {
-            Some("Параметры блока")
-        } else {
-            None
-        };
-        if hint.is_some_and(|hint| {
-            crate::iconbtn::icon_button(
-                ui,
-                true,
-                crate::iconbtn::Icon::Settings,
-                &format!(
-                    "{}: {}",
-                    crate::i18n::tr("Настройки..."),
-                    crate::i18n::tr(hint)
-                ),
-            )
-            .clicked()
-        }) {
+        if ui.button(crate::i18n::tr("Свойства...")).clicked() {
             actions.push(RadioAction::Settings(b.id.clone()));
+            ui.close();
         }
-        if crate::iconbtn::icon_button(
-            ui,
-            true,
-            crate::iconbtn::Icon::Delete,
-            crate::i18n::tr("Удалить из проекта"),
-        )
-        .clicked()
-        {
+        ui.separator();
+        if ui.button(crate::i18n::tr("Удалить из проекта")).clicked() {
             actions.push(RadioAction::Remove(b.id.clone()));
+            ui.close();
         }
     });
 }
@@ -193,8 +188,8 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
             RadioAction::Add(kind) => {
                 let pos = crate::panels::free_spot(app);
                 let Some(doc) = &mut app.doc else { return };
-                // A Modbus block waits in the panel until it is dragged onto a sheet.
-                let waits = MODBUS_KINDS.contains(&kind);
+                // A Modbus or radio block waits in the panel until it is dragged onto a sheet.
+                let waits = MODBUS_KINDS.contains(&kind) || RADIO_KINDS.contains(&kind);
                 let result = doc.edit(&lib, None, |p| {
                     p.add_block(&lib, kind, pos).inspect(|id| {
                         if waits {

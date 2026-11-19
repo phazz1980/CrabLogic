@@ -280,9 +280,17 @@ pub fn changes_window(ctx: &egui::Context, open: &mut bool) {
         .resizable(true)
         .default_width(460.0)
         .show(ctx, |ui| {
-            ui.strong(crate::i18n::fmt("Версия {0}", &[&CURRENT]));
+            ui.label(
+                egui::RichText::new(crate::i18n::fmt("Версия {0}", &[&CURRENT]))
+                    .size(18.0)
+                    .strong(),
+            );
+            ui.add_space(8.0);
             for line in CHANGES.lines().filter(|l| !l.trim().is_empty()) {
-                ui.label(format!("• {}", line.trim_start_matches("- ")));
+                ui.label(
+                    egui::RichText::new(format!("• {}", line.trim_start_matches("- "))).size(15.0),
+                );
+                ui.add_space(10.0);
             }
         });
 }
