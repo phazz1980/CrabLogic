@@ -14,11 +14,6 @@ const MENU: &str = "menu";
 
 pub enum DisplayAction {
     Add(&'static str),
-    SetParam {
-        id: String,
-        name: &'static str,
-        value: ParamValue,
-    },
     /// Adds or removes the menu block of a display.
     Menu {
         display: String,
@@ -34,21 +29,6 @@ pub enum DisplayAction {
 
 pub fn is_display(kind: &str) -> bool {
     DISPLAY_KINDS.contains(&kind)
-}
-
-/// Address as shown to the user: `0x3C`.
-pub fn format_address(a: i64) -> String {
-    format!("0x{a:02X}")
-}
-
-/// Parses `0x3C` (any case) or decimal `60`; only 7-bit I²C addresses are accepted.
-pub fn parse_address(text: &str) -> Option<i64> {
-    let t = text.trim();
-    let n = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        Some(h) => i64::from_str_radix(h, 16).ok()?,
-        None => t.parse().ok()?,
-    };
-    (0..=127).contains(&n).then_some(n)
 }
 
 /// Menu blocks that belong to the display `display`.
@@ -113,121 +93,69 @@ fn display(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAct
         .map(|c| c.label.clone())
         .unwrap_or_default();
     let placed = doc.project.layout.blocks.contains_key(&b.id);
-    let id = ui.make_persistent_id(("display", &b.id));
-    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-        .show_header(ui, |ui| {
-            // Like a variable: the row is dragged onto a sheet, a click finds the block there, a
-            // double click opens its parameters, the context menu has the rest.
-            let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
-            let caption = format!("{} ({model_label})", b.id);
-            let text = if placed {
-                egui::RichText::new(format!("→ {caption}"))
-            } else {
-                egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
-            };
-            let resp = crate::panels::drag_row(
-                ui,
-                Id::unique(("display", &b.id)),
-                DragItem::Topic(b.id.clone()),
-                selected,
-                text,
-            )
-            .on_hover_text(if placed {
-                crate::i18n::tr("Щелчок — найти на плате. Двойной щелчок — свойства; перетащите на плату, чтобы переставить.")
-            } else {
-                crate::i18n::tr("Перетащите на плату. Двойной щелчок — свойства.")
-            });
-            if resp.double_clicked() {
-                actions.push(DisplayAction::Settings(b.id.clone()));
-            } else if resp.clicked() && placed {
-                actions.push(DisplayAction::Focus(b.id.clone()));
-            }
-            resp.context_menu(|ui| {
-                if placed && ui.button(crate::i18n::tr("Найти на плате")).clicked() {
-                    actions.push(DisplayAction::Focus(b.id.clone()));
-                    ui.close();
-                }
-                if ui.button(crate::i18n::tr("Свойства...")).clicked() {
-                    actions.push(DisplayAction::Settings(b.id.clone()));
-                    ui.close();
-                }
-                if ui.button(crate::i18n::tr("Экраны и меню...")).clicked() {
-                    actions.push(DisplayAction::Designer(b.id.clone()));
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button(crate::i18n::tr("Удалить дисплей")).on_hover_text(crate::i18n::tr("Дисплей и его блок меню удаляются из проекта")).clicked() {
-                    actions.push(DisplayAction::Remove(b.id.clone()));
-                    ui.close();
-                }
-            });
-        })
-        .body(|ui| {
-            if let Some(def) = lib.as_ref().and_then(|l| l.def.param("model")) {
-                ui.horizontal(|ui| {
-                    ui.label(crate::i18n::tr("Вид дисплея"));
-                    egui::ComboBox::from_id_salt(("display_model", &b.id))
-                        .selected_text(model_label.clone())
-                        .show_ui(ui, |ui| {
-                            for c in &def.choices {
-                                if ui
-                                    .selectable_label(Some(&c.value) == model.as_ref(), &c.label)
-                                    .clicked()
-                                {
-                                    actions.push(DisplayAction::SetParam {
-                                        id: b.id.clone(),
-                                        name: "model",
-                                        value: c.value.clone(),
-                                    });
-                                }
-                            }
-                        });
-                });
-            }
-            address_row(app, ui, b, actions);
-            let menus = menus_of(logic, &b.id);
-            let mut on = !menus.is_empty();
-            if ui
-                .checkbox(&mut on, crate::i18n::tr("Меню"))
-                .on_hover_text(crate::i18n::tr(
-                    "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется",
-                ))
-                .changed()
-            {
-                actions.push(DisplayAction::Menu {
-                    display: b.id.clone(),
-                    on,
-                });
-            }
-        });
-}
-
-/// Address field: shown as hex, edited as text, applied when the field loses focus.
-fn address_row(app: &EditorApp, ui: &mut Ui, b: &Block, actions: &mut Vec<DisplayAction>) {
-    let current = match param_value(app, b, "address") {
-        Some(ParamValue::Int(a)) => a,
-        _ => return,
+    // Like a variable: the row is dragged onto a sheet, a click finds the block there, a
+    // double click opens its parameters, the context menu has the rest.
+    let selected = app.selection.as_ref().is_some_and(|s| s.has_block(&b.id));
+    let caption = format!("{} ({model_label})", b.id);
+    let text = if placed {
+        egui::RichText::new(format!("→ {caption}"))
+    } else {
+        egui::RichText::new(format!("✕ {caption}")).color(app.theme.palette.warning)
     };
-    ui.horizontal(|ui| {
-        ui.label(crate::i18n::tr("Адрес I²C"));
-        let buf_id = ui.make_persistent_id(("display_address", &b.id));
-        let mut text: String = ui
-            .data_mut(|d| d.get_temp(buf_id))
-            .unwrap_or_else(|| format_address(current));
-        let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(60.0));
-        if resp.has_focus() {
-            ui.data_mut(|d| d.insert_temp(buf_id, text.clone()));
-        } else {
-            if resp.lost_focus() || resp.changed() {
-                if let Some(a) = parse_address(&text).filter(|a| *a != current) {
-                    actions.push(DisplayAction::SetParam {
-                        id: b.id.clone(),
-                        name: "address",
-                        value: ParamValue::Int(a),
-                    });
-                }
-            }
-            ui.data_mut(|d| d.remove_temp::<String>(buf_id));
+    let resp = crate::panels::drag_row(
+        ui,
+        Id::unique(("display", &b.id)),
+        DragItem::Topic(b.id.clone()),
+        selected,
+        text,
+    )
+    .on_hover_text(if placed {
+        crate::i18n::tr("Щелчок — найти на плате. Двойной щелчок — свойства; перетащите на плату, чтобы переставить.")
+    } else {
+        crate::i18n::tr("Перетащите на плату. Двойной щелчок — свойства.")
+    });
+    if resp.double_clicked() {
+        actions.push(DisplayAction::Settings(b.id.clone()));
+    } else if resp.clicked() && placed {
+        actions.push(DisplayAction::Focus(b.id.clone()));
+    }
+    resp.context_menu(|ui| {
+        if placed && ui.button(crate::i18n::tr("Найти на плате")).clicked() {
+            actions.push(DisplayAction::Focus(b.id.clone()));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr("Свойства...")).clicked() {
+            actions.push(DisplayAction::Settings(b.id.clone()));
+            ui.close();
+        }
+        if ui.button(crate::i18n::tr("Экраны и меню...")).clicked() {
+            actions.push(DisplayAction::Designer(b.id.clone()));
+            ui.close();
+        }
+        let mut menu_on = !menus_of(logic, &b.id).is_empty();
+        if ui
+            .checkbox(&mut menu_on, crate::i18n::tr("Меню"))
+            .on_hover_text(crate::i18n::tr(
+                "Блок меню на той же плате, что и дисплей; при выключении блок меню удаляется",
+            ))
+            .changed()
+        {
+            actions.push(DisplayAction::Menu {
+                display: b.id.clone(),
+                on: menu_on,
+            });
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .button(crate::i18n::tr("Удалить дисплей"))
+            .on_hover_text(crate::i18n::tr(
+                "Дисплей и его блок меню удаляются из проекта",
+            ))
+            .clicked()
+        {
+            actions.push(DisplayAction::Remove(b.id.clone()));
+            ui.close();
         }
     });
 }
@@ -287,13 +215,6 @@ pub fn apply(app: &mut EditorApp, actions: Vec<DisplayAction>) {
                     Err(e) => app.info(LogLevel::Error, e.to_string()),
                 }
             }
-            DisplayAction::SetParam { id, name, value } => {
-                let Some(doc) = &mut app.doc else { return };
-                let key = Some(format!("display:{id}.{name}"));
-                if let Err(e) = doc.edit(&lib, key, |p| p.set_param(&lib, &id, name, Some(value))) {
-                    app.info(LogLevel::Error, e.to_string());
-                }
-            }
             DisplayAction::Menu { display, on } => {
                 // The menu stands on the sheet of its display (or on the current one).
                 let sheet = app
@@ -331,18 +252,6 @@ pub fn apply(app: &mut EditorApp, actions: Vec<DisplayAction>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn address_text_round_trips() {
-        assert_eq!(format_address(60), "0x3C");
-        assert_eq!(format_address(5), "0x05");
-        assert_eq!(parse_address("0x3c"), Some(60));
-        assert_eq!(parse_address(" 0X27 "), Some(39));
-        assert_eq!(parse_address("61"), Some(61));
-        assert_eq!(parse_address("0x80"), None);
-        assert_eq!(parse_address("zz"), None);
-        assert_eq!(parse_address(""), None);
-    }
 
     #[test]
     fn menu_belongs_to_its_display() {
