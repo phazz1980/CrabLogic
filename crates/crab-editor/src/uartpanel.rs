@@ -1,6 +1,6 @@
 //! Hardware UARTs in the left panel: one flat row per UART of the chip with a switch; a double click
 //! opens the settings (speed, format, pins, buffer). A UART set up by a settings block on a sheet has
-//! no switch: it is changed in that block. USB (flashing, debugging, the monitor) needs no setup.
+//! no switch: a double click opens that block's settings. USB (flashing, debugging, the monitor) needs no setup.
 
 use crab_core::pins::BoardLayout;
 use crab_core::uart::{block_configs, block_uarts, chip_uarts, UartConfig, USB_SPEED};
@@ -8,10 +8,16 @@ use eframe::egui::{self, Ui};
 
 use crate::app::EditorApp;
 use crate::dialogs::Dialog;
+use crate::radiopanel::RadioAction;
 
 pub enum UartAction {
-    Toggle { number: u8, on: bool },
+    Toggle {
+        number: u8,
+        on: bool,
+    },
     Settings(u8),
+    /// Opens the settings block that sets the UART up.
+    Block(String),
 }
 
 /// The settings of one UART being edited.
@@ -26,7 +32,7 @@ impl UartDialog {
 }
 
 /// «UART» folder of the left panel.
-pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<UartAction> {
+pub fn show(app: &EditorApp, ui: &mut Ui, blocks: &mut Vec<RadioAction>) -> Vec<UartAction> {
     let mut actions = Vec::new();
     let Some(doc) = &app.doc else {
         return actions;
@@ -56,6 +62,30 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<UartAction> {
             ui.weak(crate::i18n::fmt("USB — заливка, отладка и монитор порта, {0} бод, без настроек. UART0 у ESP32 занят USB-мостом, у ESP32-C3/S3 — свободный порт.", &[&USB_SPEED]));
             for number in numbers {
                 row(app, ui, number, chip, &from_blocks, &users, &mut actions);
+            }
+            // The blocks of exchange: one group per kind, they wait here until dragged onto a sheet.
+            let logic = &doc.project.logic;
+            for (kind, title) in [("uart_read", "Чтение"), ("uart_send", "Отправка")] {
+                let hint = app.lib.get(kind).map_or("", |l| l.def.info.description.as_str());
+                let add = crate::panels::add_group(
+                    ui,
+                    ("uart_kind", kind),
+                    crate::i18n::tr(title),
+                    crate::i18n::tr(hint),
+                    true,
+                    |ui| {
+                        for b in logic
+                            .blocks
+                            .iter()
+                            .filter(|b| b.tag.is_none() && b.kind == kind)
+                        {
+                            crate::radiopanel::row(app, ui, b, false, blocks);
+                        }
+                    },
+                );
+                if add {
+                    blocks.push(RadioAction::Add(kind));
+                }
             }
         });
     ui.separator();
@@ -101,21 +131,35 @@ fn row(
             egui::RichText::new(caption)
         };
         let resp = ui.selectable_label(false, text);
-        if by_block.is_none() {
-            let resp = resp.on_hover_text(crate::i18n::tr("Двойной щелчок — настройки"));
-            if resp.double_clicked() && cfg.is_some() {
-                actions.push(UartAction::Settings(number));
+        // A UART set up by a block on a sheet is changed in that block, but still from here: the
+        // double click opens the block's settings (two places must not set one UART).
+        let open = |actions: &mut Vec<UartAction>| match by_block {
+            Some((_, id)) => actions.push(UartAction::Block(id.clone())),
+            None => actions.push(UartAction::Settings(number)),
+        };
+        let can_open = by_block.is_some() || cfg.is_some();
+        let resp = resp.on_hover_text(if by_block.is_some() {
+            crate::i18n::tr("Двойной щелчок — настройки блока, который настраивает этот UART")
+        } else {
+            crate::i18n::tr("Двойной щелчок — настройки")
+        });
+        if resp.double_clicked() && can_open {
+            open(actions);
+        }
+        resp.context_menu(|ui| {
+            if can_open && ui.button(crate::i18n::tr("Настройки...")).clicked() {
+                open(actions);
+                ui.close();
             }
-            resp.context_menu(|ui| {
-                if cfg.is_some() && ui.button(crate::i18n::tr("Настройки...")).clicked() {
-                    actions.push(UartAction::Settings(number));
-                    ui.close();
-                }
-                if cfg.is_some() && ui.button(crate::i18n::tr("Выключить")).clicked() {
-                    actions.push(UartAction::Toggle { number, on: false });
-                    ui.close();
-                }
-            });
+            if by_block.is_none()
+                && cfg.is_some()
+                && ui.button(crate::i18n::tr("Выключить")).clicked()
+            {
+                actions.push(UartAction::Toggle { number, on: false });
+                ui.close();
+            }
+        });
+        if by_block.is_none() {
             let mut on = cfg.is_some();
             if crate::dialogs::toggle_switch(ui, &mut on).changed() {
                 actions.push(UartAction::Toggle { number, on });
@@ -127,6 +171,7 @@ fn row(
 pub fn apply(app: &mut EditorApp, actions: Vec<UartAction>) {
     for action in actions {
         match action {
+            UartAction::Block(id) => app.dialog = Dialog::for_block(app, &id),
             UartAction::Settings(number) => {
                 let Some(doc) = &app.doc else { return };
                 if let Some(cfg) = doc.project.config.uart.iter().find(|u| u.number == number) {

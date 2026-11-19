@@ -129,6 +129,18 @@ pub(super) fn block_settings(
         },
         can_expander,
         free_id: free_expander_id(&doc.project.logic),
+        uarts: doc
+            .project
+            .config
+            .uart
+            .iter()
+            .map(|u| u.number)
+            .chain(
+                crab_core::uart::block_configs(&doc.project.logic, &app.lib)
+                    .into_iter()
+                    .map(|(_, u)| u.number),
+            )
+            .collect(),
     };
     egui::Grid::new("block_props")
         .num_columns(4)
@@ -398,8 +410,20 @@ pub(super) fn param_editor(
         egui::ComboBox::from_id_salt(("param_choice", &p.name))
             .selected_text(selected)
             .show_ui(ui, |ui| {
+                // The port of a block that uses a UART offers USB and the UARTs that are switched on
+                // (a block that sets the port up itself may name any).
+                let only_on = def.info.uart.as_ref().is_some_and(|u| {
+                    u.param == p.name && u.access != crab_core::uart::UartAccess::Config
+                });
                 for c in &p.choices {
                     let on = current.as_ref() == Some(&c.value);
+                    if only_on && !on {
+                        if let ParamValue::Int(n @ 0..) = &c.value {
+                            if !pins.uarts.iter().any(|u| i64::from(*u) == *n) {
+                                continue;
+                            }
+                        }
+                    }
                     if ui.selectable_label(on, crate::i18n::tr(&c.label)).clicked() {
                         if let ParamValue::Text(s) = &c.value {
                             d.texts.insert(p.name.clone(), s.clone());

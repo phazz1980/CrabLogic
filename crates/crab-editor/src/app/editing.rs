@@ -102,6 +102,8 @@ impl EditorApp {
                                     | "lora_e220"
                                     | "lora_point"
                                     | "lora_centre"
+                                    | "uart_read"
+                                    | "uart_send"
                             )
                         ) {
                             p.take_service_off_board(id)

@@ -12,6 +12,9 @@ pub(super) struct Pins {
     pub(super) can_expander: bool,
     /// Id a new expander would get.
     pub(super) free_id: String,
+    /// Numbers of the UARTs that are switched on (the «UART» folder of the left panel, or a settings
+    /// block): a block may pick only those.
+    pub(super) uarts: Vec<u8>,
 }
 
 pub(super) struct ExpanderPins {

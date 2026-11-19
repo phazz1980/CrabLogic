@@ -51,6 +51,10 @@ pub fn is_screen_kind(kind: &str) -> bool {
 /// the library or the tag tree. The modem has pins but is a device, not an input or an output.
 pub const RADIO_KINDS: [&str; 3] = ["lora_e220", "lora_point", "lora_centre"];
 
+/// UART blocks of exchange: added from the «UART» folder of the left panel (they wait in the tree
+/// until they are dragged onto a sheet) and stay in the tree when taken off a sheet.
+pub const UART_KINDS: [&str; 2] = ["uart_read", "uart_send"];
+
 /// Modbus blocks: added and removed from the «Сеть → Modbus» folder of the left panel, not from the
 /// library.
 pub const MODBUS_KINDS: [&str; 6] = [

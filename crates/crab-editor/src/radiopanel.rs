@@ -2,7 +2,7 @@
 //! to find them on the sheet and one to delete them. Radio blocks are ordinary visible blocks;
 //! they are added from here, not from the library.
 
-use crab_core::project::{MODBUS_KINDS, RADIO_KINDS};
+use crab_core::project::{MODBUS_KINDS, RADIO_KINDS, UART_KINDS};
 use crab_core::ParamValue;
 use eframe::egui::{self, Id, Ui};
 
@@ -185,7 +185,9 @@ pub fn apply(app: &mut EditorApp, actions: Vec<RadioAction>) {
                 let pos = crate::panels::free_spot(app);
                 let Some(doc) = &mut app.doc else { return };
                 // A Modbus or radio block waits in the panel until it is dragged onto a sheet.
-                let waits = MODBUS_KINDS.contains(&kind) || RADIO_KINDS.contains(&kind);
+                let waits = MODBUS_KINDS.contains(&kind)
+                    || RADIO_KINDS.contains(&kind)
+                    || UART_KINDS.contains(&kind);
                 let result = doc.edit(&lib, None, |p| {
                     p.add_block(&lib, kind, pos).inspect(|id| {
                         if waits {

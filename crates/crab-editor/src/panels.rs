@@ -977,11 +977,14 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
                     }
                 });
             });
+            // The «UART» folder stands above the displays; its blocks use the radio actions.
+            let mut uart_blocks = Vec::new();
+            uart_actions = crate::uartpanel::show(app, ui, &mut uart_blocks);
             display_actions = crate::displaypanel::show(app, ui);
             radio_actions = crate::radiopanel::show(app, ui);
+            radio_actions.append(&mut uart_blocks);
             // The «Сеть» folder adds the actions of its Modbus folder to the radio ones.
             net_actions = crate::netpanel::show(app, ui, &mut radio_actions);
-            uart_actions = crate::uartpanel::show(app, ui);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
                 for b in &logic.blocks {
@@ -1274,6 +1277,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
             || info.group == DISPLAY_GROUP
             || info.group == RADIO_GROUP
             || crab_core::project::MODBUS_KINDS.contains(&info.kind.as_str())
+            || crab_core::project::UART_KINDS.contains(&info.kind.as_str())
             || crab_core::project::is_screen_kind(&info.kind)
             || info.hidden
             || !info.fits_board(model)

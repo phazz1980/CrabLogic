@@ -413,7 +413,9 @@ pub(crate) fn check_uarts(
                 Severity::Error,
                 Some(id),
                 None,
-                format!("блок «{id}»: {name} не настроен — добавьте его в настройках платы"),
+                format!(
+                    "блок «{id}»: {name} не включён — включите его в папке «UART» левой панели"
+                ),
             );
             continue;
         }
@@ -658,7 +660,7 @@ mod tests {
         .is_empty());
 
         let m = messages(&[], &[("mb", 2, Exclusive)], Chip::Esp32);
-        assert!(m[0].contains("UART2 не настроен"), "{m:?}");
+        assert!(m[0].contains("UART2 не включён"), "{m:?}");
         let m = messages(
             std::slice::from_ref(&two),
             &[("mb", 2, Exclusive), ("tx", 2, Write)],
