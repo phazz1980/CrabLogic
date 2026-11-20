@@ -99,6 +99,74 @@ pub(super) fn check_arrays(logic: &Logic, report: &mut Report) {
     }
 }
 
+/// The blocks that reach a structure (`struct_pack`, `struct_unpack`): it exists, it has fields,
+/// none is a string (not supported by the blocks yet) or called `go` (the enable input), and a
+/// second `struct_pack` of the same structure gets a warning.
+pub(super) fn check_struct_blocks(logic: &Logic, report: &mut Report) {
+    use crate::struct_blocks::{struct_name, GO, PACK};
+    let mut writers: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for block in logic.blocks.iter().filter(|b| b.tag.is_none()) {
+        if !crate::struct_blocks::is_struct_kind(&block.kind) {
+            continue;
+        }
+        let name = match struct_name(block) {
+            Some(n) if !n.is_empty() => n,
+            _ => {
+                report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!("блок «{}»: не выбрана структура", block.id),
+                );
+                continue;
+            }
+        };
+        let Some(st) = logic.struct_var(name) else {
+            report.block_error(
+                DiagKind::Array,
+                &block.id,
+                format!("блок «{}»: нет структуры «{name}»", block.id),
+            );
+            continue;
+        };
+        for f in &st.fields {
+            if f.ty == crate::arrays::ElemType::String {
+                report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!(
+                        "блок «{}»: поле «{}» структуры «{name}» — строка, блоки структур пока работают с bool, int, float и byte",
+                        block.id, f.name
+                    ),
+                );
+            }
+            if block.kind == PACK && f.name == GO {
+                report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!(
+                        "блок «{}»: поле «{GO}» структуры «{name}» занято входом разрешения, переименуйте поле",
+                        block.id
+                    ),
+                );
+            }
+        }
+        if block.kind == PACK {
+            match writers.get(name) {
+                Some(prev) => report.push(
+                    DiagKind::Array,
+                    Severity::Warning,
+                    Some(&block.id),
+                    None,
+                    format!("структура «{name}» уже записывается блоком «{prev}»: порядок записей — порядок выполнения блоков"),
+                ),
+                None => {
+                    writers.insert(name, &block.id);
+                }
+            }
+        }
+    }
+}
+
 /// The blocks that reach an array: it exists, the destination of a copy is another array of the same
 /// type, sum / min / max have numbers to work on, a constant index is inside the array, and a
 /// second block that writes the same array gets a warning (not an error: they may write different
@@ -553,5 +621,79 @@ mod tests {
         assert_eq!(count(Some(Chip::Esp32)), 0);
         assert_eq!(count(Some(Chip::Esp32S3)), 0);
         assert_eq!(count(None), 0);
+    }
+
+    #[test]
+    fn struct_blocks_need_a_usable_structure() {
+        let sblock = |id: &str, kind: &str, st: Option<&str>| {
+            let mut b = crate::Block {
+                id: id.into(),
+                kind: kind.into(),
+                ..Default::default()
+            };
+            if let Some(st) = st {
+                b.params
+                    .insert("struct".into(), ParamValue::Text(st.into()));
+            }
+            b
+        };
+        let field = |name: &str, ty: ElemType| StructField {
+            name: name.into(),
+            ty,
+            init: None,
+        };
+        let st = |name: &str, fields: Vec<StructField>| StructVar {
+            name: name.into(),
+            fields,
+            description: String::new(),
+        };
+        let logic = Logic {
+            structs: vec![
+                st("ok", vec![field("a", ElemType::Int)]),
+                st("text", vec![field("t", ElemType::String)]),
+                st("busy", vec![field("go", ElemType::Int)]),
+            ],
+            blocks: vec![
+                sblock("none", "struct_pack", None),
+                sblock("lost", "struct_unpack", Some("nothing")),
+                sblock("t1", "struct_unpack", Some("text")),
+                sblock("b1", "struct_pack", Some("busy")),
+                sblock("p1", "struct_pack", Some("ok")),
+                sblock("p2", "struct_pack", Some("ok")),
+                sblock("u1", "struct_unpack", Some("ok")),
+            ],
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        check_struct_blocks(&logic, &mut report);
+        let m: Vec<String> = report
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        assert!(
+            m.iter().any(|x| x.contains("не выбрана структура")),
+            "{m:?}"
+        );
+        assert!(
+            m.iter().any(|x| x.contains("нет структуры «nothing»")),
+            "{m:?}"
+        );
+        assert!(m.iter().any(|x| x.contains("— строка")), "{m:?}");
+        assert!(
+            m.iter().any(|x| x.contains("занято входом разрешения")),
+            "{m:?}"
+        );
+        // The second writer of one structure is a warning, the unpack is fine.
+        assert_eq!(
+            report
+                .diagnostics
+                .iter()
+                .filter(|d| d.severity == Severity::Warning)
+                .count(),
+            1,
+            "{m:?}"
+        );
+        assert!(!m.iter().any(|x| x.contains("«u1»")), "{m:?}");
     }
 }

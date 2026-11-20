@@ -23,6 +23,7 @@ pub mod display;
 mod display_run;
 pub mod mcu;
 pub mod schema;
+pub mod structs;
 
 pub use crab_blocks::{Bench, Signal, OWN_SLAVE};
 pub use display::{DisplayDevice, DisplayKind, DisplayView};

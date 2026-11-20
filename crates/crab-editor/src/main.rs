@@ -42,6 +42,7 @@ mod selfupdate;
 mod simview;
 mod splash;
 mod stepper;
+mod structpanel;
 mod tagimport;
 mod textmenu;
 mod theme;

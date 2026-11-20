@@ -34,6 +34,7 @@ mod net;
 mod restart;
 mod retain;
 mod sparkplug;
+mod structs;
 mod text;
 mod types;
 mod uart;
@@ -361,6 +362,8 @@ struct Emitter<'a, 'p> {
     bufs: HashMap<usize, Buf>,
     /// Arrays of the project placed in the memory of this module (`array.rs`).
     arrays: HashMap<String, array::ArrayMem>,
+    /// Structures of the project placed in the memory of this module: one slot per field (`structs.rs`).
+    structs: HashMap<String, Vec<array::ArrayMem>>,
     /// Retained variables this module owns: loaded in `init`, saved from `step`.
     retained: Vec<Retained>,
     /// Instances of blocks with their own `block.wasm`, in step order (`user_block.rs`).
@@ -486,6 +489,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             consts: HashMap::new(),
             bufs: HashMap::new(),
             arrays: HashMap::new(),
+            structs: HashMap::new(),
             retained: Vec::new(),
             drivers: Vec::new(),
             parsed_drivers: HashMap::new(),

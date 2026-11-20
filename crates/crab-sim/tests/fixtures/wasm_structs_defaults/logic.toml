@@ -1,0 +1,66 @@
+# Structure against the simulation: inputs of `struct_pack` without a wire. A constant gives `temp`,
+# `cnt` has no wire at all (it takes the initial value of the field), `go` is not connected and is
+# on by default. `total` follows a counter, so the outputs move over the scans.
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[struct]]
+name = "rec"
+
+[[struct.field]]
+name = "temp"
+type = "float"
+init = 1.5
+
+[[struct.field]]
+name = "cnt"
+type = "byte"
+init = 200
+
+[[struct.field]]
+name = "total"
+type = "int"
+init = 7
+
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+[[block]]
+id = "pk"
+type = "struct_pack"
+struct = "rec"
+[block.const]
+temp = 2.25
+
+[[link]]
+from = "nr.out"
+to = "pk.total"
+
+[[block]]
+id = "un"
+type = "struct_unpack"
+struct = "rec"

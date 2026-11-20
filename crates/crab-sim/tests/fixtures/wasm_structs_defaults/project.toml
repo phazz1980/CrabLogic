@@ -1,0 +1,7 @@
+[project]
+name = "wasm_structs_basic"
+description = "Структура: собрать и разобрать в модуле и в симуляции должны давать одни числа"
+
+[board]
+fqbn = "esp32:esp32:esp32"
+index = 3

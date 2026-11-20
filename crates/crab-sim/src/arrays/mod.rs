@@ -93,12 +93,7 @@ impl ArrayState {
         let ty = self.ty;
         if let Items::Num(v) = &mut self.items {
             if let Some(slot) = v.get_mut(i) {
-                *slot = match ty {
-                    ElemType::Byte => f64::from((value as i64 & 0xFF) as u8),
-                    ElemType::Int => f64::from(value as i64 as i32),
-                    ElemType::Bool => f64::from(u8::from(value != 0.0)),
-                    ElemType::Float | ElemType::String => f64::from(value as f32),
-                };
+                *slot = store(ty, value);
             }
         }
     }
@@ -119,6 +114,17 @@ impl ArrayState {
         } else {
             self.set_num(to, src.num(from));
         }
+    }
+}
+
+/// A number as the board stores it in a slot of type `ty`: `byte` keeps the low 8 bits, `int` wraps
+/// at 32 bits, `bool` is 1 for any non-zero value, `float` is a 32-bit float.
+pub fn store(ty: ElemType, value: f64) -> f64 {
+    match ty {
+        ElemType::Byte => f64::from((value as i64 & 0xFF) as u8),
+        ElemType::Int => f64::from(value as i64 as i32),
+        ElemType::Bool => f64::from(u8::from(value != 0.0)),
+        ElemType::Float | ElemType::String => f64::from(value as f32),
     }
 }
 

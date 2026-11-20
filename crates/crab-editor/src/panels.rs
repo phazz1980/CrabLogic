@@ -736,6 +736,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut net_actions = Vec::new();
     let mut display_actions = Vec::new();
     let mut array_actions = Vec::new();
+    let mut struct_actions = Vec::new();
     let mut radio_actions = Vec::new();
     let mut uart_actions = Vec::new();
 
@@ -983,6 +984,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             uart_actions = crate::uartpanel::show(app, ui, &mut uart_blocks);
             display_actions = crate::displaypanel::show(app, ui);
             array_actions = crate::arraypanel::show(app, ui);
+            struct_actions = crate::structpanel::show(app, ui);
             radio_actions = crate::radiopanel::show(app, ui);
             radio_actions.append(&mut uart_blocks);
             // The «Сеть» folder adds the actions of its Modbus folder to the radio ones.
@@ -1071,6 +1073,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     crate::netpanel::apply(app, net_actions);
     crate::displaypanel::apply(app, display_actions);
     crate::arraypanel::apply(app, array_actions);
+    crate::structpanel::apply(app, struct_actions);
     crate::radiopanel::apply(app, radio_actions);
     crate::uartpanel::apply(app, uart_actions);
     if new_var {

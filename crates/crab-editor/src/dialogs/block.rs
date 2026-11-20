@@ -387,6 +387,38 @@ fn array_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_core
         });
 }
 
+/// Drop-down list of the structures of the project for the parameter `struct` of a structure block.
+fn struct_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_core::Logic) {
+    let current = match d.values.get(&p.name) {
+        Some(Some(ParamValue::Text(t))) => t.clone(),
+        _ => String::new(),
+    };
+    let names: Vec<&str> = logic.structs.iter().map(|s| s.name.as_str()).collect();
+    if names.is_empty() {
+        ui.colored_label(
+            Color32::from_rgb(186, 74, 66),
+            crate::i18n::tr("в проекте нет структуры"),
+        );
+        return;
+    }
+    let shown = if current.is_empty() {
+        crate::i18n::tr("не выбрана").to_owned()
+    } else {
+        current.clone()
+    };
+    egui::ComboBox::from_id_salt(("param_struct", &p.name))
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for name in names {
+                if ui.selectable_label(current == name, name).clicked() {
+                    d.texts.insert(p.name.clone(), name.to_owned());
+                    d.values
+                        .insert(p.name.clone(), Some(ParamValue::Text(name.to_owned())));
+                }
+            }
+        });
+}
+
 /// Edits one buffered parameter of the block dialog.
 pub(super) fn param_editor(
     ui: &mut Ui,
@@ -453,6 +485,12 @@ pub(super) fn param_editor(
         )
     {
         array_combo(ui, p, d, logic);
+        return;
+    }
+    if crab_core::struct_blocks::is_struct_kind(&def.info.kind)
+        && p.name == crab_core::struct_blocks::STRUCT_PARAM
+    {
+        struct_combo(ui, p, d, logic);
         return;
     }
     if !p.choices.is_empty() {

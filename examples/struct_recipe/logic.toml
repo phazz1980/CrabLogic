@@ -1,0 +1,69 @@
+# Рецепт: температура, время и вентилятор лежат в одной структуре.
+# Кнопка «записать» (GPIO12 на землю) кладёт в рецепт значения со входов блока «собрать»:
+# температуру и время задают константы, вентилятор — кнопка «вентилятор» (GPIO13 на землю).
+# Блок «разобрать» читает поля обратно; поле fan повторяет встроенный светодиод.
+
+[[struct]]
+name = "recipe"
+description = "Рецепт нагрева"
+
+[[struct.field]]
+name = "temp"
+type = "float"
+init = 60.0
+
+[[struct.field]]
+name = "time"
+type = "int"
+init = 30
+
+[[struct.field]]
+name = "fan"
+type = "bool"
+
+# Кнопка «записать»: замыкает GPIO12 на землю (подтяжка и инверсия: нажатие даёт true).
+[[block]]
+id = "save"
+type = "digital_in"
+pin = 12
+pullup = true
+inverted = true
+
+# Кнопка «вентилятор»: замыкает GPIO13 на землю.
+[[block]]
+id = "fan_button"
+type = "digital_in"
+pin = 13
+pullup = true
+inverted = true
+
+[[block]]
+id = "recipe_pack1"
+type = "struct_pack"
+struct = "recipe"
+[block.const]
+temp = 80.0
+time = 45
+
+[[block]]
+id = "recipe_unpack1"
+type = "struct_unpack"
+struct = "recipe"
+
+# Встроенный светодиод DevKit повторяет поле fan.
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "save.out"
+to   = "recipe_pack1.go"
+
+[[link]]
+from = "fan_button.out"
+to   = "recipe_pack1.fan"
+
+[[link]]
+from = "recipe_unpack1.fan"
+to   = "led.in"

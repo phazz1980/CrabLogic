@@ -43,7 +43,7 @@ impl Dialog {
 }
 
 /// One typed initial value: `None` for an empty field.
-fn parse_item(ty: ElemType, text: &str) -> Result<Option<ParamValue>, String> {
+pub(super) fn parse_item(ty: ElemType, text: &str) -> Result<Option<ParamValue>, String> {
     let t = text.trim();
     if t.is_empty() && ty != ElemType::String {
         return Ok(None);

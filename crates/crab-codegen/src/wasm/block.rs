@@ -18,6 +18,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if has_string {
             return Err(self.unsupported(inst, "строки в этом блоке пока не поддержаны в модулях"));
         }
+        if self.struct_block(inst)? {
+            return Ok(());
+        }
         if self.array_block(inst)? {
             return Ok(());
         }

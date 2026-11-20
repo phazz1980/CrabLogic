@@ -997,6 +997,7 @@ impl Default for Library {
             builtins: {
                 let mut all = crate::vars::builtin_blocks();
                 all.extend(crate::array_blocks::builtin_blocks());
+                all.extend(crate::struct_blocks::base_blocks());
                 all
             },
             boards: Boards::default(),
@@ -1184,6 +1185,9 @@ impl Library {
     /// Definition of a schema block, including variable blocks, whose port type comes
     /// from the variable (float while the variable is unknown).
     pub fn resolve(&self, logic: &crate::Logic, block: &crate::Block) -> Option<&LibraryBlock> {
+        if crate::struct_blocks::is_struct_kind(&block.kind) {
+            return Some(self.with_struct_ports(logic, block));
+        }
         match crate::vars::builtin_kind(logic, block)
             .or_else(|| crate::array_blocks::builtin_kind(logic, block))
         {
@@ -1196,6 +1200,23 @@ impl Library {
                 Some(self.with_param_inputs(base, block))
             }
         }
+    }
+
+    /// A structure block (`struct_pack`, `struct_unpack`) with the ports of the fields of the
+    /// structure it names; the base block (no ports) while the structure is unknown.
+    fn with_struct_ports(&self, logic: &crate::Logic, block: &crate::Block) -> &LibraryBlock {
+        let Some(key) = crate::struct_blocks::derived_key(logic, block) else {
+            return &self.builtins[&block.kind];
+        };
+        let mut cache = self.derived.0.lock().unwrap();
+        if cache.len() > 4096 {
+            cache.clear();
+        }
+        cache.entry(key).or_insert_with(|| {
+            let derived = crate::struct_blocks::derive(logic, block)
+                .unwrap_or_else(|| self.builtins[&block.kind].clone());
+            Box::leak(Box::new(derived))
+        })
     }
 
     /// The block type with the parameters of `block.param_in` added as inputs. The

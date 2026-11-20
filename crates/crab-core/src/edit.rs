@@ -60,6 +60,10 @@ pub enum EditError {
     NoArray(String),
     #[error("{0}")]
     BadArray(String),
+    #[error("нет структуры «{0}»")]
+    NoStruct(String),
+    #[error("{0}")]
+    BadStruct(String),
     #[error("нет расширителя «{0}»")]
     NoExpander(String),
     #[error("расширитель «{0}» уже есть")]
@@ -96,6 +100,9 @@ impl Project {
         // The array blocks are built in: their kind depends on the array, chosen later.
         if let Some(op) = crate::array_blocks::ArrayOp::from_kind(kind) {
             return Ok(self.add_array_op_block(op, pos));
+        }
+        if crate::struct_blocks::is_struct_kind(kind) {
+            return Ok(self.add_struct_op_block(kind, pos));
         }
         if lib.get(kind).is_none() {
             return Err(EditError::UnknownType(kind.to_owned()));

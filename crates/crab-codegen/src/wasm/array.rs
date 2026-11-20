@@ -48,7 +48,7 @@ impl ArrayMem {
 
 /// Little-endian bytes of the initial table: the elements of `items` (up to `len`), the rest stays
 /// zero because the memory starts zeroed.
-fn initial_bytes(ty: ElemType, len: u32, items: &[ParamValue]) -> Vec<u8> {
+pub(super) fn initial_bytes(ty: ElemType, len: u32, items: &[ParamValue]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for value in items.iter().take(len as usize) {
         let x = pv(value);

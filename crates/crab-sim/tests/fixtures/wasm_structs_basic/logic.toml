@@ -1,0 +1,157 @@
+# Structure against the simulation (spec arrays-structs, task 3b): one structure of four fields with
+# initial values, written by `struct_pack` from changing sources and read back by `struct_unpack`.
+# `go` is off on scan 4 and on scan 8..., so the fields must hold their values while it is off.
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[struct]]
+name = "rec"
+description = "Тестовая структура"
+
+[[struct.field]]
+name = "temp"
+type = "float"
+init = 1.5
+
+[[struct.field]]
+name = "cnt"
+type = "byte"
+init = 200
+
+[[struct.field]]
+name = "total"
+type = "int"
+init = 7
+
+[[struct.field]]
+name = "on"
+type = "bool"
+init = true
+
+# n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# temp = n + 0.5 (a float field).
+[[block]]
+id = "half"
+type = "add"
+[block.const]
+b = 0.5
+
+[[link]]
+from = "nr.out"
+to = "half.a"
+
+# cnt = n + 290: a byte, 300 becomes 44 on scan 10.
+[[block]]
+id = "plus290"
+type = "add"
+[block.const]
+b = 290
+
+[[link]]
+from = "nr.out"
+to = "plus290.a"
+
+# on = n > 6.
+[[block]]
+id = "gt6"
+type = "compare"
+op = 4
+[block.const]
+b = 6
+
+[[link]]
+from = "nr.out"
+to = "gt6.a"
+
+# go = (n < 4) or (n >= 8): off on scans 4..7.
+[[block]]
+id = "lt4"
+type = "compare"
+op = 2
+[block.const]
+b = 4
+
+[[link]]
+from = "nr.out"
+to = "lt4.a"
+
+[[block]]
+id = "ge8"
+type = "compare"
+op = 5
+[block.const]
+b = 8
+
+[[link]]
+from = "nr.out"
+to = "ge8.a"
+
+[[block]]
+id = "gate"
+type = "or"
+
+[[link]]
+from = "lt4.out"
+to = "gate.a"
+
+[[link]]
+from = "ge8.out"
+to = "gate.b"
+
+[[block]]
+id = "pk"
+type = "struct_pack"
+struct = "rec"
+
+[[link]]
+from = "half.out"
+to = "pk.temp"
+
+[[link]]
+from = "plus290.out"
+to = "pk.cnt"
+
+[[link]]
+from = "nr.out"
+to = "pk.total"
+
+[[link]]
+from = "gt6.out"
+to = "pk.on"
+
+[[link]]
+from = "gate.out"
+to = "pk.go"
+
+# Reads the fields back: every output changes over the scans or holds while `go` is off.
+[[block]]
+id = "un"
+type = "struct_unpack"
+struct = "rec"

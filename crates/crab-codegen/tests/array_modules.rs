@@ -168,3 +168,30 @@ fn every_array_block_has_an_example() {
         "блоки массивов без примера: {missing:?}"
     );
 }
+
+#[test]
+fn the_structure_example_builds_a_module() {
+    let lib = library();
+    let project = Project::load(repo("examples/struct_recipe")).unwrap();
+    let modules = build(&project, &lib).unwrap();
+    assert_eq!(modules.len(), 1);
+}
+
+#[test]
+fn a_structure_on_two_sheets_is_refused() {
+    let lib = library();
+    let mut project = Project::load(repo("examples/struct_recipe")).unwrap();
+    // Moves the unpack block to sheet 2: the two blocks of one structure are in different modules.
+    for (id, sheet) in [("recipe_pack1", 1), ("recipe_unpack1", 2)] {
+        project.layout.blocks.insert(
+            id.into(),
+            crab_core::BlockPos {
+                sheet,
+                x: 40.0,
+                y: 40.0,
+            },
+        );
+    }
+    let err = build(&project, &lib).unwrap_err();
+    assert!(err.contains("нескольких листов"), "{err}");
+}

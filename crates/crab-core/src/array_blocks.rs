@@ -220,7 +220,7 @@ pub fn split_kind(kind: &str) -> Option<(ArrayOp, ElemType)> {
     })
 }
 
-fn port(name: &str, ty: SignalType, description: &str, input: bool) -> PortDef {
+pub(crate) fn port(name: &str, ty: SignalType, description: &str, input: bool) -> PortDef {
     PortDef {
         name: name.to_owned(),
         ty,
@@ -239,7 +239,7 @@ fn port(name: &str, ty: SignalType, description: &str, input: bool) -> PortDef {
     }
 }
 
-fn text_param(name: &str, description: &str) -> ParamDef {
+pub(crate) fn text_param(name: &str, description: &str) -> ParamDef {
     ParamDef {
         name: name.to_owned(),
         kind: ParamKind::Text,

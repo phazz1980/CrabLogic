@@ -22,15 +22,17 @@ pub(crate) use block::toggle_switch;
 mod expander;
 mod forms;
 mod pins;
+mod structure;
 #[cfg(test)]
 mod tests;
 
-use self::{array::*, block::*, expander::*, forms::*, pins::*};
+use self::{array::*, block::*, expander::*, forms::*, pins::*, structure::*};
 
 pub enum Dialog {
     Block(BlockDialog),
     Var(VarDialog),
     Array(ArrayDialog),
+    Struct(StructDialog),
     Sheet(SheetDialog),
     Board(crate::boardcfg::BoardDialog),
     Uart(crate::uartpanel::UartDialog),
@@ -260,6 +262,10 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
             Some(n) => crate::i18n::fmt("Массив «{0}»", &[&n]),
             None => crate::i18n::tr("Новый массив").to_owned(),
         },
+        Dialog::Struct(d) => match &d.original {
+            Some(n) => crate::i18n::fmt("Структура «{0}»", &[&n]),
+            None => crate::i18n::tr("Новая структура").to_owned(),
+        },
         Dialog::Sheet(d) => crate::i18n::fmt("Плата {0}", &[&d.number]),
         Dialog::Board(_) => crate::i18n::tr("Настройки МК").to_owned(),
         Dialog::Uart(d) => crate::i18n::fmt("UART{0}", &[&d.cfg.number]),
@@ -304,6 +310,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
             match &dialog {
                 Dialog::Var(d) => d.original.is_some(),
                 Dialog::Array(d) => d.original.is_some(),
+                Dialog::Struct(d) => d.original.is_some(),
                 Dialog::Expander(d) => d.original.is_some(),
                 _ => false,
             },
@@ -313,6 +320,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
             Dialog::Block(d) => block_body(app, ui, d),
             Dialog::Var(d) => var_body(ui, d),
             Dialog::Array(d) => array_body(ui, d),
+            Dialog::Struct(d) => structure_body(ui, d),
             Dialog::Sheet(d) => sheet_body(ui, d),
             Dialog::Board(d) => {
                 d.body(ui, &app.ports);
@@ -343,6 +351,10 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
         Outcome::Apply => match apply(app, &dialog) {
             Ok(()) => false,
             Err(e) => {
+                // The window keeps the reason too, next to the fields.
+                if let Dialog::Struct(d) = &mut dialog {
+                    d.error = Some(e.clone());
+                }
                 app.info(LogLevel::Error, e);
                 true
             }
@@ -368,6 +380,18 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
                 }) => {
                     if let Some(doc) = &mut app.doc {
                         if let Err(e) = doc.edit(&lib, None, |p| p.remove_array(name)) {
+                            app.info(LogLevel::Error, e.to_string());
+                        }
+                    }
+                    app.selection = None;
+                    false
+                }
+                Dialog::Struct(StructDialog {
+                    original: Some(name),
+                    ..
+                }) => {
+                    if let Some(doc) = &mut app.doc {
+                        if let Err(e) = doc.edit(&lib, None, |p| p.remove_struct(name)) {
                             app.info(LogLevel::Error, e.to_string());
                         }
                     }
@@ -545,6 +569,14 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
             match &d.original {
                 Some(name) => doc.edit(&lib, None, |p| p.update_array(name, array)),
                 None => doc.edit(&lib, None, |p| p.add_array(array)),
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        Dialog::Struct(d) => {
+            let st = struct_value(d)?;
+            match &d.original {
+                Some(name) => doc.edit(&lib, None, |p| p.update_struct(name, st)),
+                None => doc.edit(&lib, None, |p| p.add_struct(st)),
             }
             .map_err(|e| e.to_string())?;
         }

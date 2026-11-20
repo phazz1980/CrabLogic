@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use crab_blocks::{ds18b20_channel, Bench, ModbusTag, Signal, TagLink, Types, OWN_SLAVE};
 use crab_core::array_blocks::{split_kind, ArrayOp, ARRAY_PARAM, DEST_PARAM};
 use crab_core::modbus_map::TagDirection;
+use crab_core::struct_blocks::{self, struct_name};
 use crab_core::value::{parse_duration_ms, ParamValue};
 use crab_core::vars::{VAR_GET, VAR_SET};
 use crab_core::{check, Block, Library, Logic, Severity};
@@ -19,6 +20,7 @@ use crate::arrays::{self, ArrayBehavior, ArrayState, OpCtx};
 use crate::builtin::{self, Behavior, Ctx};
 use crate::display::{DisplayDevice, DisplayView};
 use crate::display_run::{DisplayDrive, DisplayRun, Feed, MenuRun};
+use crate::structs::StructState;
 use crate::SimModule;
 
 /// Who computes the outputs of a block.
@@ -53,6 +55,12 @@ struct ArrayRun {
     behavior: Box<dyn ArrayBehavior>,
 }
 
+/// A structure block: the structure it names and whether it packs (else unpacks).
+struct StructRun {
+    name: String,
+    pack: bool,
+}
+
 struct Node {
     id: String,
     def: BlockDef,
@@ -66,6 +74,8 @@ struct Node {
     var: Option<String>,
     /// Array an array block works on.
     array: Option<ArrayRun>,
+    /// Structure a `struct_pack` / `struct_unpack` block works on.
+    structure: Option<StructRun>,
     /// Owner and direction of a `modbus_tag` (see [`tag_link`]).
     tag: Option<TagLink>,
     sources: Vec<Source>,
@@ -216,7 +226,11 @@ impl Node {
             Computed::Module
         } else if self.behavior.is_some() && reads_bench(&self.def.info.kind) {
             Computed::Bench
-        } else if self.behavior.is_some() || self.var.is_some() || self.array.is_some() {
+        } else if self.behavior.is_some()
+            || self.var.is_some()
+            || self.array.is_some()
+            || self.structure.is_some()
+        {
             Computed::Builtin
         } else {
             Computed::Manual
@@ -238,6 +252,9 @@ pub struct Simulation {
     /// The arrays of the project, by name (and their values after power-on).
     arrays: HashMap<String, ArrayState>,
     array_init: HashMap<String, ArrayState>,
+    /// The structures of the project, by name (and their values after power-on).
+    structs: HashMap<String, StructState>,
+    struct_init: HashMap<String, StructState>,
     time_ms: u64,
     /// The world outside the board.
     bench: Bench,
@@ -444,6 +461,10 @@ impl Simulation {
                     op: (op, ty),
                     behavior: arrays::behavior(op, ty),
                 }),
+                structure: struct_name(block).map(|name| StructRun {
+                    name: name.to_owned(),
+                    pack: block.kind == struct_blocks::PACK,
+                }),
                 tag,
                 def,
             });
@@ -513,6 +534,11 @@ impl Simulation {
             .iter()
             .map(|a| (a.name.clone(), ArrayState::new(a)))
             .collect();
+        let struct_init: HashMap<String, StructState> = logic
+            .structs
+            .iter()
+            .map(|v| (v.name.clone(), StructState::new(v)))
+            .collect();
         nodes.iter_mut().for_each(Node::apply_initial);
         let displays = nodes
             .iter()
@@ -541,6 +567,8 @@ impl Simulation {
             var_text_init,
             arrays: array_init.clone(),
             array_init,
+            structs: struct_init.clone(),
+            struct_init,
             time_ms: 0,
             bench: Bench::new(),
             notes,
@@ -550,6 +578,11 @@ impl Simulation {
     /// An array of the project with its current values.
     pub fn array(&self, name: &str) -> Option<&ArrayState> {
         self.arrays.get(name)
+    }
+
+    /// A structure of the project with its current field values.
+    pub fn struct_state(&self, name: &str) -> Option<&StructState> {
+        self.structs.get(name)
     }
 
     /// The pictures of the display blocks (`oled`, `lcd`), in the order of the blocks.
@@ -687,6 +720,7 @@ impl Simulation {
         self.vars = self.var_init.clone();
         self.var_texts = self.var_text_init.clone();
         self.arrays = self.array_init.clone();
+        self.structs = self.struct_init.clone();
         self.bench.clear_driven();
         self.displays.iter_mut().for_each(DisplayDevice::reset);
         self.display_runs.iter_mut().for_each(DisplayRun::restart);
@@ -775,6 +809,17 @@ impl Simulation {
                         self.arrays.insert(name, a);
                     }
                     self.arrays.insert(run.name.clone(), arr);
+                }
+            } else if let Some(run) = &node.structure {
+                if let Some(st) = self.structs.get_mut(&run.name) {
+                    if run.pack {
+                        st.pack(&node.inputs);
+                    } else {
+                        st.unpack(&mut node.outputs);
+                        for (k, v) in node.outputs.iter_mut().enumerate() {
+                            *v = node.types.quantize(k, *v);
+                        }
+                    }
                 }
             } else if let Some(m) = &mut node.module {
                 let (outputs, texts) = m
