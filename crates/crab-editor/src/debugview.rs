@@ -460,6 +460,36 @@ pub fn values_window(dbg: &mut DebugState, pal: &Palette, ctx: &egui::Context) {
                         });
                     ui.add_space(6.0);
                 }
+                // The arrays of the project: the elements the module reports, one group per array.
+                let mut arrays: Vec<(String, Vec<usize>)> = Vec::new();
+                for (i, e) in dbg.table.entries.iter().enumerate() {
+                    if let Source::Array { name, .. } = &e.source {
+                        match arrays.last_mut() {
+                            Some((last, rows)) if last == name => rows.push(i),
+                            _ => arrays.push((name.clone(), vec![i])),
+                        }
+                    }
+                }
+                if !arrays.is_empty() {
+                    ui.strong(crate::i18n::tr("Массивы"));
+                    for (name, rows) in arrays {
+                        egui::CollapsingHeader::new(format!("{name} [{}]", rows.len()))
+                            .id_salt(("debug_array", &name))
+                            .default_open(rows.len() <= 8)
+                            .show(ui, |ui| {
+                                egui::Grid::new(("debug_array_values", &name))
+                                    .num_columns(3)
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        for index in rows {
+                                            value_row(ui, dbg, pal, index);
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    }
+                    ui.add_space(6.0);
+                }
                 if !texts.is_empty() {
                     ui.strong(crate::i18n::tr("Строки"));
                     egui::Grid::new("debug_texts")
