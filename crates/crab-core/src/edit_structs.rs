@@ -5,7 +5,9 @@
 use crate::arrays::{ElemType, StructVar};
 use crate::edit::EditError;
 use crate::layout::BlockPos;
-use crate::struct_blocks::{is_struct_kind, struct_name, GO, STRUCT_PARAM};
+use crate::struct_blocks::{
+    is_lora_partner, is_struct_kind, struct_name, GO, LORA_STRUCT_PARAMS, STRUCT_PARAM,
+};
 use crate::{Block, ParamValue, Project};
 
 impl Project {
@@ -126,11 +128,26 @@ impl Project {
                 .consts
                 .retain(|port, _| !gone.contains(&port.as_str()));
         }
+        // The LoRa partner blocks follow a rename too.
+        for block in self
+            .logic
+            .blocks
+            .iter_mut()
+            .filter(|b| is_lora_partner(&b.kind))
+        {
+            for param in LORA_STRUCT_PARAMS {
+                if block.params.get(param) == Some(&ParamValue::Text(name.to_owned())) {
+                    block
+                        .params
+                        .insert(param.to_owned(), ParamValue::Text(st.name.clone()));
+                }
+            }
+        }
         self.logic.structs[index] = st;
         Ok(())
     }
 
-    /// Removes a structure and the blocks that name it.
+    /// Removes a structure and the blocks that name it; a LoRa partner block only forgets it.
     pub fn remove_struct(&mut self, name: &str) -> Result<(), EditError> {
         let index = self.struct_index(name)?;
         self.logic.structs.remove(index);
@@ -143,6 +160,18 @@ impl Project {
             .collect();
         for id in users {
             self.remove_block(&id)?;
+        }
+        for block in self
+            .logic
+            .blocks
+            .iter_mut()
+            .filter(|b| is_lora_partner(&b.kind))
+        {
+            for param in LORA_STRUCT_PARAMS {
+                if block.params.get(param) == Some(&ParamValue::Text(name.to_owned())) {
+                    block.params.remove(param);
+                }
+            }
         }
         Ok(())
     }

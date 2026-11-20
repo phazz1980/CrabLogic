@@ -41,6 +41,30 @@ pub fn struct_name(block: &Block) -> Option<&str> {
     }
 }
 
+/// Parameters of the LoRa partner blocks that name the structure of the commands and of the answers
+/// (`specs/lora-structs`).
+pub const LORA_STRUCT_PARAMS: [&str; 2] = ["cmd_struct", "ans_struct"];
+
+/// Whether the block is a LoRa partner block (`lora_point` on the centre, `lora_centre` on a slave).
+pub fn is_lora_partner(kind: &str) -> bool {
+    kind == "lora_point" || kind == "lora_centre"
+}
+
+/// Every structure the block reaches by name: the one of a structure block, the two of a LoRa
+/// partner block. They share memory with the other blocks that name the same structure.
+pub fn used_structs(block: &Block) -> Vec<&str> {
+    if is_lora_partner(&block.kind) {
+        return LORA_STRUCT_PARAMS
+            .iter()
+            .filter_map(|p| match block.params.get(*p) {
+                Some(ParamValue::Text(name)) if !name.is_empty() => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+    }
+    struct_name(block).into_iter().collect()
+}
+
 /// Name and description of a structure block in Russian (the library on the right lists them).
 pub fn caption(kind: &str) -> (&'static str, &'static str) {
     if kind == PACK {

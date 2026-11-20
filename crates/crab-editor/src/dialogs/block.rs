@@ -393,8 +393,10 @@ fn struct_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_cor
         Some(Some(ParamValue::Text(t))) => t.clone(),
         _ => String::new(),
     };
+    // The structure of a LoRa partner block is optional: without it the values use the ports.
+    let optional = crab_core::struct_blocks::LORA_STRUCT_PARAMS.contains(&p.name.as_str());
     let names: Vec<&str> = logic.structs.iter().map(|s| s.name.as_str()).collect();
-    if names.is_empty() {
+    if names.is_empty() && !optional {
         ui.colored_label(
             Color32::from_rgb(186, 74, 66),
             crate::i18n::tr("в проекте нет структуры"),
@@ -402,13 +404,27 @@ fn struct_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_cor
         return;
     }
     let shown = if current.is_empty() {
-        crate::i18n::tr("не выбрана").to_owned()
+        crate::i18n::tr(if optional {
+            "не используется"
+        } else {
+            "не выбрана"
+        })
+        .to_owned()
     } else {
         current.clone()
     };
     egui::ComboBox::from_id_salt(("param_struct", &p.name))
         .selected_text(shown)
         .show_ui(ui, |ui| {
+            if optional
+                && ui
+                    .selectable_label(current.is_empty(), crate::i18n::tr("не используется"))
+                    .clicked()
+            {
+                d.texts.insert(p.name.clone(), String::new());
+                d.values
+                    .insert(p.name.clone(), Some(ParamValue::Text(String::new())));
+            }
             for name in names {
                 if ui.selectable_label(current == name, name).clicked() {
                     d.texts.insert(p.name.clone(), name.to_owned());
@@ -487,8 +503,10 @@ pub(super) fn param_editor(
         array_combo(ui, p, d, logic);
         return;
     }
-    if crab_core::struct_blocks::is_struct_kind(&def.info.kind)
-        && p.name == crab_core::struct_blocks::STRUCT_PARAM
+    if (crab_core::struct_blocks::is_struct_kind(&def.info.kind)
+        && p.name == crab_core::struct_blocks::STRUCT_PARAM)
+        || (crab_core::struct_blocks::is_lora_partner(&def.info.kind)
+            && crab_core::struct_blocks::LORA_STRUCT_PARAMS.contains(&p.name.as_str()))
     {
         struct_combo(ui, p, d, logic);
         return;

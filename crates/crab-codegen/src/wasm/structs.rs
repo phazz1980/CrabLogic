@@ -9,7 +9,7 @@
 use super::array::{initial_bytes, ArrayMem};
 use super::*;
 use crab_core::arrays::ElemType;
-use crab_core::struct_blocks::{is_struct_kind, struct_name, PACK};
+use crab_core::struct_blocks::{is_struct_kind, struct_name, used_structs, PACK};
 
 impl Emitter<'_, '_> {
     /// Emits the structure block `inst`; `Ok(false)` for any other block.
@@ -47,7 +47,11 @@ impl Emitter<'_, '_> {
     /// The slots of structure `name` in this module: allocated at the first use, with the initial
     /// values in the data segment. Errors: no such structure, a string field, blocks of other sheets
     /// use it.
-    fn struct_mem(&mut self, inst: &Instance, name: &str) -> Result<Vec<ArrayMem>, WasmError> {
+    pub(super) fn struct_mem(
+        &mut self,
+        inst: &Instance,
+        name: &str,
+    ) -> Result<Vec<ArrayMem>, WasmError> {
         if let Some(slots) = self.structs.get(name) {
             return Ok(slots.clone());
         }
@@ -63,7 +67,7 @@ impl Emitter<'_, '_> {
             .blocks
             .iter()
             .enumerate()
-            .any(|(i, b)| !module.blocks.contains(&i) && struct_name(b.block) == Some(name));
+            .any(|(i, b)| !module.blocks.contains(&i) && used_structs(b.block).contains(&name));
         if used_elsewhere {
             return Err(self.unsupported(
                 inst,

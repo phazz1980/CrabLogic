@@ -1093,6 +1093,58 @@ impl Simulation {
             .is_some()
     }
 
+    /// Whether a click may write the output `port` of the block into the project data behind it:
+    /// `array_get` writes the element it reads (the one at its index), `struct_unpack` the field.
+    pub fn stored_target(&self, block: &str, port: &str) -> bool {
+        let Some(node) = self.index.get(block).map(|i| &self.nodes[*i]) else {
+            return false;
+        };
+        let known = node.def.outputs.iter().any(|o| o.name == port);
+        let numeric = node
+            .def
+            .outputs
+            .iter()
+            .find(|o| o.name == port)
+            .is_some_and(|o| o.ty != SignalType::String);
+        known
+            && numeric
+            && (node.structure.as_ref().is_some_and(|s| !s.pack)
+                || node
+                    .array
+                    .as_ref()
+                    .is_some_and(|a| a.op.0 == ArrayOp::Get && port == "out"))
+    }
+
+    /// Writes `value` into the array element or structure field behind an output (see
+    /// [`Simulation::stored_target`]) and shows it on the output at once.
+    pub fn set_stored(&mut self, block: &str, port: &str, value: f64) -> bool {
+        if !self.stored_target(block, port) {
+            return false;
+        }
+        let Some(i) = self.index.get(block).copied() else {
+            return false;
+        };
+        let node = &mut self.nodes[i];
+        let Some(p) = node.def.outputs.iter().position(|o| o.name == port) else {
+            return false;
+        };
+        let value = node.types.quantize(p, value);
+        if let Some(run) = &node.structure {
+            if let Some(st) = self.structs.get_mut(&run.name) {
+                st.set_num(port, value);
+            }
+        } else if let Some(run) = &node.array {
+            let index = node.inputs.first().copied().unwrap_or(0.0);
+            if index >= 0.0 {
+                if let Some(arr) = self.arrays.get_mut(&run.name) {
+                    arr.set_num(index as usize, value);
+                }
+            }
+        }
+        node.outputs[p] = value;
+        true
+    }
+
     /// Variable a block accesses, if it is a variable block.
     pub fn block_var(&self, block: &str) -> Option<&str> {
         self.nodes[*self.index.get(block)?].var.as_deref()

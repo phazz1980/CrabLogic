@@ -187,3 +187,49 @@ fn the_modem_is_a_device_not_a_tag_and_is_deleted_with_its_block() {
     assert!(project.logic.block("modem").is_none());
     assert!(!project.layout.blocks.contains_key("modem"));
 }
+
+const RECIPE: &str = "[[struct]]\nname = \"recipe\"\n\n[[struct.field]]\nname = \"temp\"\ntype = \"float\"\n\n[[struct.field]]\nname = \"fan\"\ntype = \"bool\"\n\n";
+
+fn point_with(extra: &str) -> String {
+    format!("[[block]]\nid = \"a\"\ntype = \"lora_point\"\nmodem = \"m\"\nnode = 0\n{extra}\n\n")
+}
+
+#[test]
+fn the_values_of_a_partner_may_be_a_structure() {
+    let src = centre(&(RECIPE.to_owned() + &point_with("cmd_struct = \"recipe\"")));
+    assert_eq!(lora_errors(&run(&src)), Vec::<String>::new());
+}
+
+#[test]
+fn a_structure_of_the_exchange_must_exist_and_fit_the_radio() {
+    let missing = centre(&point_with("cmd_struct = \"nothing\""));
+    assert!(
+        lora_errors(&run(&missing))
+            .iter()
+            .any(|m| m.contains("«nothing» нет в проекте")),
+        "{:?}",
+        lora_errors(&run(&missing))
+    );
+    let text =
+        "[[struct]]\nname = \"s\"\n\n[[struct.field]]\nname = \"label\"\ntype = \"string\"\n\n";
+    let src = centre(&(text.to_owned() + &point_with("ans_struct = \"s\"")));
+    assert!(
+        lora_errors(&run(&src)).iter().any(|m| m.contains("строка")),
+        "{:?}",
+        lora_errors(&run(&src))
+    );
+    let mut many = String::from("[[struct]]\nname = \"big\"\n\n");
+    for i in 0..11 {
+        many.push_str(&format!(
+            "[[struct.field]]\nname = \"f{i}\"\ntype = \"int\"\n\n"
+        ));
+    }
+    let src = centre(&(many + &point_with("cmd_struct = \"big\"")));
+    assert!(
+        lora_errors(&run(&src))
+            .iter()
+            .any(|m| m.contains("от 1 до 10")),
+        "{:?}",
+        lora_errors(&run(&src))
+    );
+}

@@ -3,10 +3,13 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::arrays::ElemType;
 use crate::Block;
 
 /// Slaves of one centre (`drivers/lora_e220`, `master::MAX_PEERS`).
 const MAX_SLAVES: usize = 8;
+/// Values of one exchange (`drivers/lora_e220`, `frame::MAX_VALUES`).
+const MAX_VALUES: usize = 10;
 
 fn int_param(block: &Block, name: &str, default: i64) -> i64 {
     match block.params.get(name) {
@@ -26,6 +29,46 @@ fn text_param<'a>(block: &'a Block, name: &str) -> &'a str {
 /// The modem is a centre (role 0, the default) and not a slave.
 fn is_centre(modem: &Block) -> bool {
     int_param(modem, "role", 0) == 0
+}
+
+/// The structures of a partner block (`specs/lora-structs`): each one must exist and hold 1…10 fields
+/// of the types that go over the radio (no strings).
+fn check_value_structs(logic: &Logic, block: &Block, report: &mut Report) {
+    for (param, caption) in [("cmd_struct", "команд"), ("ans_struct", "ответов")] {
+        let name = text_param(block, param);
+        if name.is_empty() {
+            continue;
+        }
+        let id = block.id.as_str();
+        let Some(st) = logic.struct_var(name) else {
+            report.block_error(
+                DiagKind::Lora,
+                id,
+                format!("блок «{id}»: структуры {caption} «{name}» нет в проекте"),
+            );
+            continue;
+        };
+        if st.fields.is_empty() || st.fields.len() > MAX_VALUES {
+            report.block_error(
+                DiagKind::Lora,
+                id,
+                format!(
+                    "блок «{id}»: в структуре «{name}» полей {}, а в обмене от 1 до {MAX_VALUES}",
+                    st.fields.len()
+                ),
+            );
+        }
+        if let Some(f) = st.fields.iter().find(|f| f.ty == ElemType::String) {
+            report.block_error(
+                DiagKind::Lora,
+                id,
+                format!(
+                    "блок «{id}»: поле «{}» структуры «{name}» — строка, по радио идут только bool, int и float",
+                    f.name
+                ),
+            );
+        }
+    }
 }
 
 pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
@@ -82,6 +125,7 @@ pub(super) fn check_lora(logic: &Logic, report: &mut Report) {
             );
             continue;
         }
+        check_value_structs(logic, block, report);
         by_modem.entry(modem.id.as_str()).or_default().push(block);
     }
     for modem in modems {

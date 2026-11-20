@@ -1,0 +1,6 @@
+[project]
+name = "lora_structs_slave"
+description = "Slave LoRa (адрес 0) со структурами: команда приходит в структуру pump_cmd, ответ уходит из структуры pump_ans. Структуры те же, что в проекте lora_structs."
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

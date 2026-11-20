@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use crab_core::arrays::ElemType;
 use crab_core::ParamValue;
 use lora_e220::frame::{Ty as LTy, MAX_VALUES};
 use lora_e220::master::MAX_PEERS;
@@ -25,6 +26,10 @@ pub(super) struct PointPlan {
     pub tx: Vec<LTy>,
     /// Types of the values received from it.
     pub rx: Vec<LTy>,
+    /// Structure that holds the values sent to the partner (else they come from the block ports).
+    pub tx_struct: Option<String>,
+    /// Structure that takes the values received from the partner.
+    pub rx_struct: Option<String>,
 }
 
 /// What a `lora_e220` block serves.
@@ -89,8 +94,39 @@ fn text(i: &Instance, name: &str) -> String {
     }
 }
 
-/// The types of `n_<what>` values `t_<what><k>` of a partner block.
-fn types(i: &Instance, what: &str) -> Vec<LTy> {
+/// Type of a structure field on the radio: `byte` goes as an integer.
+fn field_type(ty: ElemType) -> LTy {
+    match ty {
+        ElemType::Bool => LTy::Bool,
+        ElemType::Float => LTy::Float,
+        _ => LTy::Int,
+    }
+}
+
+/// The structure that carries the values `what` (`cmd` or `ans`) of a partner block: the value
+/// types are then the field types, in order.
+fn value_struct<'a>(i: &'a Instance, what: &str) -> Option<&'a str> {
+    match i.params.get(format!("{what}_struct").as_str()) {
+        Some(ParamValue::Text(t)) if !t.is_empty() => Some(t),
+        _ => None,
+    }
+}
+
+/// The types of the values `what` of a partner block: the fields of its structure, or `n_<what>`
+/// values `t_<what><k>`.
+fn types(logic: &crab_core::Logic, i: &Instance, what: &str) -> Vec<LTy> {
+    if let Some(name) = value_struct(i, what) {
+        return logic
+            .struct_var(name)
+            .map(|st| {
+                st.fields
+                    .iter()
+                    .take(MAX_VALUES)
+                    .map(|f| field_type(f.ty))
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
     let n = num(i, &format!("n_{what}"), 0.0).clamp(0.0, MAX_VALUES as f64) as usize;
     (0..n)
         .map(|k| match num(i, &format!("t_{what}{k}"), 1.0) as i64 {
@@ -124,13 +160,24 @@ impl Program<'_> {
             if text(p, "modem") != id {
                 continue;
             }
-            let (cmd, ans) = (types(p, "cmd"), types(p, "ans"));
-            let (tx, rx) = if centre { (cmd, ans) } else { (ans, cmd) };
+            let logic = &self.project.logic;
+            let (cmd, ans) = (types(logic, p, "cmd"), types(logic, p, "ans"));
+            let (cmd_struct, ans_struct) = (
+                value_struct(p, "cmd").map(str::to_owned),
+                value_struct(p, "ans").map(str::to_owned),
+            );
+            let ((tx, rx), (tx_struct, rx_struct)) = if centre {
+                ((cmd, ans), (cmd_struct, ans_struct))
+            } else {
+                ((ans, cmd), (ans_struct, cmd_struct))
+            };
             points.push(PointPlan {
                 block: block.id.clone(),
                 node: if centre { num(p, "node", 0.0) as u8 } else { 0 },
                 tx,
                 rx,
+                tx_struct,
+                rx_struct,
             });
         }
         // A slave serves one centre; the centre at most MAX_PEERS slaves.
@@ -221,10 +268,23 @@ impl<'a, 'p> Emitter<'a, 'p> {
 
     /// Stores the values for the partners into the extra input cells (`first` is the address of
     /// the first one): a port that is not wired reads its default.
-    pub(super) fn lora_inputs(&mut self, l: &LoraExtras, first: u32) {
+    pub(super) fn lora_inputs(&mut self, l: &LoraExtras, first: u32) -> Result<(), WasmError> {
         let mut at = first;
         for (p, inst) in l.plan.points.iter().zip(&l.points) {
+            let slots = match &p.tx_struct {
+                Some(name) => self.struct_mem(inst, name)?,
+                None => Vec::new(),
+            };
             for (k, ty) in p.tx.iter().enumerate() {
+                if let Some(mem) = slots.get(k) {
+                    // The value is the field of the structure.
+                    self.c_i(at as i32);
+                    self.c_i(0);
+                    self.array_load(*mem);
+                    self.store_cell(mem.ty_of());
+                    at += CELL;
+                    continue;
+                }
                 let port = port_name(l.plan.tx_prefix(), k, *ty);
                 if inst.inputs.contains_key(port.as_str()) {
                     self.c_i(at as i32);
@@ -234,14 +294,32 @@ impl<'a, 'p> Emitter<'a, 'p> {
                 at += CELL;
             }
         }
+        Ok(())
     }
 
     /// After the driver's step: the received values and the flags go to the partner blocks.
-    pub(super) fn lora_outputs(&mut self, l: &LoraExtras, first: u32) {
+    pub(super) fn lora_outputs(&mut self, l: &LoraExtras, first: u32) -> Result<(), WasmError> {
         let mut at = first;
         for (p, inst) in l.plan.points.iter().zip(&l.points) {
             let def = &inst.lib.def;
+            let slots = match &p.rx_struct {
+                Some(name) => self.struct_mem(inst, name)?,
+                None => Vec::new(),
+            };
             for (k, ty) in p.rx.iter().enumerate() {
+                if let Some(mem) = slots.get(k) {
+                    // The received value goes into the field of the structure.
+                    self.c_i(0);
+                    self.c_i(at as i32);
+                    if *ty == LTy::Float {
+                        self.op(I::F32Load(Self::mem_arg(0, 2)));
+                    } else {
+                        self.op(I::I32Load(Self::mem_arg(0, 2)));
+                    }
+                    self.array_store(*mem);
+                    at += CELL;
+                    continue;
+                }
                 let port = port_name(l.plan.rx_prefix(), k, *ty);
                 if let Some(i) = def.outputs.iter().position(|o| o.name == port) {
                     if inst.outputs.contains_key(port.as_str()) {
@@ -268,6 +346,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             }
             at += CELL;
         }
+        Ok(())
     }
 }
 

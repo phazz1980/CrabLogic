@@ -1308,6 +1308,7 @@
  "Удалить вместе с блоками": "Delete with its blocks",
  "в проекте нет структуры": "no structure in the project",
  "не выбрана": "not selected",
+ "не используется": "not used",
  "Поля структуры (пустое начальное значение — ноль)": "Fields of the structure (empty initial value means zero)",
  "Удалить поле": "Delete field",
  "Добавить поле": "Add field",

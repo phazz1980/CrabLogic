@@ -1,0 +1,77 @@
+# Команда master -> slave и ответ slave -> master. Структуры у обоих концов одного состава.
+[[struct]]
+name = "pump_cmd"
+description = "Команда насосу"
+
+[[struct.field]]
+name = "run"
+type = "bool"
+
+[[struct.field]]
+name = "level"
+type = "int"
+init = 150
+
+[[struct]]
+name = "pump_ans"
+description = "Ответ насоса"
+
+[[struct.field]]
+name = "pressure"
+type = "int"
+
+[[struct.field]]
+name = "running"
+type = "bool"
+
+# Модуль E220: TX платы -> RXD модуля, RX платы <- TXD, M0, M1, AUX на свободные выводы.
+[[block]]
+id = "modem"
+type = "lora_e220"
+role = 0
+channel = 18
+uart = 2
+tx = 17
+rx = 16
+m0 = 25
+m1 = 27
+aux = 33
+
+# Slave 0: значения идут через структуры, а не через порты блока.
+[[block]]
+id = "pump_node"
+type = "lora_point"
+modem = "modem"
+node = 0
+cmd_struct = "pump_cmd"
+ans_struct = "pump_ans"
+
+# Кнопка (GPIO4) включает насос; уставка level остаётся начальной (150).
+[[block]]
+id = "button"
+type = "digital_in"
+pin = 4
+
+[[block]]
+id = "cmd_pack"
+type = "struct_pack"
+struct = "pump_cmd"
+
+[[block]]
+id = "ans_unpack"
+type = "struct_unpack"
+struct = "pump_ans"
+
+# Светодиод показывает, что насос работает.
+[[block]]
+id = "led"
+type = "digital_out"
+pin = 2
+
+[[link]]
+from = "button.out"
+to   = "cmd_pack.run"
+
+[[link]]
+from = "ans_unpack.running"
+to   = "led.in"

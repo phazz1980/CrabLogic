@@ -1,0 +1,78 @@
+# Команда master -> slave и ответ slave -> master. Структуры у обоих концов одного состава.
+[[struct]]
+name = "pump_cmd"
+description = "Команда насосу"
+
+[[struct.field]]
+name = "run"
+type = "bool"
+
+[[struct.field]]
+name = "level"
+type = "int"
+init = 150
+
+[[struct]]
+name = "pump_ans"
+description = "Ответ насоса"
+
+[[struct.field]]
+name = "pressure"
+type = "int"
+
+[[struct.field]]
+name = "running"
+type = "bool"
+
+[[block]]
+id = "modem"
+type = "lora_e220"
+role = 1
+node = 0
+channel = 18
+uart = 2
+tx = 17
+rx = 16
+m0 = 25
+m1 = 27
+aux = 33
+
+[[block]]
+id = "centre"
+type = "lora_centre"
+modem = "modem"
+cmd_struct = "pump_cmd"
+ans_struct = "pump_ans"
+
+[[block]]
+id = "cmd_unpack"
+type = "struct_unpack"
+struct = "pump_cmd"
+
+[[block]]
+id = "ans_pack"
+type = "struct_pack"
+struct = "pump_ans"
+
+[[block]]
+id = "sensor"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "pump"
+type = "digital_out"
+pin = 26
+
+# Насос включается командой; «работает» повторяет команду.
+[[link]]
+from = "cmd_unpack.run"
+to   = "pump.in"
+
+[[link]]
+from = "cmd_unpack.run"
+to   = "ans_pack.running"
+
+[[link]]
+from = "sensor.out"
+to   = "ans_pack.pressure"

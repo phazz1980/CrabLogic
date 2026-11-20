@@ -1,0 +1,6 @@
+[project]
+name = "lora_structs"
+description = "LoRa E220 со структурами: master шлёт slave команду записью (пуск и уставка), ответ (давление и «работает») получает записью. Те же структуры у slave — проект lora_structs_slave."
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

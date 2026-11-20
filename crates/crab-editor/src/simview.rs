@@ -211,6 +211,7 @@ pub fn editable(sim: &SimState, port: &PortRef) -> bool {
     sim.sim.computed(&port.block) == Some(Computed::Manual)
         || sim.sim.block_var(&port.block).is_some()
         || sim.sim.bench_input(&port.block, &port.port).is_some()
+        || sim.sim.stored_target(&port.block, &port.port)
 }
 
 /// Whether the output is a bool that clicks switch: left `true`, right `false` (no menu).
@@ -240,6 +241,8 @@ pub fn click_bool(sim: &mut SimState, logic: &Logic, port: &PortRef, on: bool) -
             .set_pin_level(pin, f64::from(u8::from(on != block_inverted)));
     } else if let Some(var) = sim.sim.block_var(&port.block).map(str::to_owned) {
         sim.sim.set_var(&var, value);
+    } else if sim.sim.stored_target(&port.block, &port.port) {
+        sim.sim.set_stored(&port.block, &port.port, value);
     } else {
         sim.sim.set_output(&port.block, &port.port, value);
     }
@@ -266,6 +269,9 @@ pub fn number_target(sim: &SimState, port: &PortRef) -> Option<(bool, f64)> {
 pub fn set_number(sim: &mut SimState, port: &PortRef, value: f64) {
     match sim.sim.block_var(&port.block).map(str::to_owned) {
         Some(var) => sim.sim.set_var(&var, value),
+        None if sim.sim.stored_target(&port.block, &port.port) => {
+            sim.sim.set_stored(&port.block, &port.port, value)
+        }
         None => sim.sim.set_output(&port.block, &port.port, value),
     };
 }
@@ -749,5 +755,51 @@ mod tests {
         set_text(&mut sim, &port, "ON");
         sim.sim.step(100).unwrap();
         assert_eq!(sim.text_output(&port), Some("ON"));
+    }
+
+    #[test]
+    fn a_click_writes_a_structure_field_behind_an_output() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let project = Project::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/struct_recipe"
+        ))
+        .unwrap();
+        let mut sim = SimState::start(&project, &lib, 0).unwrap();
+        let time = PortRef::new("recipe_unpack1", "time");
+        let fan = PortRef::new("recipe_unpack1", "fan");
+        assert!(number_target(&sim, &time).is_some());
+        assert!(bool_target(&sim, &fan));
+        set_number(&mut sim, &time, 77.0);
+        assert!(click_bool(&mut sim, &project.logic, &fan, true));
+        assert_eq!(sim.sim.output("recipe_unpack1", "time"), Some(77.0));
+        // Nobody packs (the button is not pressed), so the value stays after a scan.
+        sim.sim.step(100).unwrap();
+        assert_eq!(sim.sim.output("recipe_unpack1", "time"), Some(77.0));
+        assert_eq!(sim.sim.output("recipe_unpack1", "fan"), Some(1.0));
+    }
+
+    #[test]
+    fn a_received_lora_command_is_set_by_hand_in_its_structure() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let project = Project::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/lora_structs_slave"
+        ))
+        .unwrap();
+        let mut sim = SimState::start(&project, &lib, 0).unwrap();
+        // The radio writes the structure on the board; the simulation takes a click instead.
+        let run = PortRef::new("cmd_unpack", "run");
+        assert!(click_bool(&mut sim, &project.logic, &run, true));
+        sim.sim.step(100).unwrap();
+        assert_eq!(sim.sim.output("cmd_unpack", "run"), Some(1.0));
+        // The answer structure follows the command (`running` is wired to it).
+        sim.sim.step(100).unwrap();
+        assert_eq!(
+            sim.sim.struct_state("pump_ans").map(|s| s.num("running")),
+            Some(1.0)
+        );
     }
 }

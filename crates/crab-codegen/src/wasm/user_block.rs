@@ -436,7 +436,7 @@ impl Emitter<'_, '_> {
             self.display_inputs(d, cells_in + cell * def.inputs.len() as u32);
         }
         if let Some(l) = &lora {
-            self.lora_inputs(l, cells_in + cell * def.inputs.len() as u32);
+            self.lora_inputs(l, cells_in + cell * def.inputs.len() as u32)?;
         }
         let k = self.drivers.len() as u32;
         self.op(I::LocalGet(0));
@@ -459,7 +459,7 @@ impl Emitter<'_, '_> {
             self.display_outputs(d, cells_out + cell * def.outputs.len() as u32);
         }
         if let Some(l) = &lora {
-            self.lora_outputs(l, cells_out + cell * def.outputs.len() as u32);
+            self.lora_outputs(l, cells_out + cell * def.outputs.len() as u32)?;
         }
         self.drivers.push(DriverUse {
             driver: d,

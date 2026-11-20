@@ -175,14 +175,14 @@ impl Program<'_> {
     /// Sets that share a sheet are merged.
     pub fn shared_sheet_sets(&self) -> Vec<Vec<u32>> {
         use crab_core::array_blocks::{array_name, ArrayOp, DEST_PARAM};
-        use crab_core::struct_blocks::struct_name;
+        use crab_core::struct_blocks::used_structs;
         use std::collections::{BTreeMap, BTreeSet};
         let mut users: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
         for b in &self.blocks {
             let sheet = self.sheet_of(&b.block.id);
             let mut names: Vec<&str> = Vec::new();
             names.extend(array_name(b.block));
-            names.extend(struct_name(b.block));
+            names.extend(used_structs(b.block));
             if ArrayOp::from_kind(&b.block.kind).is_some() {
                 if let Some(crab_core::ParamValue::Text(d)) = b.block.params.get(DEST_PARAM) {
                     names.push(d);
