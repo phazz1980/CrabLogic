@@ -344,6 +344,8 @@ struct Emitter<'a, 'p> {
     hw: std::collections::BTreeSet<u32>,
     /// The code calls the module's own append function (`APPEND_FN`).
     uses_append: bool,
+    /// Global that counts the faults of the module (`faults()` export), once a block counts one.
+    fault_counter: Option<u32>,
     /// Newer master features used by the code that are not whole imports (see `WasmModule::needs`).
     extras: std::collections::BTreeSet<&'static str>,
     /// Offsets in `code` where `step` is cut into separate functions (block boundaries only):
@@ -475,6 +477,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             watched: Vec::new(),
             hw: Default::default(),
             uses_append: false,
+            fault_counter: None,
             extras: Default::default(),
             cuts: Vec::new(),
             mem_top: MEM_START,
@@ -1143,7 +1146,8 @@ impl<'a, 'p> Emitter<'a, 'p> {
         // `period_ms` comes right after the append function, then `outputs`.
         let period_fn = append_fn + u32::from(self.uses_append);
         let outputs_fn = period_fn + 1;
-        let wrap_base = period_fn + 2;
+        let faults_fn = outputs_fn + 1;
+        let wrap_base = period_fn + 2 + u32::from(self.fault_counter.is_some());
         // Blocks with their own `block.wasm` come last: per use, its shims, then its functions.
         let mut cursor = wrap_base + if aot { import_types.len() as u32 } else { 0 };
         let mut type_cursor = FIXED_TYPES;
@@ -1209,6 +1213,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         }
         funcs.function(4); // period_ms
         funcs.function(4); // outputs
+        if self.fault_counter.is_some() {
+            funcs.function(4); // faults
+        }
         if aot {
             for &ty in &import_types {
                 funcs.function(ty);
@@ -1285,6 +1292,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         exports.export("init", ExportKind::Func, first + 2);
         exports.export("period_ms", ExportKind::Func, period_fn);
         exports.export("outputs", ExportKind::Func, outputs_fn);
+        if self.fault_counter.is_some() {
+            exports.export("faults", ExportKind::Func, faults_fn);
+        }
 
         let mut abi = Function::new([]);
         abi.instruction(&I::I32Const(ABI_VERSION))
@@ -1486,6 +1496,13 @@ impl<'a, 'p> Emitter<'a, 'p> {
             .instruction(&I::I32Const(self.watched.len() as i32))
             .instruction(&I::End);
         code.function(&outputs);
+        if let Some(counter) = self.fault_counter {
+            let mut faults = Function::new([]);
+            faults
+                .instruction(&I::GlobalGet(counter))
+                .instruction(&I::End);
+            code.function(&faults);
+        }
         if aot {
             for (k, &ty) in import_types.iter().enumerate() {
                 let nparams = match ty {

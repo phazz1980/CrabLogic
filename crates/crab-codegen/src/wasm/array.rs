@@ -244,6 +244,24 @@ impl Emitter<'_, '_> {
         }
     }
 
+    /// Counts one fault of the module (an index outside its array): the counter is a global that the
+    /// module reports through its `faults()` export, and the master adds it to the failures of the
+    /// module. The counter wraps; the master takes the difference between two reads.
+    fn count_fault(&mut self) {
+        let counter = match self.fault_counter {
+            Some(g) => g,
+            None => {
+                let g = self.state_i();
+                self.fault_counter = Some(g);
+                g
+            }
+        };
+        self.op(I::GlobalGet(counter));
+        self.c_i(1);
+        self.op(I::I32Add);
+        self.op(I::GlobalSet(counter));
+    }
+
     /// `array_get`: in 0 = index; out 0 = value, out 1 = err.
     fn array_get(&mut self, inst: &Instance, mem: ArrayMem) {
         let ty = mem.ty_of();
@@ -261,9 +279,16 @@ impl Emitter<'_, '_> {
             |e| e.c(ty, 0.0),
         );
         self.set_out(inst, 0, ty);
+        let err = self.tmp_i();
         self.op(I::LocalGet(idx));
         self.c_i(mem.len as i32);
         self.op(I::I32GeU);
+        self.op(I::LocalSet(err));
+        self.op(I::LocalGet(err));
+        self.op(I::If(BlockType::Empty));
+        self.count_fault();
+        self.op(I::End);
+        self.op(I::LocalGet(err));
         self.set_out(inst, 1, Ty::I);
     }
 
@@ -278,6 +303,8 @@ impl Emitter<'_, '_> {
         self.array_scale(mem);
         self.input_as(inst, 1, mem.ty_of());
         self.array_store(mem);
+        self.op(I::Else);
+        self.count_fault();
         self.op(I::End);
         self.op(I::LocalGet(idx));
         self.c_i(mem.len as i32);

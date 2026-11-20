@@ -241,6 +241,10 @@ impl Instance<Host> for McuModule {
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {
         self.inner.call_on_message(topic, data)
     }
+
+    fn faults(&mut self) -> u32 {
+        self.inner.faults()
+    }
 }
 
 impl McuModule {

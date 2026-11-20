@@ -71,4 +71,11 @@ pub trait Instance<H> {
     fn period_ms(&self) -> u32 {
         crate::abi::DEFAULT_PERIOD_MS
     }
+
+    /// Faults the module counted itself (`faults() -> i32` export: an index outside an array and the
+    /// like), cumulative and wrapping; the caller takes the difference between two reads. 0 for a
+    /// module without the export.
+    fn faults(&mut self) -> u32 {
+        0
+    }
 }

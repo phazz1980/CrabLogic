@@ -124,6 +124,9 @@ struct Slot {
     paused: bool,
     steps: u32,
     faults: u32,
+    /// The module's own fault counter (`faults()` export) as of the last step: the difference to
+    /// the next read is added to `faults`.
+    fault_seen: u32,
     last_us: u32,
     max_us: u32,
     /// Longest time between two steps, microseconds.
@@ -149,6 +152,7 @@ impl Slot {
             paused: false,
             steps: 0,
             faults: 0,
+            fault_seen: 0,
             last_us: 0,
             max_us: 0,
             period_max_us: 0,
@@ -469,6 +473,9 @@ impl Master {
         }
         let result = self.kernel.step(handle, dt_ms);
         let us = begin.elapsed().as_micros() as u32;
+        // Faults the module counted itself (an index outside an array): added to the failures of the
+        // slot. A counter below the last read means the module restarted from zero.
+        let reported = self.kernel.get_mut(handle).map_or(0, |m| m.faults());
         let lines = self
             .kernel
             .get_mut(handle)
@@ -502,6 +509,13 @@ impl Master {
             let period = begin.duration_since(last).as_micros() as u32;
             slot.period_max_us = slot.period_max_us.max(period);
         }
+        let seen = core::mem::replace(&mut slot.fault_seen, reported);
+        let own = if reported >= seen {
+            reported - seen
+        } else {
+            reported
+        };
+        slot.faults = slot.faults.wrapping_add(own);
         slot.steps = slot.steps.wrapping_add(1);
         slot.last_us = us;
         slot.max_us = slot.max_us.max(us);

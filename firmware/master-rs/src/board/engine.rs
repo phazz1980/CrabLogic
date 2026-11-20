@@ -181,6 +181,7 @@ impl Wamr {
             inst: core::ptr::null_mut(),
             env: core::ptr::null_mut(),
             step: core::ptr::null_mut(),
+            faults_fn: core::ptr::null_mut(),
             mode,
             period_ms: abi::DEFAULT_PERIOD_MS as u8,
             _image: ram.take(),
@@ -229,6 +230,7 @@ impl Wamr {
                 .map_err(|e| format!("period_ms не выполнена: {e}"))?;
             m.period_ms = abi::period_of(argv[0] as i32) as u8;
         }
+        m.faults_fn = m.lookup(c"faults").unwrap_or(core::ptr::null_mut());
         // The host keeps as many output values as the module reports; one built before the
         // export existed gets the old fixed number.
         let outputs = match m.lookup(c"outputs") {
@@ -369,6 +371,8 @@ pub struct WamrInstance<H> {
     inst: Inst,
     env: Env,
     step: Func,
+    /// The optional `faults()` export (null without it).
+    faults_fn: Func,
     mode: ExecutionMode,
     /// What `period_ms()` asked for (see [`abi::period_of`]), at most 10.
     period_ms: u8,
@@ -483,6 +487,17 @@ impl<H> Instance<H> for WamrInstance<H> {
 
     fn period_ms(&self) -> u32 {
         self.period_ms as u32
+    }
+
+    fn faults(&mut self) -> u32 {
+        if self.faults_fn.is_null() {
+            return 0;
+        }
+        let mut argv = [0u32; 4];
+        match self.call(self.faults_fn, 0, &mut argv) {
+            Ok(()) => argv[0],
+            Err(_) => 0,
+        }
     }
 
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {

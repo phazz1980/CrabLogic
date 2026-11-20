@@ -72,6 +72,8 @@ pub struct WasmiInstance<H: 'static> {
     pending: Option<TypedResumableCallHostTrap<()>>,
     /// What `period_ms()` asked for (see [`abi::period_of`]).
     period_ms: u32,
+    /// The optional `faults()` export.
+    faults: Option<TypedFunc<(), i32>>,
 }
 
 fn val_type(t: Ty) -> ValType {
@@ -213,6 +215,7 @@ impl engine::Engine for Wasmi {
             ),
             Err(_) => abi::DEFAULT_PERIOD_MS,
         };
+        let faults = instance.get_typed_func::<(), i32>(&store, "faults").ok();
         let mut m = WasmiInstance {
             store,
             instance,
@@ -220,6 +223,7 @@ impl engine::Engine for Wasmi {
             fuel: limits.fuel_per_call,
             pending: None,
             period_ms,
+            faults,
         };
         if let Ok(init) = m.instance.get_typed_func::<(), ()>(&m.store, "init") {
             m.refuel()?;
@@ -286,6 +290,13 @@ impl<H: 'static> engine::Instance<H> for WasmiInstance<H> {
 
     fn suspended(&self) -> bool {
         self.pending.is_some()
+    }
+
+    fn faults(&mut self) -> u32 {
+        match &self.faults {
+            Some(f) => f.call(&mut self.store, ()).unwrap_or(0) as u32,
+            None => 0,
+        }
     }
 
     fn call_on_message(&mut self, topic: &str, data: &[u8]) -> Result<(), String> {

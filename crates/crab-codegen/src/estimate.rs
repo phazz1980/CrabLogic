@@ -4,6 +4,7 @@
 //! of text blocks (`crab.mem`) is not counted. The modules are those of the current groups
 //! ([`Program::auto_group_for_board`] first, as the build does).
 
+use crab_core::array_blocks::{array_name, DEST_PARAM};
 use crab_core::cost::{costs_for, heap_for, needs_network};
 use crab_core::pins::Chip;
 use crab_core::SheetSpeed;
@@ -67,6 +68,31 @@ impl Estimate {
 }
 
 impl Program<'_> {
+    /// Bytes of the arrays the blocks of `sheets` use: each array once, its elements live in the
+    /// linear memory of the module.
+    fn array_bytes(&self, sheets: &[u32]) -> u32 {
+        let mut names: Vec<&str> = Vec::new();
+        for b in self
+            .blocks
+            .iter()
+            .filter(|b| sheets.contains(&self.sheet_of(&b.block.id)))
+        {
+            let dest = match b.block.params.get(DEST_PARAM) {
+                Some(crab_core::ParamValue::Text(name)) => Some(name.as_str()),
+                _ => None,
+            };
+            for name in array_name(b.block).into_iter().chain(dest) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+            .iter()
+            .filter_map(|n| self.project.logic.array(n))
+            .fold(0u32, |sum, a| sum.saturating_add(a.bytes()))
+    }
+
     /// Estimates the project for the board of its config, with the modules as they are grouped now.
     pub fn estimate(&self) -> Estimate {
         let chip = Chip::of_board(&self.project.config.board);
@@ -94,12 +120,13 @@ impl Program<'_> {
                     .find(|s| s.number == unit)
                     .map_or(SheetSpeed::Normal, |s| s.speed);
                 let background = speed == SheetSpeed::Background || layout.is_background(unit);
+                let array_bytes = self.array_bytes(&sheets);
                 ModuleEstimate {
                     unit,
                     name: self.sheet_module(unit).map(|m| m.name).unwrap_or_default(),
                     sheets,
                     blocks: kinds.len(),
-                    heap: heap.module_bytes(kinds.iter().copied(), 0),
+                    heap: heap.module_bytes(kinds.iter().copied(), array_bytes),
                     step_us: costs.sheet_us(kinds.iter().copied()),
                     period_ms: if background {
                         layout.background_period(unit)
@@ -165,6 +192,25 @@ mod tests {
             apart.modules.iter().map(|m| m.blocks).sum::<usize>()
         );
         assert!(joined.heap < apart.heap);
+    }
+
+    #[test]
+    fn the_arrays_of_a_module_are_part_of_its_memory() {
+        let lib = lib();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut project = Project::load(root.join("examples/array_average")).unwrap();
+        let before = Program::build(&project, &lib).unwrap().estimate();
+        let array = project
+            .logic
+            .arrays
+            .first_mut()
+            .expect("the example has an array");
+        let old = array.bytes();
+        array.len += 100;
+        let grown = array.bytes() - old;
+        assert!(grown > 0);
+        let after = Program::build(&project, &lib).unwrap().estimate();
+        assert_eq!(after.heap - before.heap, grown);
     }
 
     #[test]

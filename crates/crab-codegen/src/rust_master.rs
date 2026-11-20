@@ -20,8 +20,45 @@ pub fn check_project(project: &Project, lib: &Library) -> crab_core::Report {
         report
             .diagnostics
             .extend(rust_master_diagnostics(project, lib));
+        if let Some(d) = array_memory_diagnostic(project, lib) {
+            report.diagnostics.push(d);
+        }
     }
     report
+}
+
+/// A warning when the project, with the memory of its arrays, does not fit the heap of the board
+/// (`specs/arrays-structs` task 13). Nothing for a project without arrays: the build reports an
+/// overfull heap itself.
+pub fn array_memory_diagnostic(project: &Project, lib: &Library) -> Option<Diagnostic> {
+    if project.logic.arrays.is_empty() {
+        return None;
+    }
+    let project = crate::prepare(project, lib);
+    let mut program = Program::build(&project, lib).ok()?;
+    program.auto_group_for_board(false).ok()?;
+    let est = program.estimate();
+    if est.fits() {
+        return None;
+    }
+    let kb = |bytes: i64| (bytes as f64 / 1024.0).round() as i64;
+    Some(Diagnostic {
+        kind: DiagKind::Array,
+        severity: Severity::Warning,
+        block: None,
+        link: None,
+        message: format!(
+            "массивы и блоки не помещаются в ОЗУ платы: ≈ {} из {} КБ (массивы занимают {} КБ)",
+            kb(i64::from(est.heap)),
+            kb(i64::from(est.budget)),
+            kb(project
+                .logic
+                .arrays
+                .iter()
+                .map(|a| i64::from(a.bytes()))
+                .sum())
+        ),
+    })
 }
 
 /// Whether a library block carries C++ code of its own (and no `block.wasm` that would replace it).
@@ -135,5 +172,40 @@ mod tests {
         let (lib, _) = Library::load(dir.join("library")).unwrap();
         let project = Project::load(dir.join("examples/pump")).unwrap();
         assert!(rust_master_diagnostics(&project, &lib).is_empty());
+    }
+
+    #[test]
+    fn arrays_over_the_heap_are_warned_about() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (lib, _) = Library::load(root.join("library")).unwrap();
+        let mut project = Project::load(root.join("examples/array_average")).unwrap();
+        assert!(array_memory_diagnostic(&project, &lib).is_none());
+        // 250 arrays of 256 floats (1 KB each), every one read by a block of its own.
+        let sum = project
+            .logic
+            .blocks
+            .iter()
+            .find(|b| b.kind == "array_sum")
+            .cloned()
+            .expect("the example sums an array");
+        let template = project.logic.arrays[0].clone();
+        for i in 0..250 {
+            let name = format!("big{i}");
+            project.logic.arrays.push(crab_core::arrays::ArrayVar {
+                name: name.clone(),
+                len: 256,
+                items: Vec::new(),
+                ..template.clone()
+            });
+            let mut block = sum.clone();
+            block.id = format!("big_sum{i}");
+            block
+                .params
+                .insert("array".into(), crab_core::ParamValue::Text(name));
+            project.logic.blocks.push(block);
+        }
+        let d = array_memory_diagnostic(&project, &lib).expect("a warning");
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(d.message.contains("не помещаются в ОЗУ"), "{}", d.message);
     }
 }
