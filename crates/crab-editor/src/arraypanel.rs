@@ -4,12 +4,12 @@
 //! the window of the array, the context menu puts any block of the array on the board.
 
 use crab_core::array_blocks::{array_name, ArrayOp, DEST_PARAM};
-use eframe::egui::{Id, RichText, Ui};
+use eframe::egui::{Id, Ui};
 
 use crate::app::{EditorApp, LogLevel};
 use crate::canvas::DragItem;
 use crate::dialogs::Dialog;
-use crate::panels::{drag_row, free_spot, group, placed_images, Level};
+use crate::panels::{drag_row, free_spot, group, placed_images, row_label, Level};
 
 pub enum ArrayAction {
     /// Opens the window of a new array.
@@ -69,11 +69,14 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<ArrayAction> {
                     .selection
                     .as_ref()
                     .is_some_and(|s| images.iter().any(|b| s.has_block(b)));
+                // Like a variable: coloured by the signal type, an orange cross after the name while
+                // no block uses the array.
                 let caption = format!("{} <{}[{}]>", array.name, array.ty.name(), array.len);
-                let text = if images.is_empty() {
-                    RichText::new(format!("✕ {caption}")).color(pal.warning)
+                let color = Some(crate::canvas::signal_color(&pal, array.ty.signal()));
+                let text = if blocks.is_empty() {
+                    row_label(ui, caption, color, Some(pal.warning))
                 } else {
-                    RichText::new(caption)
+                    row_label(ui, caption, color, None)
                 };
                 let resp = drag_row(
                     ui,
@@ -83,7 +86,7 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<ArrayAction> {
                     text,
                 )
                 .on_hover_text(crate::i18n::fmt(
-                    "{0}\nЩелчок — найти на плате, повторный — следующий блок. Перетащите на плату: появится блок чтения. Двойной щелчок — изменить.",
+                    "{0}\nЩелчок — найти на плате, повторный — следующий блок. Перетащите на плату: появится блок чтения; запись и остальные блоки — в меню правой кнопки. Двойной щелчок — изменить.",
                     &[&array.description],
                 ));
                 if resp.double_clicked() {
@@ -92,11 +95,25 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<ArrayAction> {
                     rows.push(ArrayAction::Focus(format!("array:{}", array.name), images));
                 }
                 resp.context_menu(|ui| {
-                    ui.menu_button(crate::i18n::tr("Поставить на плату"), |ui| {
-                        for op in ArrayOp::ALL
-                            .into_iter()
-                            .filter(|op| op.exists_for(array.ty))
-                        {
+                    // Reading and writing stand first, like for a variable; the other blocks follow.
+                    if ui
+                        .button(crate::i18n::tr("Поставить чтение на плату"))
+                        .clicked()
+                    {
+                        rows.push(ArrayAction::Place(ArrayOp::Get, array.name.clone()));
+                        ui.close();
+                    }
+                    if ui
+                        .button(crate::i18n::tr("Поставить запись на плату"))
+                        .clicked()
+                    {
+                        rows.push(ArrayAction::Place(ArrayOp::Set, array.name.clone()));
+                        ui.close();
+                    }
+                    ui.menu_button(crate::i18n::tr("Другие блоки"), |ui| {
+                        for op in ArrayOp::ALL.into_iter().filter(|op| {
+                            op.exists_for(array.ty) && !matches!(op, ArrayOp::Get | ArrayOp::Set)
+                        }) {
                             if ui.button(crate::i18n::tr(op.caption().0)).clicked() {
                                 rows.push(ArrayAction::Place(op, array.name.clone()));
                                 ui.close();
