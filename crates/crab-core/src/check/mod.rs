@@ -13,6 +13,7 @@ use crate::pins::{pin_uses, BoardLayout, PinUse};
 use crate::value::parse_duration_ms;
 use crate::{Layout, Library, Link, Logic, ParamValue, PortRef, Project};
 
+mod arrays;
 mod blocks;
 mod boards;
 mod cycle;
@@ -53,6 +54,7 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
     check_expanders(logic, lib, &mut report);
     display::check_displays(logic, &mut report);
     lora::check_lora(logic, &mut report);
+    arrays::check_arrays(logic, &mut report);
     order_blocks(logic, &defs, &edges, &mut report);
     if !report.has_errors() {
         check_number_flow(logic, &defs, &mut report);
@@ -110,5 +112,10 @@ pub fn check_project(project: &Project, lib: &Library) -> Report {
     check_lan8720(project, layout.as_ref().map(BoardLayout::chip), &mut report);
     check_counters(project, layout.as_ref().map(BoardLayout::chip), &mut report);
     check_cycle(project, &mut report);
+    arrays::check_array_limits(
+        &project.logic,
+        layout.as_ref().map(BoardLayout::chip),
+        &mut report,
+    );
     report
 }

@@ -64,6 +64,8 @@ pub enum DiagKind {
     CyclePeriod,
     /// The estimated step of a sheet is over 70 % of the cycle period.
     StepOverPeriod,
+    /// An array or a structure: name, length, initial values, fields, limit of the chip.
+    Array,
 }
 
 impl DiagKind {
@@ -110,6 +112,7 @@ impl DiagKind {
         DiagKind::Lora,
         DiagKind::CyclePeriod,
         DiagKind::StepOverPeriod,
+        DiagKind::Array,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -157,6 +160,7 @@ impl DiagKind {
             DiagKind::Lora => "lora",
             DiagKind::CyclePeriod => "cycle-period",
             DiagKind::StepOverPeriod => "step-over-period",
+            DiagKind::Array => "array",
         }
     }
 }

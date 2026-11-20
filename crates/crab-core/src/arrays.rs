@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::pins::Chip;
 use crate::{Logic, ParamValue, SignalType};
 
 /// Longest array on the chips with the larger RAM (ESP32, ESP32-S3).
@@ -100,13 +101,12 @@ pub struct StructField {
     pub init: Option<ParamValue>,
 }
 
-/// Longest array of a chip family (`esp32`, `esp32c3`, `esp32s3`): RAM left to the module after
-/// the network stack is smallest on the C3.
-pub fn max_len(chip: &str) -> u32 {
-    if chip == "esp32c3" {
-        MAX_LEN_C3
-    } else {
-        MAX_LEN
+/// Longest array on a chip: the RAM left to the module after the network stack is smallest on the
+/// C3. An unknown chip (no board chosen) gets the larger limit.
+pub fn max_len(chip: Option<Chip>) -> u32 {
+    match chip {
+        Some(Chip::Esp32C3 | Chip::Esp32C3SuperMini) => MAX_LEN_C3,
+        _ => MAX_LEN,
     }
 }
 
@@ -222,9 +222,11 @@ mod tests {
 
     #[test]
     fn length_limit_depends_on_the_chip() {
-        assert_eq!(max_len("esp32"), 256);
-        assert_eq!(max_len("esp32s3"), 256);
-        assert_eq!(max_len("esp32c3"), 64);
+        assert_eq!(max_len(Some(Chip::Esp32)), 256);
+        assert_eq!(max_len(Some(Chip::Esp32S3)), 256);
+        assert_eq!(max_len(Some(Chip::Esp32C3)), 64);
+        assert_eq!(max_len(Some(Chip::Esp32C3SuperMini)), 64);
+        assert_eq!(max_len(None), 256);
     }
 
     #[test]
