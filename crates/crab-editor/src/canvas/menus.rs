@@ -178,6 +178,41 @@ pub(super) fn port_context_menu(
             None => d.table.output_index(&link.from),
         }
     });
+    // A bool port is switched by clicks in debugging and simulation: left `true`, right `false`.
+    if ty == SignalType::Bool {
+        let dbg_bool = app
+            .debug
+            .as_ref()
+            .zip(debug_index)
+            .is_some_and(|(d, i)| debugview::bool_entry(d, i));
+        let sim_bool = output
+            && app
+                .sim
+                .as_ref()
+                .is_some_and(|s| crate::simview::bool_target(s, port));
+        if dbg_bool || sim_bool {
+            let on = if resp.clicked() {
+                Some(true)
+            } else if resp.secondary_clicked() {
+                Some(false)
+            } else {
+                None
+            };
+            // The label shows the value after the inversion mark: the raw signal is the opposite.
+            if let Some(on) = on.map(|on| on != inverted) {
+                match (&mut app.debug, debug_index, &mut app.sim) {
+                    (Some(d), Some(i), _) if dbg_bool => debugview::click_bool(d, i, on),
+                    (_, _, Some(s)) => {
+                        if let Some(doc) = &app.doc {
+                            crate::simview::click_bool(s, &doc.project.logic, port, on);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+    }
     let mut debug = app.debug.take();
     let mut sim = app.sim.take();
     let mut set_const = None;

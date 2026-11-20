@@ -20,6 +20,8 @@ pub struct Doc {
     pub revision: u64,
     /// Check result for the current schema, refreshed after every edit.
     pub report: Report,
+    /// The schema is frozen (debugging or simulation is running): edits change nothing.
+    pub locked: bool,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// Key of the last edit: consecutive edits with the same key (dragging a block,
@@ -58,6 +60,7 @@ impl Doc {
             dirty: false,
             revision: 0,
             report,
+            locked: false,
             undo: Vec::new(),
             redo: Vec::new(),
             last_key: None,
@@ -76,6 +79,9 @@ impl Doc {
         key: Option<String>,
         f: impl FnOnce(&mut Project) -> Result<T, E>,
     ) -> Result<T, E> {
+        if self.locked {
+            return f(&mut self.project.clone());
+        }
         let before = self.snapshot();
         let config_before = self.project.config.clone();
         let merge = key.is_some() && key == self.last_key;
@@ -116,6 +122,9 @@ impl Doc {
         key: String,
         f: impl FnOnce(&mut Project) -> Result<T, E>,
     ) -> Result<T, E> {
+        if self.locked {
+            return f(&mut self.project.clone());
+        }
         let merge = self.last_key.as_deref() == Some(key.as_str());
         let before = (!merge).then(|| self.snapshot());
         let value = f(&mut self.project)?;
@@ -154,14 +163,17 @@ impl Doc {
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
+        !self.locked && !self.undo.is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
-        !self.redo.is_empty()
+        !self.locked && !self.redo.is_empty()
     }
 
     pub fn undo(&mut self, lib: &Library) {
+        if self.locked {
+            return;
+        }
         if let Some(s) = self.undo.pop() {
             self.redo.push(self.snapshot());
             self.restore(s);
@@ -170,6 +182,9 @@ impl Doc {
     }
 
     pub fn redo(&mut self, lib: &Library) {
+        if self.locked {
+            return;
+        }
         if let Some(s) = self.redo.pop() {
             self.undo.push(self.snapshot());
             self.restore(s);
@@ -276,5 +291,36 @@ mod tests {
                 b.id
             );
         }
+    }
+
+    #[test]
+    fn a_locked_schema_ignores_edits_and_history() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        let _ = doc.edit::<(), ()>(&lib, None, |p| {
+            p.logic.blocks.pop();
+            Ok(())
+        });
+        assert!(doc.can_undo());
+        doc.locked = true;
+        assert!(!doc.can_undo());
+        let before = doc.project.logic.clone();
+        let layout = doc.project.layout.clone();
+        let _ = doc.edit::<(), ()>(&lib, None, |p| {
+            p.logic.blocks.pop();
+            Ok(())
+        });
+        let _ = doc.edit_layout::<(), ()>("move:x".into(), |p| {
+            p.layout.blocks.clear();
+            Ok(())
+        });
+        doc.undo(&lib);
+        assert_eq!(doc.project.logic, before);
+        assert_eq!(doc.project.layout, layout);
+        doc.locked = false;
+        doc.undo(&lib);
+        assert_ne!(doc.project.logic, before);
     }
 }

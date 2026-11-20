@@ -182,7 +182,9 @@ pub fn apply(app: &mut EditorApp, actions: Vec<UartAction>) {
             }
             UartAction::Toggle { number, on } => {
                 let lib = app.lib.clone();
-                let Some(doc) = &mut app.doc else { return };
+                let Some(doc) = app.doc.as_mut().filter(|d| !d.locked) else {
+                    return;
+                };
                 let uarts = &mut doc.project.config.uart;
                 let index = uarts.iter().position(|u| u.number == number);
                 match (on, index) {

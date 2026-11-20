@@ -41,6 +41,7 @@ mod report;
 mod selfupdate;
 mod simview;
 mod splash;
+mod stepper;
 mod tagimport;
 mod textmenu;
 mod theme;

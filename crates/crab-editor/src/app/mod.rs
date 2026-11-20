@@ -304,6 +304,11 @@ enum SelfUpdate {
 }
 
 impl EditorApp {
+    /// The schema cannot be edited while the board is debugged or the simulation runs.
+    pub fn schema_locked(&self) -> bool {
+        self.debug.is_some() || self.sim.is_some()
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, project: Option<PathBuf>) -> Self {
         let mut app = Self {
             lib: Library::default(),
@@ -516,6 +521,10 @@ impl eframe::App for EditorApp {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
         self.poll_sim(&ctx);
+        let locked = self.schema_locked();
+        if let Some(doc) = &mut self.doc {
+            doc.locked = locked;
+        }
         self.poll_ai(&ctx);
         self.poll_console(&ctx);
         self.poll_ports();

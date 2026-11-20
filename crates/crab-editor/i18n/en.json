@@ -1292,5 +1292,9 @@
  "← Назад": "← Back",
  "→ П{0}: {1}.{2}": "→ B{0}: {1}.{2}",
  "✔ Применить": "✔ Apply",
- "✕ Отмена": "✕ Cancel"
+ "✕ Отмена": "✕ Cancel",
+ "Схема заблокирована: идёт отладка или симуляция": "Schematic locked: debugging or simulation is running",
+ "ЛКМ — плюс, ПКМ — минус; можно держать": "Left click plus, right click minus; hold to repeat",
+ "Схема заблокирована: идёт отладка или симуляция": "Schematic locked: debugging or simulation is running",
+ "ЛКМ — плюс, ПКМ — минус; можно держать": "Left click plus, right click minus; hold to repeat"
 }

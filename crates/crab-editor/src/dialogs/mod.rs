@@ -428,6 +428,9 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
         .doc
         .as_mut()
         .ok_or(crate::i18n::tr("проект не открыт"))?;
+    if doc.locked {
+        return Err(crate::i18n::tr("Схема заблокирована: идёт отладка или симуляция").to_owned());
+    }
     match dialog {
         Dialog::Board(d) => {
             let board = d.config()?;

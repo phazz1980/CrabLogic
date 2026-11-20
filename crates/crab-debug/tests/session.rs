@@ -240,6 +240,36 @@ fn reads_values_and_forces() {
 }
 
 #[test]
+fn one_force_or_all_of_them_can_be_released() {
+    let (session, _board) = start(table().fingerprint());
+    wait_for(&session, |l| l.values.iter().all(Option::is_some));
+    let force = |index, value| {
+        session.send(Command::Force {
+            index,
+            value: Some(value),
+        });
+    };
+    force(0, Value::Bool(false));
+    force(1, Value::Float(30.0));
+    let live = wait_for(&session, |l| l.forced.iter().all(Option::is_some));
+    assert!(live.forced.iter().all(Option::is_some));
+    // One signal is released, the other stays forced.
+    session.send(Command::Force {
+        index: 0,
+        value: None,
+    });
+    let live = wait_for(&session, |l| l.forced[0].is_none());
+    assert_eq!(live.forced, [None, Some(Value::Float(30.0))]);
+    // All of them.
+    force(0, Value::Bool(false));
+    wait_for(&session, |l| l.forced[0].is_some());
+    session.send(Command::ReleaseAll);
+    let live = wait_for(&session, |l| l.forced.iter().all(Option::is_none));
+    assert_eq!(live.forced, [None, None]);
+    session.stop();
+}
+
+#[test]
 fn foreign_firmware_is_reported_and_ignored() {
     let (session, _board) = start(0xDEAD_BEEF);
     let live = wait_for(&session, |l| l.schema_matches.is_some());

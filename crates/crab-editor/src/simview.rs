@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crab_core::{Library, PortRef, Project, SignalType};
+use crab_core::{Library, Logic, ParamValue, PortRef, Project, SignalType};
 use crab_debug::Value;
 use crab_sim::{BenchInput, Computed, Signal, Simulation};
 use eframe::egui::{self, Ui};
@@ -211,6 +211,92 @@ pub fn editable(sim: &SimState, port: &PortRef) -> bool {
     sim.sim.computed(&port.block) == Some(Computed::Manual)
         || sim.sim.block_var(&port.block).is_some()
         || sim.sim.bench_input(&port.block, &port.port).is_some()
+}
+
+/// Whether the output is a bool that clicks switch: left `true`, right `false` (no menu).
+pub fn bool_target(sim: &SimState, port: &PortRef) -> bool {
+    match sim.sim.bench_input(&port.block, &port.port) {
+        Some(BenchInput::Digital { .. }) => true,
+        Some(_) => false,
+        None => {
+            editable(sim, port)
+                && sim.sim.output_type(&port.block, &port.port) == Some(SignalType::Bool)
+        }
+    }
+}
+
+/// Sets a hand-driven bool by a click; `false` (nothing done) when the port is not one. A digital
+/// input block with its own `inverted` parameter reads the opposite of the pin level.
+pub fn click_bool(sim: &mut SimState, logic: &Logic, port: &PortRef, on: bool) -> bool {
+    if !bool_target(sim, port) {
+        return false;
+    }
+    let value = f64::from(u8::from(on));
+    if let Some(BenchInput::Digital { pin }) = sim.sim.bench_input(&port.block, &port.port) {
+        let block_inverted = logic
+            .block(&port.block)
+            .is_some_and(|b| b.params.get("inverted") == Some(&ParamValue::Bool(true)));
+        sim.sim
+            .set_pin_level(pin, f64::from(u8::from(on != block_inverted)));
+    } else if let Some(var) = sim.sim.block_var(&port.block).map(str::to_owned) {
+        sim.sim.set_var(&var, value);
+    } else {
+        sim.sim.set_output(&port.block, &port.port, value);
+    }
+    true
+}
+
+/// `(is_int, value)` of a hand-driven number (a variable or a manual output); the bench inputs
+/// keep their own menus.
+pub fn number_target(sim: &SimState, port: &PortRef) -> Option<(bool, f64)> {
+    if sim.sim.bench_input(&port.block, &port.port).is_some() || !editable(sim, port) {
+        return None;
+    }
+    let ty = sim.sim.output_type(&port.block, &port.port)?;
+    matches!(ty, SignalType::Int | SignalType::Float)
+        .then(|| {
+            sim.sim
+                .output(&port.block, &port.port)
+                .map(|v| (ty == SignalType::Int, v))
+        })
+        .flatten()
+}
+
+/// Sets a hand-driven number (the stepper window).
+pub fn set_number(sim: &mut SimState, port: &PortRef, value: f64) {
+    match sim.sim.block_var(&port.block).map(str::to_owned) {
+        Some(var) => sim.sim.set_var(&var, value),
+        None => sim.sim.set_output(&port.block, &port.port, value),
+    };
+}
+
+/// Field to type a new text of a hand-driven string; returns the text when it changed. The field
+/// keeps what is typed while it has focus and follows the value otherwise.
+pub fn text_edit(ui: &mut Ui, salt: egui::Id, now: &str) -> Option<String> {
+    let id = salt.with("text_edit");
+    let focused = ui.memory(|m| m.has_focus(id));
+    let mut text: String = if focused {
+        ui.data_mut(|d| d.get_temp(id))
+            .unwrap_or_else(|| now.to_owned())
+    } else {
+        now.to_owned()
+    };
+    ui.set_min_width(200.0);
+    let edit = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .desired_width(200.0),
+    );
+    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+    edit.changed().then_some(text)
+}
+
+/// Sets a hand-driven string.
+pub fn set_text(sim: &mut SimState, port: &PortRef, text: &str) {
+    match sim.sim.block_var(&port.block).map(str::to_owned) {
+        Some(var) => sim.sim.set_var_text(&var, text),
+        None => sim.sim.set_output_text(&port.block, &port.port, text),
+    };
 }
 
 /// Menu of an output that reads the virtual bench: the pin level or the sensor signal.
@@ -618,5 +704,50 @@ fn lcd_picture(ui: &mut Ui, view: &crab_sim::DisplayView) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clicks_switch_a_bool_input_of_the_bench() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let project = Project::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/button"
+        ))
+        .unwrap();
+        let mut sim = SimState::start(&project, &lib, 0).unwrap();
+        let button = PortRef::new("button", "out");
+        let led = PortRef::new("led", "in");
+        assert!(bool_target(&sim, &button));
+        // An output block is no hand-driven bool.
+        assert!(!click_bool(&mut sim, &project.logic, &led, true));
+        // `button` is inverted in the example: a click on `true` pulls the pin low.
+        assert!(click_bool(&mut sim, &project.logic, &button, true));
+        sim.sim.step(100).unwrap();
+        assert_eq!(sim.sim.output("button", "out"), Some(1.0));
+        assert!(click_bool(&mut sim, &project.logic, &button, false));
+        sim.sim.step(100).unwrap();
+        assert_eq!(sim.sim.output("button", "out"), Some(0.0));
+    }
+
+    #[test]
+    fn a_typed_text_reaches_a_string_variable() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let project = Project::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/text_commands"
+        ))
+        .unwrap();
+        let mut sim = SimState::start(&project, &lib, 0).unwrap();
+        let port = PortRef::new("command_r", "out");
+        set_text(&mut sim, &port, "ON");
+        sim.sim.step(100).unwrap();
+        assert_eq!(sim.text_output(&port), Some("ON"));
     }
 }

@@ -299,7 +299,7 @@ fn input_ports(project: &Project, lib: &Library, table: &DebugTable) -> Vec<(Por
     out
 }
 
-fn as_f64(v: Value) -> f64 {
+pub fn as_f64(v: Value) -> f64 {
     match v {
         Value::Bool(b) => f64::from(u8::from(b)),
         Value::Int(i) => f64::from(i),
@@ -330,6 +330,19 @@ fn number_edit(ui: &mut Ui, dbg: &DebugState, index: usize, salt: &str) -> Value
 }
 
 /// Context menu items for one observed value (block output or variable).
+/// Whether the entry is a bool that clicks switch: left forces `true`, right `false` (no menu).
+pub fn bool_entry(dbg: &DebugState, index: usize) -> bool {
+    dbg.table.entries[index].ty == SignalType::Bool
+}
+
+/// Forces a bool entry by a click.
+pub fn click_bool(dbg: &mut DebugState, index: usize, on: bool) {
+    dbg.send(Command::Force {
+        index,
+        value: Some(Value::Bool(on)),
+    });
+}
+
 pub fn value_menu(ui: &mut Ui, dbg: &mut DebugState, index: usize) {
     let entry = &dbg.table.entries[index];
     let ty = entry.ty;
@@ -520,6 +533,59 @@ pub fn values_window(dbg: &mut DebugState, pal: &Palette, ctx: &egui::Context) {
     }
 }
 
+/// Clicks on a shown value, as on the sheet: a bool takes left `true` and right `false`, a number
+/// opens the stepper window (array elements work the same way).
+fn click_value(
+    resp: &egui::Response,
+    dbg: &mut DebugState,
+    index: usize,
+    ty: SignalType,
+    forced: bool,
+) {
+    match ty {
+        SignalType::Bool => {
+            if resp.clicked() {
+                click_bool(dbg, index, true);
+            } else if resp.secondary_clicked() {
+                click_bool(dbg, index, false);
+            }
+        }
+        SignalType::Int | SignalType::Float => {
+            let is_int = ty == SignalType::Int;
+            let now = dbg.live.forced[index]
+                .or(dbg.live.values[index])
+                .map_or(0.0, as_f64);
+            let mut release = false;
+            let changed = egui::Popup::menu(resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    let v = crate::stepper::show(ui, resp.id, now, is_int);
+                    if forced && ui.button(crate::i18n::tr("Снять форсировку")).clicked()
+                    {
+                        release = true;
+                    }
+                    v
+                })
+                .and_then(|r| r.inner);
+            if let Some(v) = changed {
+                let value = if is_int {
+                    Value::Int(v as i32)
+                } else {
+                    Value::Float(v as f32)
+                };
+                dbg.send(Command::Force {
+                    index,
+                    value: Some(value),
+                });
+            }
+            if release {
+                dbg.send(Command::Force { index, value: None });
+            }
+        }
+        SignalType::String | SignalType::Any | SignalType::Number | SignalType::Same => {}
+    }
+}
+
 /// Name, live value and controls of one entry, as three grid cells.
 fn value_row(ui: &mut Ui, dbg: &mut DebugState, pal: &Palette, index: usize) {
     let entry = &dbg.table.entries[index];
@@ -530,16 +596,18 @@ fn value_row(ui: &mut Ui, dbg: &mut DebugState, pal: &Palette, index: usize) {
     ui.label(dbg.name(index))
         .context_menu(|ui| value_menu(ui, dbg, index));
     let text = current.map_or("—".to_owned(), |v| v.to_string());
-    if forced.is_some() {
+    let value_resp = if forced.is_some() {
         ui.label(
             egui::RichText::new(format!("{text} F"))
                 .monospace()
                 .color(pal.warning),
         )
-        .on_hover_text(crate::i18n::tr("Значение форсировано"));
+        .on_hover_text(crate::i18n::tr("Значение форсировано"))
     } else {
-        ui.monospace(text);
+        ui.monospace(text)
     }
+    .interact(egui::Sense::click());
+    click_value(&value_resp, dbg, index, ty, forced.is_some());
     ui.horizontal(|ui| {
         match ty {
             SignalType::Bool => {

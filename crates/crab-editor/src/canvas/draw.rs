@@ -347,7 +347,7 @@ pub(super) struct LinkOut {
     pub(super) wire_jump: Option<String>,
     /// Live values above the input end of each wire; drawn after the blocks to stay on top.
     pub(super) wire_labels: Vec<(Pos2, crab_debug::Value, bool, PortRef)>,
-    pub(super) text_labels: Vec<(Pos2, String)>,
+    pub(super) text_labels: Vec<(Pos2, String, PortRef)>,
 }
 
 /// Draws every link and collects clicks on them.
@@ -448,7 +448,7 @@ pub(super) fn draw_links(ui: &mut Ui, f: &Frame, live: Live, click_pos: Option<P
             .and_then(|d| d.text_output(&link.from))
             .or_else(|| sim.and_then(|s| s.text_output(&link.from)))
         {
-            text_labels.push((b, text.to_owned()));
+            text_labels.push((b, text.to_owned(), link.from.clone()));
         }
         let stroke = Stroke::new(if is_sel { width + 1.4 } else { width }, color);
         if let Some((area, forward, band)) = handle {
@@ -805,6 +805,8 @@ pub(super) struct PortOut {
     pub(super) port_menus: Vec<(PortRef, bool, SignalType, egui::Response)>,
     /// Value labels a click on which opens an editor: (label, output behind it).
     pub(super) value_hits: Vec<(Rect, PortRef)>,
+    /// Text values a click may change (simulation).
+    pub(super) text_hits: Vec<(Rect, PortRef)>,
     /// A wire drag that started on one of the ports.
     pub(super) wire_started: Option<WireDrag>,
 }
@@ -828,6 +830,7 @@ pub(super) fn draw_ports(ui: &mut Ui, f: &Frame, live: Live) -> PortOut {
     let editable = |port: &PortRef| live.editable(port);
     let mut wire_started = None;
     let mut value_hits: Vec<(Rect, PortRef)> = Vec::new();
+    let mut text_hits: Vec<(Rect, PortRef)> = Vec::new();
     let mut hits: Vec<Hit> = Vec::new();
     let mut port_menus: Vec<(PortRef, bool, SignalType, egui::Response)> = Vec::new();
     for block in &logic.blocks {
@@ -935,6 +938,11 @@ pub(super) fn draw_ports(ui: &mut Ui, f: &Frame, live: Live) -> PortOut {
                     }
                 } else if let Some(text) = dbg.and_then(|d| d.text_output(&port)) {
                     debugview::text_label(painter, &pal, pos, text, z, Place::Right);
+                } else if let Some(text) = sim.and_then(|s| s.text_output(&port)) {
+                    let rect = debugview::text_label(painter, &pal, pos, text, z, Place::Right);
+                    if editable(&port) {
+                        text_hits.push((rect, port.clone()));
+                    }
                 }
             }
             if real {
@@ -966,6 +974,7 @@ pub(super) fn draw_ports(ui: &mut Ui, f: &Frame, live: Live) -> PortOut {
         hits,
         port_menus,
         value_hits,
+        text_hits,
         wire_started,
     }
 }

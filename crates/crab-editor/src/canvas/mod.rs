@@ -300,19 +300,38 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         hits,
         port_menus,
         mut value_hits,
+        mut text_hits,
         wire_started,
     } = draw_ports(ui, &frame, live);
     if wire_started.is_some() {
         app.canvas.wire = wire_started;
     }
 
-    for (anchor, text) in text_labels {
-        debugview::text_label(&painter, &pal, anchor, &text, z, Place::Left);
+    for (anchor, text, port) in text_labels {
+        let rect = debugview::text_label(&painter, &pal, anchor, &text, z, Place::Left);
+        if app.sim.is_some() && editable(&port) {
+            text_hits.push((rect, port));
+        }
     }
     for (anchor, v, forced, port) in wire_labels {
         let rect = debugview::value_label(&painter, &pal, anchor, v, forced, z, Place::Left);
         if editable(&port) {
             value_hits.push((rect, port));
+        }
+    }
+    // A click on a text value in simulation opens a field to type a new one.
+    for (n, (rect, port)) in text_hits.into_iter().enumerate() {
+        let resp = ui.interact(rect, Id::unique(("text_label", n)), Sense::click());
+        let Some(sim) = &mut app.sim else { continue };
+        let Some(now) = sim.text_output(&port).map(str::to_owned) else {
+            continue;
+        };
+        let changed = egui::Popup::menu(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| crate::simview::text_edit(ui, resp.id, &now))
+            .and_then(|r| r.inner);
+        if let Some(text) = changed {
+            crate::simview::set_text(sim, &port, &text);
         }
     }
     // A left click on a value: switch a bool, type a number.
@@ -321,6 +340,101 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         let index = app.debug.as_ref().and_then(|d| d.table.output_index(&port));
         let mut debug = app.debug.take();
         let mut sim = app.sim.take();
+        // A bool is switched by clicks: left `true`, right `false`; the menu stays for the rest.
+        let dbg_bool = debug
+            .as_ref()
+            .zip(index)
+            .is_some_and(|(d, i)| debugview::bool_entry(d, i));
+        let sim_bool = sim
+            .as_ref()
+            .is_some_and(|s| crate::simview::bool_target(s, &port));
+        if dbg_bool || sim_bool {
+            let on = if resp.clicked() {
+                Some(true)
+            } else if resp.secondary_clicked() {
+                Some(false)
+            } else {
+                None
+            };
+            let inverted = app
+                .doc
+                .as_ref()
+                .and_then(|d| d.project.logic.block(&port.block))
+                .is_some_and(|b| b.inverted.contains(&port.port));
+            // The label shows the value after the inversion mark: the raw signal is the opposite.
+            if let Some(on) = on.map(|on| on != inverted) {
+                match (&mut debug, index, &mut sim) {
+                    (Some(d), Some(i), _) if dbg_bool => debugview::click_bool(d, i, on),
+                    (_, _, Some(s)) => {
+                        if let Some(doc) = &app.doc {
+                            crate::simview::click_bool(s, &doc.project.logic, &port, on);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            app.debug = debug;
+            app.sim = sim;
+            continue;
+        }
+        // A number: the small window with the stepper (left click +, right click -, hold, typing).
+        let number = match (&debug, index, &sim) {
+            (Some(d), Some(i), _) if !debugview::bool_entry(d, i) => {
+                let ty = d.table.entries[i].ty;
+                matches!(ty, SignalType::Int | SignalType::Float).then(|| {
+                    let now = d.live.forced[i]
+                        .or(d.live.values[i])
+                        .map_or(0.0, debugview::as_f64);
+                    (ty == SignalType::Int, now)
+                })
+            }
+            (_, _, Some(s)) => crate::simview::number_target(s, &port),
+            _ => None,
+        };
+        if let Some((is_int, now)) = number {
+            let forced = debug
+                .as_ref()
+                .zip(index)
+                .is_some_and(|(d, i)| d.live.forced[i].is_some());
+            let mut release = false;
+            let changed = egui::Popup::menu(&resp)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    let v = crate::stepper::show(ui, resp.id, now, is_int);
+                    if forced && ui.button(crate::i18n::tr("Снять форсировку")).clicked()
+                    {
+                        release = true;
+                    }
+                    v
+                })
+                .and_then(|r| r.inner);
+            if let (true, Some(d), Some(i)) = (release, &debug, index) {
+                d.send(crab_debug::Command::Force {
+                    index: i,
+                    value: None,
+                });
+            }
+            if let Some(v) = changed {
+                match (&mut debug, index, &mut sim) {
+                    (Some(d), Some(i), _) => {
+                        let value = if is_int {
+                            crab_debug::Value::Int(v as i32)
+                        } else {
+                            crab_debug::Value::Float(v as f32)
+                        };
+                        d.send(crab_debug::Command::Force {
+                            index: i,
+                            value: Some(value),
+                        });
+                    }
+                    (_, _, Some(s)) => crate::simview::set_number(s, &port, v),
+                    _ => {}
+                }
+            }
+            app.debug = debug;
+            app.sim = sim;
+            continue;
+        }
         egui::Popup::menu(&resp).show(|ui| {
             if let (Some(d), Some(i)) = (&mut debug, index) {
                 debugview::value_menu(ui, d, i);
@@ -499,6 +613,15 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
     }
     if let Some(s) = active_sheet {
         app.sheet = s;
+    }
+    if app.schema_locked() {
+        painter.text(
+            rect.left_top() + Vec2::new(12.0, 10.0),
+            Align2::LEFT_TOP,
+            crate::i18n::tr("Схема заблокирована: идёт отладка или симуляция"),
+            FontId::proportional(13.0),
+            pal.warning,
+        );
     }
     let lib = app.lib.clone();
     let (problems, added) = apply_edits(
