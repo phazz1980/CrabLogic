@@ -1,0 +1,476 @@
+# Stats of arrays in a module against the simulation: fill, copy, sum, min, max and find over
+# int, float, byte and bool arrays. The counter n runs 0, 1, 2... over the scans; the arrays a, b, f
+# are written by array_set blocks (so their stats change), the edges come from compare blocks on n.
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[array]]
+name = "a"
+type = "int"
+len = 5
+items = [3, -7, 9, 9, 1]
+
+[[array]]
+name = "b"
+type = "byte"
+len = 4
+items = [200, 100, 5]
+
+[[array]]
+name = "f"
+type = "float"
+len = 4
+items = [0.5, 2.5, -1.0]
+
+[[array]]
+name = "z"
+type = "bool"
+len = 3
+items = [true]
+
+[[array]]
+name = "fi"
+type = "int"
+len = 3
+
+[[array]]
+name = "fbf"
+type = "float"
+len = 2
+
+[[array]]
+name = "fby"
+type = "byte"
+len = 2
+
+[[array]]
+name = "fz2"
+type = "bool"
+len = 2
+
+[[array]]
+name = "ca"
+type = "int"
+len = 5
+
+[[array]]
+name = "cs"
+type = "int"
+len = 3
+
+[[array]]
+name = "cb"
+type = "byte"
+len = 4
+
+[[array]]
+name = "cf"
+type = "float"
+len = 4
+
+[[array]]
+name = "cz"
+type = "bool"
+len = 3
+
+# n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# Edges: ge1 = n >= 1, ge2 = n >= 2, ge3 = n >= 3, eq4 = n == 4, eq6 = n == 6.
+[[block]]
+id = "ge1"
+type = "compare"
+op = 5
+[block.const]
+b = 1
+
+[[block]]
+id = "ge2"
+type = "compare"
+op = 5
+[block.const]
+b = 2
+
+[[block]]
+id = "ge3"
+type = "compare"
+op = 5
+[block.const]
+b = 3
+
+[[block]]
+id = "eq4"
+type = "compare"
+op = 0
+[block.const]
+b = 4
+
+[[block]]
+id = "eq6"
+type = "compare"
+op = 0
+[block.const]
+b = 6
+
+[[link]]
+from = "nr.out"
+to = "ge1.a"
+
+[[link]]
+from = "nr.out"
+to = "ge2.a"
+
+[[link]]
+from = "nr.out"
+to = "ge3.a"
+
+[[link]]
+from = "nr.out"
+to = "eq4.a"
+
+[[link]]
+from = "nr.out"
+to = "eq6.a"
+
+# Writers of the sources: a[n] = n + 1, b[n] = n + 250 (wraps at 256), f[n] = n + 1, z[n] = (n >= 1).
+[[block]]
+id = "puta"
+type = "array_set"
+array = "a"
+
+[[link]]
+from = "nr.out"
+to = "puta.index"
+
+[[link]]
+from = "inc.out"
+to = "puta.value"
+
+[[block]]
+id = "plus250"
+type = "add"
+[block.const]
+b = 250
+
+[[link]]
+from = "nr.out"
+to = "plus250.a"
+
+[[block]]
+id = "putb"
+type = "array_set"
+array = "b"
+
+[[link]]
+from = "nr.out"
+to = "putb.index"
+
+[[link]]
+from = "plus250.out"
+to = "putb.value"
+
+[[block]]
+id = "putf"
+type = "array_set"
+array = "f"
+
+[[link]]
+from = "nr.out"
+to = "putf.index"
+
+[[link]]
+from = "inc.out"
+to = "putf.value"
+
+[[block]]
+id = "putz"
+type = "array_set"
+array = "z"
+
+[[link]]
+from = "nr.out"
+to = "putz.index"
+
+[[link]]
+from = "ge1.out"
+to = "putz.value"
+
+# Sum, minimum and maximum of the changing sources.
+[[block]]
+id = "sa_sum"
+type = "array_sum"
+array = "a"
+
+[[block]]
+id = "sa_min"
+type = "array_min"
+array = "a"
+
+[[block]]
+id = "sa_max"
+type = "array_max"
+array = "a"
+
+[[block]]
+id = "sb_sum"
+type = "array_sum"
+array = "b"
+
+[[block]]
+id = "sb_min"
+type = "array_min"
+array = "b"
+
+[[block]]
+id = "sb_max"
+type = "array_max"
+array = "b"
+
+[[block]]
+id = "sf_sum"
+type = "array_sum"
+array = "f"
+
+[[block]]
+id = "sf_min"
+type = "array_min"
+array = "f"
+
+[[block]]
+id = "sf_max"
+type = "array_max"
+array = "f"
+
+# Find: a constant value, a linked value, a byte value normalised to 100, a float, a bool value
+# normalised to 1.
+[[block]]
+id = "fa_const"
+type = "array_find"
+array = "a"
+[block.const]
+value = 9
+
+[[block]]
+id = "fa_link"
+type = "array_find"
+array = "a"
+
+[[link]]
+from = "inc.out"
+to = "fa_link.value"
+
+[[block]]
+id = "fb_norm"
+type = "array_find"
+array = "b"
+[block.const]
+value = 356
+
+[[block]]
+id = "ff_hit"
+type = "array_find"
+array = "f"
+[block.const]
+value = 2.5
+
+[[block]]
+id = "fz_norm"
+type = "array_find"
+array = "z"
+
+[[link]]
+from = "ge1.out"
+to = "fz_norm.value"
+
+# Fill: fi from n while n >= 3, fbf from n + 1 while n >= 2, fby from n + 250 (bytes) while n >= 2,
+# fz2 from n >= 1 while n >= 3.
+[[block]]
+id = "fill_i"
+type = "array_fill"
+array = "fi"
+
+[[link]]
+from = "nr.out"
+to = "fill_i.value"
+
+[[link]]
+from = "ge3.out"
+to = "fill_i.go"
+
+[[block]]
+id = "fill_f"
+type = "array_fill"
+array = "fbf"
+
+[[link]]
+from = "inc.out"
+to = "fill_f.value"
+
+[[link]]
+from = "ge2.out"
+to = "fill_f.go"
+
+[[block]]
+id = "fill_b"
+type = "array_fill"
+array = "fby"
+
+[[link]]
+from = "plus250.out"
+to = "fill_b.value"
+
+[[link]]
+from = "ge2.out"
+to = "fill_b.go"
+
+[[block]]
+id = "fill_z"
+type = "array_fill"
+array = "fz2"
+
+[[link]]
+from = "ge1.out"
+to = "fill_z.value"
+
+[[link]]
+from = "ge3.out"
+to = "fill_z.go"
+
+# Copy on the rising edge of eq4 (a to ca, a to cs), eq6 (b, f, z to cb, cf, cz).
+[[block]]
+id = "copy_a_ca"
+type = "array_copy"
+array = "a"
+dest = "ca"
+
+[[link]]
+from = "eq4.out"
+to = "copy_a_ca.go"
+
+[[block]]
+id = "copy_a_cs"
+type = "array_copy"
+array = "a"
+dest = "cs"
+
+[[link]]
+from = "eq4.out"
+to = "copy_a_cs.go"
+
+[[block]]
+id = "copy_b_cb"
+type = "array_copy"
+array = "b"
+dest = "cb"
+
+[[link]]
+from = "eq6.out"
+to = "copy_b_cb.go"
+
+[[block]]
+id = "copy_f_cf"
+type = "array_copy"
+array = "f"
+dest = "cf"
+
+[[link]]
+from = "eq6.out"
+to = "copy_f_cf.go"
+
+[[block]]
+id = "copy_z_cz"
+type = "array_copy"
+array = "z"
+dest = "cz"
+
+[[link]]
+from = "eq6.out"
+to = "copy_z_cz.go"
+
+# Stats of the copies.
+[[block]]
+id = "sc_sum"
+type = "array_sum"
+array = "cs"
+
+[[block]]
+id = "scb_max"
+type = "array_max"
+array = "cb"
+
+[[block]]
+id = "scf_min"
+type = "array_min"
+array = "cf"
+
+# Element reads that show the copies and the fills directly.
+[[block]]
+id = "g_ca4"
+type = "array_get"
+array = "ca"
+[block.const]
+index = 4
+
+[[block]]
+id = "g_cz2"
+type = "array_get"
+array = "cz"
+[block.const]
+index = 2
+
+[[block]]
+id = "g_fi2"
+type = "array_get"
+array = "fi"
+[block.const]
+index = 2
+
+[[block]]
+id = "g_fby1"
+type = "array_get"
+array = "fby"
+[block.const]
+index = 1
+
+[[block]]
+id = "g_fz1"
+type = "array_get"
+array = "fz2"
+[block.const]
+index = 1
+
+# Links for the fill values read by stats (source of the fill is the int counter).
+[[block]]
+id = "sum_fi"
+type = "array_sum"
+array = "fi"
+
+[[block]]
+id = "max_fbf"
+type = "array_max"
+array = "fbf"

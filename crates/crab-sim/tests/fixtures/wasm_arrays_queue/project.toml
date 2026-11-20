@@ -1,0 +1,6 @@
+[project]
+name = "wasm_arrays_queue"
+description = "Очереди массивов в модуле: сдвиг, кольцевой буфер и стек против симуляции"
+
+[board]
+fqbn = "esp32:esp32:esp32"

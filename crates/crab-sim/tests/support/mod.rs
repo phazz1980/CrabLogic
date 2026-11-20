@@ -39,7 +39,8 @@ fn word(program: &Program, label: &str, expected: f64) -> Word {
 /// Returns the number of watched outputs (the fixture must watch at least `min_outputs`).
 pub fn compare(name: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
     let lib = library();
-    let project = Project::load(repo_path(&format!("crates/crab-sim/tests/fixtures/{name}"))).unwrap();
+    let project =
+        Project::load(repo_path(&format!("crates/crab-sim/tests/fixtures/{name}"))).unwrap();
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module_with(1, true).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
@@ -51,6 +52,8 @@ pub fn compare(name: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
         built.watched.len(),
         built.watched
     );
+    // The distinct values each watched output took: a test where nothing moves proves nothing.
+    let mut seen: Vec<Vec<u32>> = vec![Vec::new(); built.watched.len()];
     for step in 0..steps {
         sim.step(dt).unwrap();
         module.step(dt).unwrap();
@@ -59,7 +62,23 @@ pub fn compare(name: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
             let expected = word(&program, label, sim.output(block, port).unwrap());
             let got = module.outputs()[i];
             assert_eq!(got, expected, "{name}, step {step}: {label}");
+            let bits = format!("{got:?}").len() as u32 ^ hash(&format!("{got:?}"));
+            if !seen[i].contains(&bits) {
+                seen[i].push(bits);
+            }
         }
     }
+    let moving = seen.iter().filter(|v| v.len() > 1).count();
+    assert!(
+        moving * 4 >= built.watched.len(),
+        "{name}: only {moving} of {} outputs ever change: the test would pass on any code",
+        built.watched.len()
+    );
     built.watched.len()
+}
+
+fn hash(text: &str) -> u32 {
+    text.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    })
 }

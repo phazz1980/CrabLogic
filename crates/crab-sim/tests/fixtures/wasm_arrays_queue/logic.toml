@@ -1,0 +1,359 @@
+# Queues of arrays in a module against the simulation: a shift register (int, float), a ring
+# buffer (int, byte) and a stack (int, bool). The edges come from `n`, the scan counter: odd scans
+# rise for push and go, `n % 3 == 0` rises for pop. Every array has one writer (its queue block).
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+# int ring of 3: written on the odd scans, wraps.
+[[array]]
+name = "ri"
+type = "int"
+len = 3
+
+# int shift register of 3, starts with 7.
+[[array]]
+name = "si"
+type = "int"
+len = 3
+items = [7]
+
+# float shift register of 4, starts with 1.5.
+[[array]]
+name = "sf"
+type = "float"
+len = 4
+items = [1.5]
+
+# byte ring of 2, starts with 200: values n + 250 wrap at 256.
+[[array]]
+name = "rb"
+type = "byte"
+len = 2
+items = [200]
+
+# int stack of 3.
+[[array]]
+name = "ki"
+type = "int"
+len = 3
+
+# bool stack of 2, starts with one true.
+[[array]]
+name = "kz"
+type = "bool"
+len = 2
+items = [true]
+
+# n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# n % 2 == 1: the odd scans (rising), and its opposite.
+[[block]]
+id = "m2"
+type = "mod"
+[block.const]
+b = 2
+
+[[link]]
+from = "nr.out"
+to = "m2.a"
+
+[[block]]
+id = "odd"
+type = "compare"
+op = 0
+[block.const]
+b = 1
+
+[[link]]
+from = "m2.out"
+to = "odd.a"
+
+[[block]]
+id = "even"
+type = "not"
+
+[[link]]
+from = "odd.out"
+to = "even.in"
+
+# n % 3 == 0: a pop every third scan.
+[[block]]
+id = "m3"
+type = "mod"
+[block.const]
+b = 3
+
+[[link]]
+from = "nr.out"
+to = "m3.a"
+
+[[block]]
+id = "zero3"
+type = "compare"
+op = 0
+[block.const]
+b = 0
+
+[[link]]
+from = "m3.out"
+to = "zero3.a"
+
+# n >= 1 for the bool stack; n + 250 for the byte ring.
+[[block]]
+id = "ge1"
+type = "compare"
+op = 5
+[block.const]
+b = 1
+
+[[link]]
+from = "nr.out"
+to = "ge1.a"
+
+[[block]]
+id = "p250"
+type = "add"
+[block.const]
+b = 250
+
+[[link]]
+from = "nr.out"
+to = "p250.a"
+
+# The int ring: value n + 1, push on odd scans.
+[[block]]
+id = "ri"
+type = "array_ring"
+array = "ri"
+
+[[link]]
+from = "inc.out"
+to = "ri.value"
+
+[[link]]
+from = "odd.out"
+to = "ri.push"
+
+# The int shift register: value n, go on odd scans.
+[[block]]
+id = "si"
+type = "array_shift"
+array = "si"
+
+[[link]]
+from = "nr.out"
+to = "si.value"
+
+[[link]]
+from = "odd.out"
+to = "si.go"
+
+# The float shift register: value n, go on even scans.
+[[block]]
+id = "sf"
+type = "array_shift"
+array = "sf"
+
+[[link]]
+from = "nr.out"
+to = "sf.value"
+
+[[link]]
+from = "even.out"
+to = "sf.go"
+
+# The byte ring: value n + 250, push on even scans.
+[[block]]
+id = "rb"
+type = "array_ring"
+array = "rb"
+
+[[link]]
+from = "p250.out"
+to = "rb.value"
+
+[[link]]
+from = "even.out"
+to = "rb.push"
+
+# The int stack: value n, push on odd scans, pop every third scan.
+[[block]]
+id = "ki"
+type = "array_stack"
+array = "ki"
+
+[[link]]
+from = "nr.out"
+to = "ki.value"
+
+[[link]]
+from = "odd.out"
+to = "ki.push"
+
+[[link]]
+from = "zero3.out"
+to = "ki.pop"
+
+# The bool stack: value n >= 1, push on even scans, pop every third scan.
+[[block]]
+id = "kz"
+type = "array_stack"
+array = "kz"
+
+[[link]]
+from = "ge1.out"
+to = "kz.value"
+
+[[link]]
+from = "even.out"
+to = "kz.push"
+
+[[link]]
+from = "zero3.out"
+to = "kz.pop"
+
+# Every element is read by a constant index; the queue blocks' outputs are watched as well.
+[[block]]
+id = "ri0"
+type = "array_get"
+array = "ri"
+[block.const]
+index = 0
+
+[[block]]
+id = "ri1"
+type = "array_get"
+array = "ri"
+[block.const]
+index = 1
+
+[[block]]
+id = "ri2"
+type = "array_get"
+array = "ri"
+[block.const]
+index = 2
+
+[[block]]
+id = "si0"
+type = "array_get"
+array = "si"
+[block.const]
+index = 0
+
+[[block]]
+id = "si1"
+type = "array_get"
+array = "si"
+[block.const]
+index = 1
+
+[[block]]
+id = "si2"
+type = "array_get"
+array = "si"
+[block.const]
+index = 2
+
+[[block]]
+id = "sf0"
+type = "array_get"
+array = "sf"
+[block.const]
+index = 0
+
+[[block]]
+id = "sf1"
+type = "array_get"
+array = "sf"
+[block.const]
+index = 1
+
+[[block]]
+id = "sf2"
+type = "array_get"
+array = "sf"
+[block.const]
+index = 2
+
+[[block]]
+id = "sf3"
+type = "array_get"
+array = "sf"
+[block.const]
+index = 3
+
+[[block]]
+id = "rb0"
+type = "array_get"
+array = "rb"
+[block.const]
+index = 0
+
+[[block]]
+id = "rb1"
+type = "array_get"
+array = "rb"
+[block.const]
+index = 1
+
+[[block]]
+id = "ki0"
+type = "array_get"
+array = "ki"
+[block.const]
+index = 0
+
+[[block]]
+id = "ki1"
+type = "array_get"
+array = "ki"
+[block.const]
+index = 1
+
+[[block]]
+id = "ki2"
+type = "array_get"
+array = "ki"
+[block.const]
+index = 2
+
+[[block]]
+id = "kz0"
+type = "array_get"
+array = "kz"
+[block.const]
+index = 0
+
+[[block]]
+id = "kz1"
+type = "array_get"
+array = "kz"
+[block.const]
+index = 1

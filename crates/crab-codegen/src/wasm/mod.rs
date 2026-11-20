@@ -226,7 +226,7 @@ impl Program<'_> {
             return Err(WasmError::Unsupported {
                 block: String::new(),
                 kind: String::new(),
-                reason: "строки не помещаются в 64 КБ памяти модуля".to_owned(),
+                reason: "строки и массивы не помещаются в 64 КБ памяти модуля".to_owned(),
             });
         }
         Ok(em.finish())

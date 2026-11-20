@@ -1,0 +1,6 @@
+[project]
+name = "wasm_arrays_stats"
+description = "Массивы: заполнение, копирование, сумма, минимум, максимум, поиск в модуле против симуляции"
+
+[board]
+fqbn = "esp32:esp32:esp32"
