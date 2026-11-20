@@ -61,6 +61,7 @@ mod tests {
             blocks += &format!("[[block]]\nid = \"b{i}\"\ntype = \"{k}\"\n");
         }
         Project {
+            panel: Default::default(),
             path: Default::default(),
             config: toml::from_str(&src).unwrap(),
             logic: toml::from_str(&blocks).unwrap(),

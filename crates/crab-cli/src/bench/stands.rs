@@ -374,6 +374,7 @@ struct Builder {
 impl Builder {
     fn new(name: &str, chip: Chip) -> Self {
         let project = Project {
+            panel: Default::default(),
             path: PathBuf::from("bench").join(format!("{name}.crab")),
             config: ProjectConfig {
                 project: ProjectInfo {

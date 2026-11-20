@@ -231,6 +231,7 @@ impl EditorApp {
             .unwrap_or("project")
             .to_owned();
         let project = Project {
+            panel: Default::default(),
             path: path.to_owned(),
             config: ProjectConfig {
                 project: ProjectInfo {

@@ -25,6 +25,7 @@ pub mod modbus_map;
 pub mod modbus_tags;
 pub mod pack;
 pub mod packed;
+pub mod panel;
 pub mod pins;
 pub mod project;
 pub mod protect;
@@ -53,6 +54,7 @@ pub use library::{
 pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
 pub use logic::{SheetExecution, SheetSpeed};
+pub use panel::{Device, DeviceKind, Panel, Supply};
 pub use pins::PinFunction;
 pub use project::{
     hash_hex, BoardConfig, Project, ProjectConfig, ProjectInfo, RetainConfig, RunConfig,

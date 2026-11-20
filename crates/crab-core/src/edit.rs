@@ -1358,6 +1358,7 @@ mod tests {
         let config: ProjectConfig =
             toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
         Project {
+            panel: Default::default(),
             path: Default::default(),
             config,
             logic: Logic::default(),

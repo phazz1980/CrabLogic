@@ -8,7 +8,7 @@
 //! [`crate::arrays`]) that the blocks reach by name, like the arrays.
 //!
 //! Strings are not supported in a structure that blocks use (the check says so), and a field may not
-//! be called `go`: that is the enable input of `struct_pack`.
+//! be called `en`: that is the enable input of `struct_pack`.
 
 use std::collections::BTreeMap;
 
@@ -23,8 +23,9 @@ pub const STRUCT_PARAM: &str = "struct";
 pub const PACK: &str = "struct_pack";
 /// Gives the fields of the structure on the outputs.
 pub const UNPACK: &str = "struct_unpack";
-/// Enable input of `struct_pack`: the fields are written while it is true.
-pub const GO: &str = "go";
+/// Enable input of `struct_pack`, the first one: the fields are written while it is true. (Called
+/// `go` in older projects, which are migrated on load.)
+pub const GO: &str = "en";
 
 pub fn is_struct_kind(kind: &str) -> bool {
     kind == PACK || kind == UNPACK
@@ -70,7 +71,7 @@ pub fn caption(kind: &str) -> (&'static str, &'static str) {
     if kind == PACK {
         (
             "Структура: запись",
-            "Пока вход go включён, записывает входы в поля структуры.",
+            "Пока вход en включён, записывает входы в поля структуры.",
         )
     } else {
         ("Структура: чтение", "Отдаёт поля структуры на выходы.")
@@ -135,6 +136,16 @@ pub(crate) fn derived_key(logic: &Logic, block: &Block) -> Option<String> {
 pub(crate) fn derive(logic: &Logic, block: &Block) -> Option<LibraryBlock> {
     let st = named(logic, block)?;
     let mut derived = base(&block.kind);
+    if block.kind == PACK {
+        let mut go = port(
+            GO,
+            crate::SignalType::Bool,
+            "Разрешение записи; не подключён — запись всегда",
+            true,
+        );
+        go.default = Some(ParamValue::Bool(true));
+        derived.def.inputs.insert(0, go);
+    }
     for f in &st.fields {
         let signal = f.ty.signal();
         if block.kind == PACK {
@@ -154,16 +165,6 @@ pub(crate) fn derive(logic: &Logic, block: &Block) -> Option<LibraryBlock> {
                 .outputs
                 .push(port(&f.name, signal, "Значение поля", false));
         }
-    }
-    if block.kind == PACK {
-        let mut go = port(
-            GO,
-            crate::SignalType::Bool,
-            "Записывать, пока включено",
-            true,
-        );
-        go.default = Some(ParamValue::Bool(true));
-        derived.def.inputs.push(go);
     }
     Some(derived)
 }
@@ -226,15 +227,15 @@ mod tests {
         assert_eq!(
             ins,
             [
+                ("en", SignalType::Bool),
                 ("temp", SignalType::Float),
                 ("time", SignalType::Int),
-                ("fan", SignalType::Bool),
-                ("go", SignalType::Bool)
+                ("fan", SignalType::Bool)
             ]
         );
-        // A field without a wire keeps its initial value; `go` is on.
-        assert_eq!(pack.def.inputs[0].default, Some(ParamValue::Float(60.0)));
-        assert_eq!(pack.def.inputs[3].default, Some(ParamValue::Bool(true)));
+        // A field without a wire keeps its initial value; `en` is on.
+        assert_eq!(pack.def.inputs[1].default, Some(ParamValue::Float(60.0)));
+        assert_eq!(pack.def.inputs[0].default, Some(ParamValue::Bool(true)));
         assert!(pack.def.outputs.is_empty());
         let unpack = lib.resolve(&l, &block(UNPACK, "recipe")).unwrap();
         assert_eq!(unpack.def.outputs.len(), 3);

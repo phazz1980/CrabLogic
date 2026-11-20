@@ -48,14 +48,16 @@ impl StructState {
         }
     }
 
-    /// `struct_pack` on one scan: while `go` is true every field takes its input (inputs are the
-    /// fields in order, then `go`).
+    /// `struct_pack` on one scan: while `en` is true every field takes its input (inputs are `en`,
+    /// then the fields in order).
     pub fn pack(&mut self, inputs: &[f64]) {
-        let n = self.fields.len();
-        if inputs.get(n).is_some_and(|go| *go == 0.0) {
+        let Some((en, values)) = inputs.split_first() else {
+            return;
+        };
+        if *en == 0.0 {
             return;
         }
-        for (field, value) in self.fields.iter_mut().zip(inputs) {
+        for (field, value) in self.fields.iter_mut().zip(values) {
             field.2 = store(field.1, *value);
         }
     }
@@ -106,16 +108,16 @@ mod tests {
     }
 
     #[test]
-    fn pack_stores_by_type_and_waits_for_go() {
+    fn pack_stores_by_type_and_waits_for_en() {
         let mut s = StructState::new(&recipe());
-        // `time` is a byte, `fan` a bool; go is on.
-        s.pack(&[1.0, 300.0, 7.0, 1.0]);
+        // `time` is a byte, `fan` a bool; en is on.
+        s.pack(&[1.0, 1.0, 300.0, 7.0]);
         assert_eq!(
             (s.num("temp"), s.num("time"), s.num("fan")),
             (1.0, 44.0, 1.0)
         );
-        // go is off: nothing changes.
-        s.pack(&[9.0, 9.0, 0.0, 0.0]);
+        // en is off: nothing changes.
+        s.pack(&[0.0, 9.0, 9.0, 0.0]);
         assert_eq!(
             (s.num("temp"), s.num("time"), s.num("fan")),
             (1.0, 44.0, 1.0)

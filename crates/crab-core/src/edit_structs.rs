@@ -247,6 +247,7 @@ fqbn = \"x:y:z\"
         )
         .unwrap();
         Project {
+            panel: Default::default(),
             path: Default::default(),
             config,
             logic: Logic::default(),
@@ -289,8 +290,8 @@ fqbn = \"x:y:z\"
         assert!(p.add_struct(s).is_err(), "no fields");
         let mut s = recipe();
         s.name = "other".into();
-        s.fields.push(field("go", ElemType::Int));
-        assert!(p.add_struct(s).is_err(), "go is taken");
+        s.fields.push(field("en", ElemType::Int));
+        assert!(p.add_struct(s).is_err(), "en is taken");
         let mut s = recipe();
         s.name = "other".into();
         s.fields.push(field("text", ElemType::String));

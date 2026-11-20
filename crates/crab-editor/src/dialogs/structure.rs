@@ -1,6 +1,6 @@
 //! Window of a structure (`specs/arrays-structs`, task 3b): name, description and the table of
 //! fields (name, type, initial value). A structure takes scalar fields only: bool, int, float and
-//! byte; the checks of the project (names, `go`, repeated fields) are made when the window applies.
+//! byte; the checks of the project (names, `en`, repeated fields) are made when the window applies.
 
 use super::array::parse_item;
 use super::*;

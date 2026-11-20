@@ -274,6 +274,7 @@ mod tests {
             ..Logic::default()
         };
         let mut project = Project {
+            panel: Default::default(),
             path: "t.crab".into(),
             config,
             logic,

@@ -5,14 +5,14 @@ mod support;
 
 #[test]
 fn pack_and_unpack_match_the_simulation() {
-    // 14 scans: `cnt` wraps past 255 on scan 10, `go` is off on scans 4..7.
+    // 14 scans: `cnt` wraps past 255 on scan 10, `en` is off on scans 4..7.
     let n = support::compare("wasm_structs_basic", 4, 14, 10);
     assert!(n >= 4);
 }
 
 #[test]
 fn unwired_pack_inputs_take_constants_and_initial_values() {
-    // `temp` is a constant, `cnt` has no wire (its initial value), `go` is on by default.
+    // `temp` is a constant, `cnt` has no wire (its initial value), `en` is on by default.
     let n = support::compare("wasm_structs_defaults", 3, 8, 10);
     assert!(n >= 3);
 }

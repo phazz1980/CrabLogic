@@ -148,7 +148,7 @@ to = "pk.on"
 
 [[link]]
 from = "gate.out"
-to = "pk.go"
+to = "pk.en"
 
 # Reads the fields back: every output changes over the scans or holds while `go` is off.
 [[block]]

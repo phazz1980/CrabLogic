@@ -651,7 +651,7 @@ mod tests {
             structs: vec![
                 st("ok", vec![field("a", ElemType::Int)]),
                 st("text", vec![field("t", ElemType::String)]),
-                st("busy", vec![field("go", ElemType::Int)]),
+                st("busy", vec![field("en", ElemType::Int)]),
             ],
             blocks: vec![
                 sblock("none", "struct_pack", None),

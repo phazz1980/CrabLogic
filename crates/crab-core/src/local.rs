@@ -334,6 +334,7 @@ local = "ssid"
         )
         .unwrap();
         Project {
+            panel: Default::default(),
             path: PathBuf::from("p.crab"),
             config: toml::from_str(
                 "[project]\nname = \"p\"\n[board]\nfqbn = \"esp32:esp32:esp32\"\n",

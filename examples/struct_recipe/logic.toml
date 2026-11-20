@@ -58,7 +58,7 @@ pin = 2
 
 [[link]]
 from = "save.out"
-to   = "recipe_pack1.go"
+to   = "recipe_pack1.en"
 
 [[link]]
 from = "fan_button.out"

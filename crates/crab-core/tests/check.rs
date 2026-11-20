@@ -558,6 +558,7 @@ fn board_project(blocks: &str) -> Project {
     let src =
         format!("[[expander]]\nid = \"relays\"\nchip = \"pcf8574\"\naddress = 0x24\n{blocks}");
     Project {
+        panel: Default::default(),
         path: Default::default(),
         config: toml::from_str(
             "[project]\nname = \"p\"\n[board]\nmodel = \"mine\"\nfqbn = \"esp32:esp32:esp32\"\n",
@@ -1049,4 +1050,26 @@ fn check_project_kinds(project: &Project, lib: &Library) -> Vec<DiagKind> {
         .iter()
         .map(|d| d.kind)
         .collect()
+}
+
+#[test]
+fn the_old_go_input_of_struct_pack_becomes_en_on_load() {
+    let dir = std::env::temp_dir().join(format!("crab-go-en-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("project.toml"),
+        "[project]\nname = \"t\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("logic.toml"),
+        "[[struct]]\nname = \"s\"\n\n[[struct.field]]\nname = \"a\"\ntype = \"int\"\n\n\
+         [[block]]\nid = \"b\"\ntype = \"digital_in\"\npin = 4\n\n\
+         [[block]]\nid = \"p\"\ntype = \"struct_pack\"\nstruct = \"s\"\n\n\
+         [[link]]\nfrom = \"b.out\"\nto = \"p.go\"\n",
+    )
+    .unwrap();
+    let project = crab_core::Project::load(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(project.logic.links[0].to.port, "en");
 }

@@ -16,8 +16,9 @@ use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::panel::PANEL_FILE;
 use crate::toml_io::{parse_toml, read_toml, to_toml};
-use crate::{Error, Layout, Logic, Result};
+use crate::{Error, Layout, Logic, Panel, Result};
 
 /// Extension of project files.
 pub const PROJECT_EXT: &str = "crab";
@@ -202,6 +203,9 @@ pub struct Project {
     pub logic: Logic,
     /// Empty if there is no `layout.toml` (e.g. the schema was written by hand or by AI).
     pub layout: Layout,
+    /// Electrical panel (`panel.toml`); empty if the project has none. It feeds the electrical
+    /// documentation only, so it is not part of [`Project::content_hash`].
+    pub panel: Panel,
 }
 
 impl Project {
@@ -391,11 +395,16 @@ impl Project {
             let web: Logic = parse_toml(&text, &inner(WEB_FILE))?;
             logic.blocks.extend(web.blocks);
         }
+        let panel = match entry(PANEL_FILE)? {
+            Some(text) => parse_toml(&text, &inner(PANEL_FILE))?,
+            None => Panel::default(),
+        };
         Ok(Self {
             path: path.to_owned(),
             config,
             logic,
             layout,
+            panel,
         }
         .migrated())
     }
@@ -409,6 +418,7 @@ impl Project {
             config: parse_toml(project, &at(PROJECT_FILE))?,
             logic: parse_toml(logic, &at(LOGIC_FILE))?,
             layout: parse_toml(layout, &at(LAYOUT_FILE))?,
+            panel: Panel::default(),
         }
         .migrated())
     }
@@ -427,6 +437,12 @@ impl Project {
         } else {
             Layout::default()
         };
+        let panel_path = dir.join(PANEL_FILE);
+        let panel = if panel_path.exists() {
+            read_toml(&panel_path)?
+        } else {
+            Panel::default()
+        };
         let name = dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -436,6 +452,7 @@ impl Project {
             config,
             logic,
             layout,
+            panel,
         }
         .migrated())
     }
@@ -444,6 +461,7 @@ impl Project {
     fn migrated(mut self) -> Self {
         crate::uart::migrate_legacy(&mut self.config.uart, &mut self.logic);
         migrate_wifi_mode(&mut self.logic);
+        migrate_struct_enable(&mut self.logic);
         migrate_threshold_compare(&mut self.logic);
         crate::uart::migrate_uart_send(&mut self.logic);
         self.logic.sync_tags();
@@ -518,7 +536,8 @@ impl Project {
 
     /// The text of the schema files as they are stored: the web page blocks go to
     /// `web.toml` (written only when there are any), the rest of the logic stays in
-    /// `logic.toml`. `with_layout` adds `layout.toml` at the end.
+    /// `logic.toml`. `with_layout` adds `layout.toml` and `panel.toml` (when the panel is not
+    /// empty) at the end: the files of the archive that do not count for the hash.
     fn files(&self, with_layout: bool) -> Result<Vec<(&'static str, String)>> {
         let inner = |name: &str| self.path.join(name);
         let (web, rest): (Vec<_>, Vec<_>) = self
@@ -544,6 +563,10 @@ impl Project {
         }
         if with_layout {
             files.push((LAYOUT_FILE, to_toml(&self.layout, &inner(LAYOUT_FILE))?));
+            // Like the layout, the panel does not change the firmware: it stays out of the hash.
+            if !self.panel.is_empty() {
+                files.push((PANEL_FILE, to_toml(&self.panel, &inner(PANEL_FILE))?));
+            }
         }
         Ok(files)
     }
@@ -614,6 +637,30 @@ fn zip_err(path: &Path, source: ZipError) -> Error {
     Error::Archive {
         path: path.to_owned(),
         source,
+    }
+}
+
+/// The enable input of `struct_pack` was called `go` and stood last; it is `en` and stands first.
+fn migrate_struct_enable(logic: &mut Logic) {
+    let packs: Vec<String> = logic
+        .blocks
+        .iter()
+        .filter(|b| b.kind == crate::struct_blocks::PACK)
+        .map(|b| b.id.clone())
+        .collect();
+    for link in &mut logic.links {
+        if packs.contains(&link.to.block) && link.to.port == "go" {
+            link.to.port = crate::struct_blocks::GO.into();
+        }
+    }
+    for block in logic
+        .blocks
+        .iter_mut()
+        .filter(|b| b.kind == crate::struct_blocks::PACK)
+    {
+        if let Some(v) = block.consts.remove("go") {
+            block.consts.insert(crate::struct_blocks::GO.into(), v);
+        }
     }
 }
 
@@ -774,6 +821,7 @@ fqbn = \"x:y:z\"
         assert!(!toml::to_string(&config).unwrap().contains("[run]"));
         config.run.period_ms = 2;
         let project = Project {
+            panel: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -793,6 +841,7 @@ fqbn = \"x:y:z\"
         let config: ProjectConfig =
             toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
         let project = Project {
+            panel: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -803,6 +852,66 @@ fqbn = \"x:y:z\"
         let mut zip = ZipArchive::new(File::open(&project.path).unwrap()).unwrap();
         assert!(zip.by_name(BOARDS_PDF).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn panel_is_stored_in_the_archive_only_when_not_empty() {
+        use crate::panel::{Device, DeviceKind};
+        let dir = std::env::temp_dir().join(format!("crab-panel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config: ProjectConfig =
+            toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
+        let mut project = Project {
+            panel: Default::default(),
+            path: dir.join("t.crab"),
+            config,
+            logic: Logic::default(),
+            layout: Layout::default(),
+        };
+        let has_panel = |path: &Path| {
+            let mut zip = ZipArchive::new(File::open(path).unwrap()).unwrap();
+            let found = zip.by_name(PANEL_FILE).is_ok();
+            found
+        };
+        project.save().unwrap();
+        assert!(!has_panel(&project.path));
+
+        let hash = project.content_hash().unwrap();
+        project.panel.devices.push(Device {
+            id: "K1".into(),
+            kind: DeviceKind::Contactor,
+            rating: "230 В, 9 А".into(),
+            part: String::new(),
+            bind: "pump.out".into(),
+            load: "M1".into(),
+        });
+        project.save().unwrap();
+        assert!(has_panel(&project.path));
+        assert_eq!(Project::load(&project.path).unwrap(), project);
+        // The panel does not change the firmware, so the board still runs "this" project.
+        assert_eq!(project.content_hash().unwrap(), hash);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_folder_with_panel_toml_is_read() {
+        let dir = std::env::temp_dir().join(format!("crab-panel-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(PROJECT_FILE),
+            "[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join(LOGIC_FILE), "").unwrap();
+        std::fs::write(
+            dir.join(PANEL_FILE),
+            "supply = \"dc24\"\n[[device]]\nid = \"G1\"\nkind = \"psu\"\n",
+        )
+        .unwrap();
+        let project = Project::load(&dir).unwrap();
+        assert_eq!(project.panel.devices.len(), 1);
+        assert_eq!(project.panel.supply, crate::Supply::Dc24);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -821,6 +930,7 @@ fqbn = \"x:y:z\"
         assert!(!toml::to_string(&config).unwrap().contains("host"));
         config.board.host = Some("192.168.1.50:4040".into());
         let project = Project {
+            panel: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -846,6 +956,7 @@ fqbn = \"x:y:z\"
         )
         .unwrap();
         let project = Project {
+            panel: Default::default(),
             path: PathBuf::from("t.crab"),
             config,
             logic: Logic::default(),

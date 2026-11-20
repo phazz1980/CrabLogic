@@ -403,6 +403,7 @@ type = \"{kind}\"
         );
     }
     Project {
+        panel: Default::default(),
         path: Default::default(),
         config: toml::from_str(
             "[project]

@@ -238,6 +238,7 @@ fqbn = \"x:y:z\"
         )
         .unwrap();
         let mut p = Project {
+            panel: Default::default(),
             path: Default::default(),
             config,
             logic: Logic::default(),

@@ -1,5 +1,5 @@
 //! Structure blocks in a module (`specs/arrays-structs`, task 3b): `struct_pack` writes the field
-//! inputs while `go` is true, `struct_unpack` gives the fields on its outputs. A structure used by
+//! inputs while `en` is true, `struct_unpack` gives the fields on its outputs. A structure used by
 //! the blocks of one sheet is a region of the module memory with a 4-byte slot per field; the initial
 //! values are a data segment. The numbers match `crates/crab-sim/src/structs.rs`: a field is stored as
 //! its type is stored (see `array.rs`). The code is straight-line, no loops.
@@ -20,16 +20,16 @@ impl Emitter<'_, '_> {
         let name = struct_name(inst.block).unwrap_or_default().to_owned();
         let slots = self.struct_mem(inst, &name)?;
         if inst.block.kind == PACK {
-            // Inputs are the fields in order, then `go`.
-            self.flag(inst, slots.len());
+            // Inputs are `en`, then the fields in order.
+            self.flag(inst, 0);
             self.op(I::If(BlockType::Empty));
             for (i, mem) in slots.iter().enumerate() {
                 self.c_i(0);
                 if mem.ty == ElemType::Bool {
                     // Not a conversion: a bool field is `value != 0`, as the simulation stores it.
-                    self.flag(inst, i);
+                    self.flag(inst, i + 1);
                 } else {
-                    self.input_as(inst, i, mem.ty_of());
+                    self.input_as(inst, i + 1, mem.ty_of());
                 }
                 self.array_store(*mem);
             }

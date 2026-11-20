@@ -716,6 +716,7 @@ mod tests {
             .any(|(n, _)| n == "user_blocks/Раздел/Папка/mine/block.toml"));
 
         let project = Project {
+            panel: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -874,6 +875,7 @@ fqbn = \"x:y:z\"
             ..Default::default()
         });
         let project = Project {
+            panel: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -977,6 +979,7 @@ name = \"OUT1\"
         assert!(errors.is_empty(), "{errors:?}");
 
         let project = Project {
+            panel: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -1062,6 +1065,7 @@ model = \"mine\"
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let project = Project {
+            panel: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap(),
             logic: Logic::default(),
