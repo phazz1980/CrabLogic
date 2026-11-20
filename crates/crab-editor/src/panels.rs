@@ -1309,6 +1309,23 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
                 .push((&info.kind, text, &info.description));
         }
     }
+    // The array blocks are built in, not files of the library: they get their own group.
+    for op in crab_core::array_blocks::ArrayOp::ALL {
+        let (name, description) = op.caption();
+        let hay = format!(
+            "{} {name} {} {description}",
+            op.kind(),
+            crate::i18n::tr(name)
+        )
+        .to_lowercase();
+        if needle.is_empty() || hay.contains(&needle) {
+            groups.entry("Массивы").or_default().push((
+                op.kind(),
+                crate::i18n::tr(name).to_owned(),
+                description,
+            ));
+        }
+    }
     let mut add = None;
     // (type, action): 0 — open, 1 — copy, 2 — delete.
     let mut edit: Option<(String, u8)> = None;
@@ -1380,10 +1397,7 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
 /// only drags, so the clicks (and double clicks) come from the label inside it.
 /// Blocks of `ids` that stand on a sheet, in reading order: by sheet, then top to
 /// bottom and left to right.
-pub(crate) fn placed_images<'a>(
-    project: &Project,
-    ids: impl Iterator<Item = &'a str>,
-) -> Vec<String> {
+fn placed_images<'a>(project: &Project, ids: impl Iterator<Item = &'a str>) -> Vec<String> {
     let mut images: Vec<(&BlockPos, &str)> = ids
         .filter_map(|id| Some((project.layout.blocks.get(id)?, id)))
         .collect();

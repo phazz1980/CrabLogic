@@ -93,6 +93,10 @@ impl Project {
         kind: &str,
         pos: BlockPos,
     ) -> Result<String, EditError> {
+        // The array blocks are built in: their kind depends on the array, chosen later.
+        if let Some(op) = crate::array_blocks::ArrayOp::from_kind(kind) {
+            return Ok(self.add_array_op_block(op, pos));
+        }
         if lib.get(kind).is_none() {
             return Err(EditError::UnknownType(kind.to_owned()));
         }

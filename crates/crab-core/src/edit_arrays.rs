@@ -103,6 +103,30 @@ impl Project {
         Ok(())
     }
 
+    /// Adds a block of the array operation `op` from the library: the array is taken when the
+    /// project has exactly one that the block fits, otherwise it is chosen in the properties.
+    pub(crate) fn add_array_op_block(&mut self, op: ArrayOp, pos: BlockPos) -> String {
+        let id = (1..)
+            .map(|n| format!("{}_{n}", op.kind()))
+            .find(|id| self.logic.block(id).is_none())
+            .expect("infinite range");
+        let only = match self.logic.arrays.as_slice() {
+            [a] if op.exists_for(a.ty) => Some(a.name.clone()),
+            _ => None,
+        };
+        self.logic.blocks.push(Block {
+            id: id.clone(),
+            kind: op.kind().to_owned(),
+            params: only
+                .into_iter()
+                .map(|name| (ARRAY_PARAM.to_owned(), ParamValue::Text(name)))
+                .collect(),
+            ..Default::default()
+        });
+        self.layout.blocks.insert(id.clone(), pos);
+        id
+    }
+
     /// Adds a block of the array operation `op` for the array `array` and returns its id
     /// (`window_r1`, `window_ring1`, ...). The block of a copy has no destination yet.
     pub fn add_array_block(
@@ -269,6 +293,39 @@ mod tests {
         assert!(p.layout.blocks.is_empty());
         assert!(p.remove_array("a").is_err());
         assert_eq!(p.logic.arrays.len(), 1);
+    }
+
+    #[test]
+    fn a_library_block_takes_the_only_array_that_fits() {
+        let lib = crate::Library::default();
+        let mut p = project();
+        // No array yet: the block stands there and the array is chosen later.
+        let none = p.add_block(&lib, "array_get", POS).unwrap();
+        assert_eq!(none, "array_get_1");
+        assert!(p.logic.block(&none).unwrap().params.is_empty());
+        // Exactly one array: the next block takes it.
+        p.add_array(array("a", ElemType::Int, 4)).unwrap();
+        let one = p.add_block(&lib, "array_set", POS).unwrap();
+        assert_eq!(
+            p.logic.block(&one).unwrap().params.get(ARRAY_PARAM),
+            Some(&ParamValue::Text("a".into()))
+        );
+        assert_eq!(p.add_block(&lib, "array_get", POS).unwrap(), "array_get_2");
+        // Two arrays: the user chooses.
+        p.add_array(array("b", ElemType::Int, 4)).unwrap();
+        let two = p.add_block(&lib, "array_get", POS).unwrap();
+        assert!(p.logic.block(&two).unwrap().params.is_empty());
+        // A sum does not fit a string array: not taken.
+        let mut q = project();
+        q.add_array(array("s", ElemType::String, 2)).unwrap();
+        let sum = q.add_block(&lib, "array_sum", POS).unwrap();
+        assert!(q.logic.block(&sum).unwrap().params.is_empty());
+        assert!(q.layout.blocks.contains_key(&sum));
+        // The library still refuses a kind it does not know.
+        assert!(matches!(
+            q.add_block(&lib, "array_nope", POS),
+            Err(EditError::UnknownType(_))
+        ));
     }
 
     #[test]
