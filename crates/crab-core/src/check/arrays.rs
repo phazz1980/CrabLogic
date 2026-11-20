@@ -100,8 +100,9 @@ pub(super) fn check_arrays(logic: &Logic, report: &mut Report) {
 }
 
 /// The blocks that reach an array: it exists, the destination of a copy is another array of the same
-/// type, sum / min / max have numbers to work on, a constant index is inside the array, and the
-/// array is written from one block only (like a variable: the order of two writers would be luck).
+/// type, sum / min / max have numbers to work on, a constant index is inside the array, and a
+/// second block that writes the same array gets a warning (not an error: they may write different
+/// elements).
 pub(super) fn check_array_blocks(logic: &Logic, report: &mut Report) {
     use crate::array_blocks::{ArrayOp, ARRAY_PARAM, DEST_PARAM};
     // Remembers who writes an array first; a second writer is an error.
@@ -112,10 +113,14 @@ pub(super) fn check_array_blocks(logic: &Logic, report: &mut Report) {
         report: &mut Report,
     ) {
         match writers.get(array) {
-            Some(prev) => report.block_error(
+            // Several writers are allowed (different elements, different moments), but the order of
+            // their writes in a scan is the order of execution, so the user is warned.
+            Some(prev) => report.push(
                 DiagKind::Array,
-                block,
-                format!("массив «{array}» уже записывается блоком «{prev}»"),
+                Severity::Warning,
+                Some(block),
+                None,
+                format!("массив «{array}» уже записывается блоком «{prev}»: порядок записей — порядок выполнения блоков"),
             ),
             None => {
                 writers.insert(array, block);
@@ -449,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn an_array_is_written_by_one_block() {
+    fn a_second_writer_gets_a_warning() {
         let logic = with_blocks(
             vec![
                 array("a", ElemType::Int, 4, Vec::new()),
@@ -462,9 +467,17 @@ mod tests {
                 block("only", "array_set", "b"),
             ],
         );
-        let m = block_messages(&logic);
-        assert_eq!(m.len(), 1, "{m:?}");
-        assert!(m[0].contains("уже записывается блоком «w1»"), "{m:?}");
+        let mut report = Report::default();
+        check_array_blocks(&logic, &mut report);
+        assert_eq!(report.diagnostics.len(), 1, "{:?}", report.diagnostics);
+        let d = &report.diagnostics[0];
+        assert_eq!(d.severity, Severity::Warning);
+        assert!(
+            d.message.contains("уже записывается блоком «w1»"),
+            "{}",
+            d.message
+        );
+        assert!(!report.has_errors());
     }
 
     #[test]
