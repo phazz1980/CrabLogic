@@ -101,6 +101,9 @@ pub(super) fn apply_edits(
             let result = match item {
                 DragItem::Block(kind) => doc.edit(lib, None, |p| p.add_block(lib, &kind, pos)),
                 DragItem::Var(name) => doc.edit(lib, None, |p| p.add_var_block(&name, false, pos)),
+                DragItem::Array(name) => doc.edit(lib, None, |p| {
+                    p.add_array_block(crab_core::array_blocks::ArrayOp::Get, &name, pos)
+                }),
                 DragItem::Setting { id, name, ty, feed } => doc.edit(lib, None, |p| {
                     crate::netpanel::pull_out(p, lib, &id, &name, ty, feed, pos)
                 }),

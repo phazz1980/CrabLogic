@@ -11,6 +11,7 @@ pub mod check;
 pub mod cost;
 pub mod devices;
 pub mod edit;
+mod edit_arrays;
 pub mod error;
 pub mod expander;
 pub mod ident;

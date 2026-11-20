@@ -96,7 +96,8 @@ impl ArrayOp {
         }
     }
 
-    fn caption(self) -> (&'static str, &'static str) {
+    /// Name and description of the block in Russian.
+    pub fn caption(self) -> (&'static str, &'static str) {
         match self {
             ArrayOp::Get => ("Массив: чтение", "Читает элемент массива по индексу."),
             ArrayOp::Set => ("Массив: запись", "Записывает значение в элемент массива по индексу."),

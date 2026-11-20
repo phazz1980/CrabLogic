@@ -10,6 +10,7 @@
 mod ai;
 mod aiconf;
 mod app;
+mod arraypanel;
 mod assoc;
 mod blockedit;
 mod blockio;

@@ -735,6 +735,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     let mut remove_tag: Option<String> = None;
     let mut net_actions = Vec::new();
     let mut display_actions = Vec::new();
+    let mut array_actions = Vec::new();
     let mut radio_actions = Vec::new();
     let mut uart_actions = Vec::new();
 
@@ -981,6 +982,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             let mut uart_blocks = Vec::new();
             uart_actions = crate::uartpanel::show(app, ui, &mut uart_blocks);
             display_actions = crate::displaypanel::show(app, ui);
+            array_actions = crate::arraypanel::show(app, ui);
             radio_actions = crate::radiopanel::show(app, ui);
             radio_actions.append(&mut uart_blocks);
             // The «Сеть» folder adds the actions of its Modbus folder to the radio ones.
@@ -1068,6 +1070,7 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
     }
     crate::netpanel::apply(app, net_actions);
     crate::displaypanel::apply(app, display_actions);
+    crate::arraypanel::apply(app, array_actions);
     crate::radiopanel::apply(app, radio_actions);
     crate::uartpanel::apply(app, uart_actions);
     if new_var {
@@ -1377,7 +1380,10 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
 /// only drags, so the clicks (and double clicks) come from the label inside it.
 /// Blocks of `ids` that stand on a sheet, in reading order: by sheet, then top to
 /// bottom and left to right.
-fn placed_images<'a>(project: &Project, ids: impl Iterator<Item = &'a str>) -> Vec<String> {
+pub(crate) fn placed_images<'a>(
+    project: &Project,
+    ids: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
     let mut images: Vec<(&BlockPos, &str)> = ids
         .filter_map(|id| Some((project.layout.blocks.get(id)?, id)))
         .collect();

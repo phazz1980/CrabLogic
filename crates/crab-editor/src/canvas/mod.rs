@@ -52,6 +52,8 @@ pub enum DragItem {
     Block(String),
     /// Variable: the side the first link comes to decides read or write.
     Var(String),
+    /// Array: a block that reads it is put on the sheet.
+    Array(String),
     /// Setting or port of a service block (Wi-Fi...) taken out to the board. No panel offers it
     /// since the topic rows became flat; the drop handler stays for it.
     #[allow(dead_code)]

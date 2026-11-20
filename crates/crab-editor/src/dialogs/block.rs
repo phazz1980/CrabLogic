@@ -343,6 +343,50 @@ fn block_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_core
         });
 }
 
+/// Drop-down list of the arrays of the project for the parameters `array` and `dest` of an array
+/// block. A copy offers as its destination only the other arrays of the same element type.
+fn array_combo(ui: &mut Ui, p: &ParamDef, d: &mut BlockDialog, logic: &crab_core::Logic) {
+    use crab_core::array_blocks::{ARRAY_PARAM, DEST_PARAM};
+    let text_of = |d: &BlockDialog, name: &str| match d.values.get(name) {
+        Some(Some(ParamValue::Text(t))) => t.clone(),
+        _ => String::new(),
+    };
+    let source = text_of(d, ARRAY_PARAM);
+    let current = text_of(d, &p.name);
+    let names: Vec<&str> = logic
+        .arrays
+        .iter()
+        .filter(|a| {
+            p.name != DEST_PARAM
+                || (a.name != source && logic.array(&source).is_none_or(|s| s.ty == a.ty))
+        })
+        .map(|a| a.name.as_str())
+        .collect();
+    if names.is_empty() {
+        ui.colored_label(
+            Color32::from_rgb(186, 74, 66),
+            crate::i18n::tr("в проекте нет подходящего массива"),
+        );
+        return;
+    }
+    let shown = if current.is_empty() {
+        crate::i18n::tr("не выбран").to_owned()
+    } else {
+        current.clone()
+    };
+    egui::ComboBox::from_id_salt(("param_array", &p.name))
+        .selected_text(shown)
+        .show_ui(ui, |ui| {
+            for name in names {
+                if ui.selectable_label(current == name, name).clicked() {
+                    d.texts.insert(p.name.clone(), name.to_owned());
+                    d.values
+                        .insert(p.name.clone(), Some(ParamValue::Text(name.to_owned())));
+                }
+            }
+        });
+}
+
 /// Edits one buffered parameter of the block dialog.
 pub(super) fn param_editor(
     ui: &mut Ui,
@@ -400,6 +444,15 @@ pub(super) fn param_editor(
     }
     if !p.of_block.is_empty() {
         block_combo(ui, p, d, logic);
+        return;
+    }
+    if crab_core::array_blocks::split_kind(&def.info.kind).is_some()
+        && matches!(
+            p.name.as_str(),
+            crab_core::array_blocks::ARRAY_PARAM | crab_core::array_blocks::DEST_PARAM
+        )
+    {
+        array_combo(ui, p, d, logic);
         return;
     }
     if !p.choices.is_empty() {

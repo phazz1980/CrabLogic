@@ -16,6 +16,7 @@ use eframe::egui::{self, Color32, RichText, Ui};
 
 use crate::app::{EditorApp, LogLevel, Selection};
 
+mod array;
 mod block;
 pub(crate) use block::toggle_switch;
 mod expander;
@@ -24,11 +25,12 @@ mod pins;
 #[cfg(test)]
 mod tests;
 
-use self::{block::*, expander::*, forms::*, pins::*};
+use self::{array::*, block::*, expander::*, forms::*, pins::*};
 
 pub enum Dialog {
     Block(BlockDialog),
     Var(VarDialog),
+    Array(ArrayDialog),
     Sheet(SheetDialog),
     Board(crate::boardcfg::BoardDialog),
     Uart(crate::uartpanel::UartDialog),
@@ -254,6 +256,10 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
             Some(n) => crate::i18n::fmt("Переменная «{0}»", &[&n]),
             None => crate::i18n::tr("Новая переменная").to_owned(),
         },
+        Dialog::Array(d) => match &d.original {
+            Some(n) => crate::i18n::fmt("Массив «{0}»", &[&n]),
+            None => crate::i18n::tr("Новый массив").to_owned(),
+        },
         Dialog::Sheet(d) => crate::i18n::fmt("Плата {0}", &[&d.number]),
         Dialog::Board(_) => crate::i18n::tr("Настройки МК").to_owned(),
         Dialog::Uart(d) => crate::i18n::fmt("UART{0}", &[&d.cfg.number]),
@@ -297,6 +303,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
             ui,
             match &dialog {
                 Dialog::Var(d) => d.original.is_some(),
+                Dialog::Array(d) => d.original.is_some(),
                 Dialog::Expander(d) => d.original.is_some(),
                 _ => false,
             },
@@ -305,6 +312,7 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
         match &mut dialog {
             Dialog::Block(d) => block_body(app, ui, d),
             Dialog::Var(d) => var_body(ui, d),
+            Dialog::Array(d) => array_body(ui, d),
             Dialog::Sheet(d) => sheet_body(ui, d),
             Dialog::Board(d) => {
                 d.body(ui, &app.ports);
@@ -348,6 +356,18 @@ pub fn show(app: &mut EditorApp, ctx: &egui::Context) {
                 }) => {
                     if let Some(doc) = &mut app.doc {
                         if let Err(e) = doc.edit(&lib, None, |p| p.remove_var(name)) {
+                            app.info(LogLevel::Error, e.to_string());
+                        }
+                    }
+                    app.selection = None;
+                    false
+                }
+                Dialog::Array(ArrayDialog {
+                    original: Some(name),
+                    ..
+                }) => {
+                    if let Some(doc) = &mut app.doc {
+                        if let Err(e) = doc.edit(&lib, None, |p| p.remove_array(name)) {
                             app.info(LogLevel::Error, e.to_string());
                         }
                     }
@@ -516,6 +536,14 @@ fn apply(app: &mut EditorApp, dialog: &Dialog) -> Result<(), String> {
                 doc.edit(&lib, None, |p| p.set_var_write_enable(&lib, id, *en))
                     .map_err(|e| e.to_string())?;
             }
+        }
+        Dialog::Array(d) => {
+            let array = array_value(d)?;
+            match &d.original {
+                Some(name) => doc.edit(&lib, None, |p| p.update_array(name, array)),
+                None => doc.edit(&lib, None, |p| p.add_array(array)),
+            }
+            .map_err(|e| e.to_string())?;
         }
         Dialog::Expander(d) => {
             let mut e = d.form.clone();

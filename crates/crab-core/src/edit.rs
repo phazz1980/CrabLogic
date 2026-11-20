@@ -56,6 +56,10 @@ pub enum EditError {
     DuplicateVar(String),
     #[error("начальное значение не подходит к типу переменной «{0}»")]
     BadInit(String),
+    #[error("нет массива «{0}»")]
+    NoArray(String),
+    #[error("{0}")]
+    BadArray(String),
     #[error("нет расширителя «{0}»")]
     NoExpander(String),
     #[error("расширитель «{0}» уже есть")]
