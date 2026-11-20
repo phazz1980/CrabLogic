@@ -69,8 +69,19 @@ pub fn compare_at(rel: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
         sim.step(dt).unwrap();
         module.step(dt).unwrap();
         for (i, label) in built.watched.iter().enumerate() {
-            let (block, port) = label.split_once('.').unwrap();
-            let expected = word(&program, label, sim.output(block, port).unwrap());
+            let expected = if let Some((array, index)) = array_label(label) {
+                // An element of an array the module reports in a debug build.
+                let a = sim.array(array).unwrap();
+                let x = a.num(index);
+                if a.ty == crab_core::arrays::ElemType::Float {
+                    Word::float(x as f32)
+                } else {
+                    Word::int(x as i32)
+                }
+            } else {
+                let (block, port) = label.split_once('.').unwrap();
+                word(&program, label, sim.output(block, port).unwrap())
+            };
             let got = module.outputs()[i];
             assert_eq!(got, expected, "{name}, step {step}: {label}");
             let bits = format!("{got:?}").len() as u32 ^ hash(&format!("{got:?}"));
@@ -79,13 +90,25 @@ pub fn compare_at(rel: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
             }
         }
     }
-    let moving = seen.iter().filter(|v| v.len() > 1).count();
+    // Only the outputs of blocks count here: the elements of an array may well stay put in a
+    // fixture (an unused sensor), they are compared with the simulation all the same.
+    let blocks: Vec<usize> = (0..built.watched.len())
+        .filter(|&i| array_label(&built.watched[i]).is_none())
+        .collect();
+    let moving = blocks.iter().filter(|&&i| seen[i].len() > 1).count();
     assert!(
-        moving * 4 >= built.watched.len(),
+        moving * 4 >= blocks.len(),
         "{name}: only {moving} of {} outputs ever change: the test would pass on any code",
-        built.watched.len()
+        blocks.len()
     );
     built.watched.len()
+}
+
+/// Array name and element of a label `array:<name>[<i>]` (see `crab_debug::array_label`).
+fn array_label(label: &str) -> Option<(&str, usize)> {
+    let rest = label.strip_prefix("array:")?.strip_suffix(']')?;
+    let (name, index) = rest.rsplit_once('[')?;
+    Some((name, index.parse().ok()?))
 }
 
 fn hash(text: &str) -> u32 {

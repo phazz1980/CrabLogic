@@ -978,6 +978,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             self.block(&program.blocks[bi])?;
             self.publish_outputs(&program.blocks[bi]);
         }
+        self.array_watch();
         self.expander_flush();
         self.retain_save();
         Ok(())

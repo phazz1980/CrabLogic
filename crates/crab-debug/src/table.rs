@@ -12,6 +12,24 @@ pub enum Source {
     Output(PortRef),
     /// Variable (tag).
     Var(String),
+    /// One element of an array of the project (`specs/arrays-structs`, task 7).
+    Array { name: String, index: u32 },
+}
+
+/// Elements of one array the debugger shows: the first ones, so that a long array does not use up
+/// the watched slots of the module (`MAX_WATCHED`).
+pub const ARRAY_WATCH: u32 = 64;
+
+/// Label under which a module reports element `index` of array `name` (`output_i/f` slot).
+pub fn array_label(name: &str, index: u32) -> String {
+    format!("array:{name}[{index}]")
+}
+
+/// Array name and element index of a label made by [`array_label`].
+pub fn parse_array_label(label: &str) -> Option<(&str, u32)> {
+    let rest = label.strip_prefix("array:")?.strip_suffix(']')?;
+    let (name, index) = rest.rsplit_once('[')?;
+    Some((name, index.parse().ok()?))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +106,13 @@ impl DebugTable {
         self.entries
             .iter()
             .position(|e| matches!(&e.source, Source::Output(p) if p == port))
+    }
+
+    /// Entry of element `index` of the array `name`.
+    pub fn array_index(&self, name: &str, index: u32) -> Option<usize> {
+        self.entries.iter().position(
+            |e| matches!(&e.source, Source::Array { name: n, index: i } if n == name && *i == index),
+        )
     }
 
     pub fn var_index(&self, name: &str) -> Option<usize> {

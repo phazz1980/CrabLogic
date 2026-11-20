@@ -49,5 +49,30 @@ pub fn debug_table(program: &Program) -> DebugTable {
                 cpp_type: v.ty.cpp(),
             }),
     );
+    // Elements of the arrays some block works on (as many as a module reports, see `ARRAY_WATCH`).
+    let logic = &program.project.logic;
+    let used = |name: &str| {
+        program.blocks.iter().any(|b| {
+            crab_core::array_blocks::array_name(b.block) == Some(name)
+                || matches!(b.block.params.get(crab_core::array_blocks::DEST_PARAM), Some(crab_core::ParamValue::Text(d)) if d == name)
+        })
+    };
+    for array in logic
+        .arrays
+        .iter()
+        .filter(|a| a.ty != crab_core::arrays::ElemType::String && used(&a.name))
+    {
+        for index in 0..array.len.min(crab_debug::ARRAY_WATCH) {
+            entries.push(Entry {
+                source: Source::Array {
+                    name: array.name.clone(),
+                    index,
+                },
+                ty: array.ty.signal(),
+                storage: format!("{}_{index}", storage_name(&array.name)),
+                cpp_type: "",
+            });
+        }
+    }
     DebugTable { entries, texts }
 }

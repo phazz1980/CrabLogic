@@ -273,6 +273,7 @@ impl DebugState {
         match &self.table.entries[index].source {
             Source::Output(p) => p.to_string(),
             Source::Var(v) => v.clone(),
+            Source::Array { name, index } => format!("{name}[{index}]"),
         }
     }
 }

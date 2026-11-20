@@ -22,5 +22,7 @@ pub use monitor::Monitor;
 pub use protocol::{BackgroundStats, CycleStats, SheetStats, Stats};
 pub use pull::{read_project, PullError, Pulled};
 pub use session::{Command, Live, Session};
-pub use table::{DebugTable, Entry, Source, TextEntry, Value};
+pub use table::{
+    array_label, parse_array_label, DebugTable, Entry, Source, TextEntry, Value, ARRAY_WATCH,
+};
 pub use transport::{Connector, Transport};

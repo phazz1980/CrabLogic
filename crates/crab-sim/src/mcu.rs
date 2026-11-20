@@ -289,6 +289,17 @@ impl McuModule {
         &self.host().outputs
     }
 
+    /// Forces the watched output `slot`: the module gets `value` back from its next report (an
+    /// element of an array is stored back into the array). `false` for a slot the module lacks.
+    pub fn force(&mut self, slot: usize, value: Word) -> bool {
+        self.host_mut().force(slot, value)
+    }
+
+    /// Stops forcing the watched output `slot`.
+    pub fn unforce(&mut self, slot: usize) -> bool {
+        self.host_mut().unforce(slot)
+    }
+
     pub fn tag(&self, id: i32) -> Option<Word> {
         self.host().tags.get(&id).copied()
     }

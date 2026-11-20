@@ -1,0 +1,44 @@
+# Forcing an element of an array in a debug build: three elements, each read, and their sum.
+
+[[array]]
+name = "a"
+type = "int"
+len = 3
+items = [5, 6, 7]
+
+[[array]]
+name = "f"
+type = "float"
+len = 2
+items = [1.5, 2.5]
+
+[[block]]
+id = "r0"
+type = "array_get"
+array = "a"
+[block.const]
+index = 0
+
+[[block]]
+id = "r1"
+type = "array_get"
+array = "a"
+[block.const]
+index = 1
+
+[[block]]
+id = "r2"
+type = "array_get"
+array = "a"
+[block.const]
+index = 2
+
+[[block]]
+id = "sum"
+type = "array_sum"
+array = "a"
+
+[[block]]
+id = "fsum"
+type = "array_sum"
+array = "f"

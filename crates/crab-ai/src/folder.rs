@@ -142,6 +142,7 @@ impl Context for FolderContext {
                 let name = match &e.source {
                     crab_debug::Source::Output(p) => p.to_string(),
                     crab_debug::Source::Var(v) => format!("var {v}"),
+                    crab_debug::Source::Array { name, index } => format!("array {name}[{index}]"),
                 };
                 (
                     name,

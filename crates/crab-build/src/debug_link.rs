@@ -93,6 +93,9 @@ pub fn debug_modules(
             .watched
             .iter()
             .map(|label| {
+                if let Some((name, index)) = crab_debug::parse_array_label(label) {
+                    return table.array_index(name, index);
+                }
                 let port = label.parse::<PortRef>().ok()?;
                 table.output_index(&port)
             })
@@ -117,6 +120,46 @@ pub fn debug_modules(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The elements of the arrays that blocks use are in the table, and the slots a module reports
+    /// for them (`array:<name>[<i>]`) point at those entries (spec arrays-structs, task 7).
+    #[test]
+    fn array_elements_are_in_the_table_and_the_module_slots_point_at_them() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (lib, _) = crab_core::Library::load(repo.join("library")).unwrap();
+        let project = crab_core::Project::load(repo.join("examples/array_tools")).unwrap();
+        let program = Program::build(&project, &lib).unwrap();
+        let table = crab_codegen::debug::debug_table(&program);
+        // 4 + 4 + 4 + 4 ints and 4 bools: the five arrays of the example, every element once.
+        let elements: Vec<_> = table
+            .entries
+            .iter()
+            .filter(|e| matches!(e.source, crab_debug::Source::Array { .. }))
+            .collect();
+        assert_eq!(elements.len(), 20);
+        assert!(table.array_index("setpoints", 3).is_some());
+        assert!(table.array_index("setpoints", 4).is_none());
+        let dir = std::env::temp_dir().join(format!("crab_dbg_arrays_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let modules = debug_modules(&program, &table, &dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let built = program.wasm_module_with(1, true).unwrap();
+        let mut mapped = 0;
+        for (label, slot) in built.watched.iter().zip(&modules[0].slots) {
+            if let Some((name, index)) = crab_debug::parse_array_label(label) {
+                let entry = slot.expect("an array label has a table entry");
+                assert_eq!(
+                    table.entries[entry].source,
+                    crab_debug::Source::Array {
+                        name: name.to_owned(),
+                        index
+                    }
+                );
+                mapped += 1;
+            }
+        }
+        assert_eq!(mapped, 20);
+    }
 
     fn board(port: Option<&str>, host: Option<&str>) -> BoardConfig {
         BoardConfig {

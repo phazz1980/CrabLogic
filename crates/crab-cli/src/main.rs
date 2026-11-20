@@ -1471,6 +1471,7 @@ fn run_monitor(
         .map(|e| match &e.source {
             crab_debug::Source::Output(p) => p.to_string(),
             crab_debug::Source::Var(v) => format!("${v}"),
+            crab_debug::Source::Array { name, index } => format!("{name}[{index}]"),
         })
         .collect();
     let session = crab_debug::MasterSession::start(table, modules, connector, || {});

@@ -210,6 +210,40 @@ impl Emitter<'_, '_> {
         self.op(I::GlobalSet(prev));
     }
 
+    /// Debug build (`watch`): reports the first `ARRAY_WATCH` elements of every array of the module
+    /// like block outputs (`output_i/f`, one slot each, label `array:<name>[<i>]`) and stores what the
+    /// host answers back, so a forced value reaches the array. Arrays go by name, so the slots are
+    /// the same on every build. Needs the slots left under `MAX_WATCHED`.
+    pub(super) fn array_watch(&mut self) {
+        if !self.watch {
+            return;
+        }
+        let mut arrays: Vec<(String, ArrayMem)> =
+            self.arrays.iter().map(|(n, m)| (n.clone(), *m)).collect();
+        arrays.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, mem) in arrays {
+            for i in 0..mem.len.min(crab_debug::ARRAY_WATCH) {
+                if self.watched.len() >= MAX_WATCHED {
+                    return;
+                }
+                self.watched.push(crab_debug::array_label(&name, i));
+                let slot = self.watched.len() - 1;
+                let at = (i * mem.size()) as i32;
+                // Store address, then slot and value for the host call, then the answer.
+                self.c_i(at);
+                self.c_i(slot as i32);
+                self.c_i(at);
+                self.array_load(mem);
+                self.op(I::Call(if mem.ty_of() == Ty::F {
+                    OUTPUT_F
+                } else {
+                    OUTPUT_I
+                }));
+                self.array_store(mem);
+            }
+        }
+    }
+
     /// `array_get`: in 0 = index; out 0 = value, out 1 = err.
     fn array_get(&mut self, inst: &Instance, mem: ArrayMem) {
         let ty = mem.ty_of();
