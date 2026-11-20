@@ -37,12 +37,22 @@ array = "a"
 [block.const]
 index = 1
 
+# An index computed at run time (a constant index outside the array is a check error): 4 + 5 = 9.
+[[block]]
+id = "nine"
+type = "add"
+[block.const]
+a = 4
+b = 5
+
 [[block]]
 id = "far"
 type = "array_get"
 array = "a"
-[block.const]
-index = 9
+
+[[link]]
+from = "nine.out"
+to = "far.index"
 "#;
 
 #[test]

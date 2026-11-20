@@ -99,6 +99,136 @@ pub(super) fn check_arrays(logic: &Logic, report: &mut Report) {
     }
 }
 
+/// The blocks that reach an array: it exists, the destination of a copy is another array of the same
+/// type, sum / min / max have numbers to work on, a constant index is inside the array, and the
+/// array is written from one block only (like a variable: the order of two writers would be luck).
+pub(super) fn check_array_blocks(logic: &Logic, report: &mut Report) {
+    use crate::array_blocks::{ArrayOp, ARRAY_PARAM, DEST_PARAM};
+    // Remembers who writes an array first; a second writer is an error.
+    fn claim<'a>(
+        writers: &mut std::collections::HashMap<&'a str, &'a str>,
+        array: &'a str,
+        block: &'a str,
+        report: &mut Report,
+    ) {
+        match writers.get(array) {
+            Some(prev) => report.block_error(
+                DiagKind::Array,
+                block,
+                format!("массив «{array}» уже записывается блоком «{prev}»"),
+            ),
+            None => {
+                writers.insert(array, block);
+            }
+        }
+    }
+    let mut writers: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for block in logic.blocks.iter().filter(|b| b.tag.is_none()) {
+        let Some(op) = ArrayOp::from_kind(&block.kind) else {
+            continue;
+        };
+        let name = match block.params.get(ARRAY_PARAM) {
+            Some(ParamValue::Text(n)) if !n.is_empty() => n.as_str(),
+            _ => {
+                report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!("блок «{}»: не выбран массив", block.id),
+                );
+                continue;
+            }
+        };
+        let Some(array) = logic.array(name) else {
+            report.block_error(
+                DiagKind::Array,
+                &block.id,
+                format!("блок «{}»: нет массива «{name}»", block.id),
+            );
+            continue;
+        };
+        if !op.exists_for(array.ty) {
+            report.block_error(
+                DiagKind::Array,
+                &block.id,
+                format!(
+                    "блок «{}»: сумма, минимум и максимум работают с массивами int, float и byte, а «{name}» — {}",
+                    block.id,
+                    array.ty.name()
+                ),
+            );
+        }
+        if matches!(op, ArrayOp::Get | ArrayOp::Set) {
+            let fed = logic
+                .links
+                .iter()
+                .any(|l| l.to.block == block.id && l.to.port == "index");
+            let constant = match block.consts.get("index") {
+                Some(ParamValue::Int(n)) => Some(*n as f64),
+                Some(ParamValue::Float(x)) => Some(*x),
+                _ => None,
+            };
+            if let Some(i) = constant.filter(|i| !fed && (*i < 0.0 || *i >= f64::from(array.len))) {
+                report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!(
+                        "блок «{}»: индекс {i} вне массива «{name}» длиной {}",
+                        block.id, array.len
+                    ),
+                );
+            }
+        }
+        // Writers: the array of the block, and for a copy the destination.
+        if matches!(
+            op,
+            ArrayOp::Set | ArrayOp::Fill | ArrayOp::Shift | ArrayOp::Ring | ArrayOp::Stack
+        ) {
+            claim(&mut writers, name, &block.id, report);
+        }
+        if op == ArrayOp::Copy {
+            let dest = match block.params.get(DEST_PARAM) {
+                Some(ParamValue::Text(n)) if !n.is_empty() => n.as_str(),
+                _ => {
+                    report.block_error(
+                        DiagKind::Array,
+                        &block.id,
+                        format!("блок «{}»: не выбран массив-приёмник", block.id),
+                    );
+                    continue;
+                }
+            };
+            match logic.array(dest) {
+                None => report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!("блок «{}»: нет массива-приёмника «{dest}»", block.id),
+                ),
+                Some(_) if dest == name => report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!(
+                        "блок «{}»: массив нельзя копировать в самого себя",
+                        block.id
+                    ),
+                ),
+                Some(d) if d.ty != array.ty => report.block_error(
+                    DiagKind::Array,
+                    &block.id,
+                    format!(
+                        "блок «{}»: «{name}» ({}) и «{dest}» ({}) разных типов",
+                        block.id,
+                        array.ty.name(),
+                        d.ty.name()
+                    ),
+                ),
+                Some(_) => {
+                    claim(&mut writers, dest, &block.id, report);
+                }
+            }
+        }
+    }
+}
+
 /// Length against the limit of the chip of the project (64 on the ESP32-C3).
 pub(super) fn check_array_limits(logic: &Logic, chip: Option<Chip>, report: &mut Report) {
     let limit = max_len(chip);
@@ -253,6 +383,142 @@ mod tests {
             m.iter().any(|x| x.contains("поля «b» не подходит")),
             "{m:?}"
         );
+    }
+
+    fn block(id: &str, kind: &str, array: &str) -> crate::Block {
+        let mut b = crate::Block {
+            id: id.into(),
+            kind: kind.into(),
+            ..Default::default()
+        };
+        b.params
+            .insert("array".into(), ParamValue::Text(array.into()));
+        b
+    }
+
+    fn block_messages(logic: &Logic) -> Vec<String> {
+        let mut report = Report::default();
+        check_array_blocks(logic, &mut report);
+        report.diagnostics.into_iter().map(|d| d.message).collect()
+    }
+
+    fn with_blocks(arrays: Vec<ArrayVar>, blocks: Vec<crate::Block>) -> Logic {
+        Logic {
+            arrays,
+            blocks,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn blocks_need_an_existing_array() {
+        let mut none = block("n", "array_get", "");
+        none.params.remove("array");
+        let logic = with_blocks(
+            vec![array("a", ElemType::Int, 4, Vec::new())],
+            vec![
+                none,
+                block("m", "array_get", "нет"),
+                block("ok", "array_get", "a"),
+            ],
+        );
+        let m = block_messages(&logic);
+        assert!(m.iter().any(|x| x.contains("не выбран массив")), "{m:?}");
+        assert!(m.iter().any(|x| x.contains("нет массива «нет»")), "{m:?}");
+        assert_eq!(m.len(), 2, "{m:?}");
+    }
+
+    #[test]
+    fn a_constant_index_must_be_inside() {
+        let mut far = block("far", "array_get", "a");
+        far.consts.insert("index".into(), ParamValue::Int(4));
+        let mut ok = block("ok", "array_get", "a");
+        ok.consts.insert("index".into(), ParamValue::Int(3));
+        let mut neg = block("neg", "array_set", "a");
+        neg.consts.insert("index".into(), ParamValue::Int(-1));
+        let logic = with_blocks(
+            vec![array("a", ElemType::Int, 4, Vec::new())],
+            vec![far, ok, neg],
+        );
+        let m = block_messages(&logic);
+        assert_eq!(
+            m.iter().filter(|x| x.contains("вне массива")).count(),
+            2,
+            "{m:?}"
+        );
+    }
+
+    #[test]
+    fn an_array_is_written_by_one_block() {
+        let logic = with_blocks(
+            vec![
+                array("a", ElemType::Int, 4, Vec::new()),
+                array("b", ElemType::Int, 4, Vec::new()),
+            ],
+            vec![
+                block("w1", "array_set", "a"),
+                block("w2", "array_fill", "a"),
+                block("r", "array_get", "a"),
+                block("only", "array_set", "b"),
+            ],
+        );
+        let m = block_messages(&logic);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert!(m[0].contains("уже записывается блоком «w1»"), "{m:?}");
+    }
+
+    #[test]
+    fn copy_needs_another_array_of_the_same_type() {
+        let copy = |id: &str, dest: Option<&str>| {
+            let mut b = block(id, "array_copy", "a");
+            if let Some(d) = dest {
+                b.params.insert("dest".into(), ParamValue::Text(d.into()));
+            }
+            b
+        };
+        let logic = with_blocks(
+            vec![
+                array("a", ElemType::Int, 4, Vec::new()),
+                array("b", ElemType::Int, 4, Vec::new()),
+                array("f", ElemType::Float, 4, Vec::new()),
+            ],
+            vec![
+                copy("ok", Some("b")),
+                copy("same", Some("a")),
+                copy("other", Some("f")),
+                copy("lost", Some("x")),
+                copy("nodest", None),
+            ],
+        );
+        let m = block_messages(&logic);
+        assert!(m.iter().any(|x| x.contains("в самого себя")), "{m:?}");
+        assert!(m.iter().any(|x| x.contains("разных типов")), "{m:?}");
+        assert!(
+            m.iter().any(|x| x.contains("нет массива-приёмника")),
+            "{m:?}"
+        );
+        assert!(
+            m.iter().any(|x| x.contains("не выбран массив-приёмник")),
+            "{m:?}"
+        );
+        assert_eq!(m.len(), 4, "{m:?}");
+    }
+
+    #[test]
+    fn sum_needs_numbers() {
+        let logic = with_blocks(
+            vec![
+                array("s", ElemType::String, 2, Vec::new()),
+                array("n", ElemType::Byte, 2, Vec::new()),
+            ],
+            vec![
+                block("bad", "array_sum", "s"),
+                block("ok", "array_max", "n"),
+            ],
+        );
+        let m = block_messages(&logic);
+        assert_eq!(m.len(), 1, "{m:?}");
+        assert!(m[0].contains("int, float и byte"), "{m:?}");
     }
 
     #[test]

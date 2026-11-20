@@ -55,6 +55,7 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
     display::check_displays(logic, &mut report);
     lora::check_lora(logic, &mut report);
     arrays::check_arrays(logic, &mut report);
+    arrays::check_array_blocks(logic, &mut report);
     order_blocks(logic, &defs, &edges, &mut report);
     if !report.has_errors() {
         check_number_flow(logic, &defs, &mut report);
