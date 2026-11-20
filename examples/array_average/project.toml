@@ -1,0 +1,6 @@
+[project]
+name = "array_average"
+description = "Скользящее среднее давления по массиву: кольцевой буфер, сумма, минимум и максимум окна"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

@@ -1,0 +1,73 @@
+# Координаты блоков для редактора.
+
+[block.tick]
+x = 40.0
+y = 60.0
+
+[block.step]
+x = 230.0
+y = 60.0
+
+[block.wrap]
+x = 420.0
+y = 60.0
+
+[block.pick]
+x = 610.0
+y = 60.0
+
+[block.bump]
+x = 420.0
+y = 170.0
+
+[block.write]
+x = 610.0
+y = 170.0
+
+[block.journal_shift]
+x = 800.0
+y = 60.0
+
+[block.save]
+x = 800.0
+y = 170.0
+
+[block.copy]
+x = 990.0
+y = 170.0
+
+[block.unload]
+x = 800.0
+y = 280.0
+
+[block.stack]
+x = 990.0
+y = 280.0
+
+[block.full_lamp]
+x = 1180.0
+y = 280.0
+
+[block.find]
+x = 800.0
+y = 390.0
+
+[block.found_lamp]
+x = 990.0
+y = 390.0
+
+[block.second_half]
+x = 230.0
+y = 390.0
+
+[block.fill]
+x = 420.0
+y = 390.0
+
+[block.flag0]
+x = 610.0
+y = 390.0
+
+[block.half_lamp]
+x = 610.0
+y = 500.0

@@ -1,4 +1,5 @@
 //! Shared by the tests that run a sheet as a module next to the simulation (`wasm_arrays*.rs`).
+#![allow(dead_code)] // each test file uses some of the helpers
 
 use std::path::PathBuf;
 
@@ -38,9 +39,19 @@ fn word(program: &Program, label: &str, expected: f64) -> Word {
 /// simulation, `steps` scans of `dt` ms, and compares every watched output after every scan.
 /// Returns the number of watched outputs (the fixture must watch at least `min_outputs`).
 pub fn compare(name: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
+    compare_at(
+        &format!("crates/crab-sim/tests/fixtures/{name}"),
+        min_outputs,
+        steps,
+        dt,
+    )
+}
+
+/// [`compare`] for any project folder of the repository (an example, for instance).
+pub fn compare_at(rel: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
+    let name = rel;
     let lib = library();
-    let project =
-        Project::load(repo_path(&format!("crates/crab-sim/tests/fixtures/{name}"))).unwrap();
+    let project = Project::load(repo_path(rel)).unwrap();
     let program = Program::build(&project, &lib).unwrap();
     let built = program.wasm_module_with(1, true).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();

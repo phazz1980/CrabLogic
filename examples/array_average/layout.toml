@@ -1,0 +1,65 @@
+# Координаты блоков для редактора.
+
+[block.sensor]
+x = 40.0
+y = 60.0
+
+[block.pressure]
+x = 230.0
+y = 60.0
+
+[block.clock]
+x = 230.0
+y = 170.0
+
+[block.ring]
+x = 420.0
+y = 60.0
+
+[block.sum]
+x = 610.0
+y = 60.0
+
+[block.avg]
+x = 800.0
+y = 60.0
+
+[block.full]
+x = 420.0
+y = 170.0
+
+[block.low]
+x = 990.0
+y = 60.0
+
+[block.need]
+x = 1180.0
+y = 60.0
+
+[block.delay]
+x = 1370.0
+y = 60.0
+
+[block.pump]
+x = 1560.0
+y = 60.0
+
+[block.top]
+x = 610.0
+y = 280.0
+
+[block.bottom]
+x = 610.0
+y = 390.0
+
+[block.span]
+x = 800.0
+y = 280.0
+
+[block.shaky]
+x = 990.0
+y = 280.0
+
+[block.lamp]
+x = 1180.0
+y = 280.0

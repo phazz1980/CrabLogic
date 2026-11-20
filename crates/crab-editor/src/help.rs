@@ -84,6 +84,7 @@ const FILES: &[(&str, &str)] = &[
     ("drivers", include_str!("../../../help/12-drivers.md")),
     ("displays", include_str!("../../../help/13-displays.md")),
     ("lora", include_str!("../../../help/16-lora.md")),
+    ("arrays", include_str!("../../../help/17-arrays.md")),
     ("build", include_str!("../../../help/05-build.md")),
     ("debug", include_str!("../../../help/06-debug.md")),
     ("ai", include_str!("../../../help/07-ai.md")),

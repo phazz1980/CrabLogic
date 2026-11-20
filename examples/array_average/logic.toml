@@ -1,0 +1,160 @@
+# Насос включается, если СРЕДНЕЕ давление за 8 замеров ниже 2 бар дольше 5 секунд.
+# Среднее считается по массиву-окну: кольцевой буфер пишет замеры, «сумма» складывает окно.
+# Второй выход: сигнализация, если давление «скачет» (размах за окно больше 3 бар).
+
+# Окно из 8 последних замеров (бар).
+[[array]]
+name = "window"
+type = "float"
+len = 8
+description = "Последние 8 замеров давления"
+
+# Датчик давления 0…10 бар с выходом на АЦП.
+[[block]]
+id = "sensor"
+type = "analog_in"
+pin = 34
+
+[[block]]
+id = "pressure"
+type = "scale"
+in_max = 4095.0
+out_max = 10.0
+
+# Замер кладётся в окно 5 раз в секунду.
+[[block]]
+id = "clock"
+type = "generator"
+time_on = "100ms"
+time_off = "100ms"
+
+[[block]]
+id = "ring"
+type = "array_ring"
+array = "window"
+
+[[block]]
+id = "sum"
+type = "array_sum"
+array = "window"
+
+# Среднее = сумма / 8.
+[[block]]
+id = "avg"
+type = "mul"
+[block.const]
+b = 0.125
+
+# Пока окно не заполнено, среднее неверно: ждём 8 замеров.
+[[block]]
+id = "full"
+type = "compare"
+op = 5
+[block.const]
+b = 8
+
+[[block]]
+id = "low"
+type = "compare"
+op = 2
+[block.const]
+b = 2.0
+
+[[block]]
+id = "need"
+type = "and"
+
+[[block]]
+id = "delay"
+type = "timer_on"
+time = "5s"
+
+# Реле насоса.
+[[block]]
+id = "pump"
+type = "digital_out"
+pin = 26
+
+# Размах за окно: максимум минус минимум.
+[[block]]
+id = "top"
+type = "array_max"
+array = "window"
+
+[[block]]
+id = "bottom"
+type = "array_min"
+array = "window"
+
+[[block]]
+id = "span"
+type = "sub"
+
+[[block]]
+id = "shaky"
+type = "compare"
+op = 4
+[block.const]
+b = 3.0
+
+# Лампа «давление скачет».
+[[block]]
+id = "lamp"
+type = "digital_out"
+pin = 27
+
+[[link]]
+from = "sensor.out"
+to = "pressure.in"
+
+[[link]]
+from = "pressure.out"
+to = "ring.value"
+
+[[link]]
+from = "clock.out"
+to = "ring.push"
+
+[[link]]
+from = "sum.out"
+to = "avg.a"
+
+[[link]]
+from = "ring.count"
+to = "full.a"
+
+[[link]]
+from = "avg.out"
+to = "low.a"
+
+[[link]]
+from = "full.out"
+to = "need.a"
+
+[[link]]
+from = "low.out"
+to = "need.b"
+
+[[link]]
+from = "need.out"
+to = "delay.in"
+
+[[link]]
+from = "delay.out"
+to = "pump.in"
+
+[[link]]
+from = "top.out"
+to = "span.a"
+
+[[link]]
+from = "bottom.out"
+to = "span.b"
+
+[[link]]
+from = "span.out"
+to = "shaky.a"
+
+[[link]]
+from = "shaky.out"
+to = "lamp.in"

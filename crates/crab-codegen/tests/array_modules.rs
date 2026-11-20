@@ -146,3 +146,25 @@ fn an_array_that_does_not_fit_the_memory_page_is_refused() {
     let _ = std::fs::remove_dir_all(dir);
     assert!(err.contains("памяти"), "{err}");
 }
+
+/// Every array block is used in some example (the rule of the project: a block, an example).
+#[test]
+fn every_array_block_has_an_example() {
+    let used: std::collections::BTreeSet<String> = std::fs::read_dir(repo("examples"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|d| d.join("project.toml").is_file())
+        .flat_map(|dir| Project::load(&dir).unwrap().logic.blocks)
+        .map(|b| b.kind)
+        .collect();
+    let missing: Vec<&str> = ArrayOp::ALL
+        .iter()
+        .map(|op| op.kind())
+        .filter(|kind| !used.contains(*kind))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "блоки массивов без примера: {missing:?}"
+    );
+}

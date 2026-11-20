@@ -1,0 +1,6 @@
+[project]
+name = "array_tools"
+description = "Массивы: таблица уставок, чтение и запись, сдвиг, копия, стек, поиск и заполнение"
+
+[board]
+fqbn = "esp32:esp32:esp32"   # ESP32 DevKit

@@ -1,0 +1,217 @@
+# Уставки в таблице, журнал последних значений, снимок журнала, стек и поиск.
+# Каждую секунду шаг перебирает уставки по кругу; всё остальное работает на этих значениях.
+
+# Таблица уставок: начальные значения заданы в проекте.
+[[array]]
+name = "setpoints"
+type = "int"
+len = 4
+items = [20, 40, 60, 80]
+description = "Уставки"
+
+# Последние 4 выбранных значения (сдвиговый регистр).
+[[array]]
+name = "journal"
+type = "int"
+len = 4
+
+# Копия журнала на момент «сохранить».
+[[array]]
+name = "snapshot"
+type = "int"
+len = 4
+
+# Стек значений: кладём каждую секунду, снимаем раз в три.
+[[array]]
+name = "pile"
+type = "int"
+len = 4
+
+# Флаги: все четыре включаются, когда шаг дошёл до второй половины таблицы.
+[[array]]
+name = "flags"
+type = "bool"
+len = 4
+
+[[block]]
+id = "tick"
+type = "generator"
+time_on = "500ms"
+time_off = "500ms"
+
+# Номер уставки по кругу 0…3.
+[[block]]
+id = "step"
+type = "counter"
+
+[[block]]
+id = "wrap"
+type = "compare"
+op = 5
+[block.const]
+b = 4
+
+# Выбранная уставка.
+[[block]]
+id = "pick"
+type = "array_get"
+array = "setpoints"
+
+# Последняя уставка таблицы перезаписывается: 100 + номер шага.
+[[block]]
+id = "bump"
+type = "add"
+[block.const]
+a = 100
+
+[[block]]
+id = "write"
+type = "array_set"
+array = "setpoints"
+[block.const]
+index = 3
+
+# Журнал: новое значение встаёт на место 0, остальные сдвигаются.
+[[block]]
+id = "journal_shift"
+type = "array_shift"
+array = "journal"
+
+# Снимок журнала раз в 5 секунд.
+[[block]]
+id = "save"
+type = "generator"
+time_on = "100ms"
+time_off = "4900ms"
+
+[[block]]
+id = "copy"
+type = "array_copy"
+array = "journal"
+dest = "snapshot"
+
+# Стек: кладём каждую секунду, снимаем раз в три секунды.
+[[block]]
+id = "unload"
+type = "generator"
+time_on = "100ms"
+time_off = "2900ms"
+
+[[block]]
+id = "stack"
+type = "array_stack"
+array = "pile"
+
+# Лампа «стек полон».
+[[block]]
+id = "full_lamp"
+type = "digital_out"
+pin = 27
+
+# Есть ли в таблице уставка 60?
+[[block]]
+id = "find"
+type = "array_find"
+array = "setpoints"
+[block.const]
+value = 60
+
+[[block]]
+id = "found_lamp"
+type = "digital_out"
+pin = 26
+
+# Флаги: заполняются разом по условию «шаг >= 2».
+[[block]]
+id = "second_half"
+type = "compare"
+op = 5
+[block.const]
+b = 2
+
+[[block]]
+id = "fill"
+type = "array_fill"
+array = "flags"
+[block.const]
+go = true
+
+[[block]]
+id = "flag0"
+type = "array_get"
+array = "flags"
+[block.const]
+index = 0
+
+[[block]]
+id = "half_lamp"
+type = "digital_out"
+pin = 25
+
+[[link]]
+from = "tick.out"
+to = "step.up"
+
+[[link]]
+from = "step.count"
+to = "wrap.a"
+
+[[link]]
+from = "wrap.out"
+to = "step.reset"
+
+[[link]]
+from = "step.count"
+to = "pick.index"
+
+[[link]]
+from = "step.count"
+to = "bump.b"
+
+[[link]]
+from = "bump.out"
+to = "write.value"
+
+[[link]]
+from = "pick.out"
+to = "journal_shift.value"
+
+[[link]]
+from = "tick.out"
+to = "journal_shift.go"
+
+[[link]]
+from = "save.out"
+to = "copy.go"
+
+[[link]]
+from = "pick.out"
+to = "stack.value"
+
+[[link]]
+from = "tick.out"
+to = "stack.push"
+
+[[link]]
+from = "unload.out"
+to = "stack.pop"
+
+[[link]]
+from = "stack.full"
+to = "full_lamp.in"
+
+[[link]]
+from = "find.found"
+to = "found_lamp.in"
+
+[[link]]
+from = "step.count"
+to = "second_half.a"
+
+[[link]]
+from = "second_half.out"
+to = "fill.value"
+
+[[link]]
+from = "flag0.out"
+to = "half_lamp.in"
