@@ -13,6 +13,12 @@ use crate::ParamValue;
 pub struct Logic {
     #[serde(rename = "var", default, skip_serializing_if = "Vec::is_empty")]
     pub vars: Vec<crate::vars::Var>,
+    /// Arrays of the project, see [`crate::arrays`].
+    #[serde(rename = "array", default, skip_serializing_if = "Vec::is_empty")]
+    pub arrays: Vec<crate::arrays::ArrayVar>,
+    /// Structures of the project, see [`crate::arrays`].
+    #[serde(rename = "struct", default, skip_serializing_if = "Vec::is_empty")]
+    pub structs: Vec<crate::arrays::StructVar>,
     /// Tags of other projects, see [`crate::modbus_tags`].
     #[serde(rename = "extern", default, skip_serializing_if = "Vec::is_empty")]
     pub externals: Vec<crate::modbus_tags::ExternalTag>,

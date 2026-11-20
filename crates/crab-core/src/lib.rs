@@ -2,6 +2,7 @@
 //!
 //! The core knows nothing about GUI, AI or the board tools.
 
+pub mod arrays;
 pub mod blockfile;
 pub mod boardfile;
 pub mod boards;
@@ -32,6 +33,7 @@ pub mod vars;
 
 mod toml_io;
 
+pub use arrays::{ArrayVar, ElemType, StructField, StructVar};
 pub use boards::{BoardDef, Boards, UserBoard};
 pub use check::{
     bindable_type, check, check_project, port_types, DiagKind, Diagnostic, Report, Severity,
