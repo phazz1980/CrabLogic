@@ -8,12 +8,14 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crab_blocks::{ds18b20_channel, Bench, ModbusTag, Signal, TagLink, Types, OWN_SLAVE};
+use crab_core::array_blocks::{split_kind, ArrayOp, ARRAY_PARAM, DEST_PARAM};
 use crab_core::modbus_map::TagDirection;
 use crab_core::value::{parse_duration_ms, ParamValue};
 use crab_core::vars::{VAR_GET, VAR_SET};
 use crab_core::{check, Block, Library, Logic, Severity};
 use crab_core::{BlockDef, ParamKind, SignalType};
 
+use crate::arrays::{self, ArrayBehavior, ArrayState, OpCtx};
 use crate::builtin::{self, Behavior, Ctx};
 use crate::display::{DisplayDevice, DisplayView};
 use crate::display_run::{DisplayDrive, DisplayRun, Feed, MenuRun};
@@ -43,6 +45,14 @@ enum Source {
     Text(String),
 }
 
+/// An array block: the array it names, the destination of `array_copy`, its behaviour.
+struct ArrayRun {
+    name: String,
+    dest: Option<String>,
+    op: (ArrayOp, crab_core::arrays::ElemType),
+    behavior: Box<dyn ArrayBehavior>,
+}
+
 struct Node {
     id: String,
     def: BlockDef,
@@ -54,6 +64,8 @@ struct Node {
     wasm: Option<(PathBuf, Option<SystemTime>)>,
     /// Variable a `var_get` / `var_set` block accesses.
     var: Option<String>,
+    /// Array an array block works on.
+    array: Option<ArrayRun>,
     /// Owner and direction of a `modbus_tag` (see [`tag_link`]).
     tag: Option<TagLink>,
     sources: Vec<Source>,
@@ -204,7 +216,7 @@ impl Node {
             Computed::Module
         } else if self.behavior.is_some() && reads_bench(&self.def.info.kind) {
             Computed::Bench
-        } else if self.behavior.is_some() || self.var.is_some() {
+        } else if self.behavior.is_some() || self.var.is_some() || self.array.is_some() {
             Computed::Builtin
         } else {
             Computed::Manual
@@ -223,6 +235,9 @@ pub struct Simulation {
     /// Values of the string variables, by name (and their values after power-on).
     var_texts: HashMap<String, String>,
     var_text_init: HashMap<String, String>,
+    /// The arrays of the project, by name (and their values after power-on).
+    arrays: HashMap<String, ArrayState>,
+    array_init: HashMap<String, ArrayState>,
     time_ms: u64,
     /// The world outside the board.
     bench: Bench,
@@ -247,6 +262,14 @@ fn number(v: &ParamValue, kind: ParamKind) -> f64 {
             parse_duration_ms(s).map_or(0.0, |ms| ms as f64)
         }
         ParamValue::Text(_) => 0.0,
+    }
+}
+
+/// Text parameter of a block, empty when it has none.
+fn text_param_of(block: &Block, name: &str) -> String {
+    match block.params.get(name) {
+        Some(ParamValue::Text(s)) => s.clone(),
+        _ => String::new(),
     }
 }
 
@@ -415,6 +438,12 @@ impl Simulation {
                 module,
                 wasm,
                 var: block.var_name().map(str::to_owned),
+                array: split_kind(&def.info.kind).map(|(op, ty)| ArrayRun {
+                    name: text_param_of(block, ARRAY_PARAM),
+                    dest: Some(text_param_of(block, DEST_PARAM)).filter(|d| !d.is_empty()),
+                    op: (op, ty),
+                    behavior: arrays::behavior(op, ty),
+                }),
                 tag,
                 def,
             });
@@ -479,6 +508,11 @@ impl Simulation {
                 (v.name.clone(), text)
             })
             .collect();
+        let array_init: HashMap<String, ArrayState> = logic
+            .arrays
+            .iter()
+            .map(|a| (a.name.clone(), ArrayState::new(a)))
+            .collect();
         nodes.iter_mut().for_each(Node::apply_initial);
         let displays = nodes
             .iter()
@@ -505,10 +539,17 @@ impl Simulation {
             var_init,
             var_texts: var_text_init.clone(),
             var_text_init,
+            arrays: array_init.clone(),
+            array_init,
             time_ms: 0,
             bench: Bench::new(),
             notes,
         })
+    }
+
+    /// An array of the project with its current values.
+    pub fn array(&self, name: &str) -> Option<&ArrayState> {
+        self.arrays.get(name)
     }
 
     /// The pictures of the display blocks (`oled`, `lcd`), in the order of the blocks.
@@ -645,6 +686,7 @@ impl Simulation {
         self.time_ms = 0;
         self.vars = self.var_init.clone();
         self.var_texts = self.var_text_init.clone();
+        self.arrays = self.array_init.clone();
         self.bench.clear_driven();
         self.displays.iter_mut().for_each(DisplayDevice::reset);
         self.display_runs.iter_mut().for_each(DisplayRun::restart);
@@ -654,6 +696,9 @@ impl Simulation {
             node.texts_out.iter_mut().for_each(String::clear);
             node.inputs.iter_mut().for_each(|v| *v = 0.0);
             node.apply_initial();
+            if let Some(run) = &mut node.array {
+                run.behavior = arrays::behavior(run.op.0, run.op.1);
+            }
             if node.module.is_none() {
                 if let Some(b) = behavior_for(&node.def.info.kind, node.tag, &node.types) {
                     node.behavior = Some(b);
@@ -702,6 +747,34 @@ impl Simulation {
                     } else {
                         self.vars.insert(var.clone(), node.inputs[0]);
                     }
+                }
+            } else if let Some(run) = &mut node.array {
+                if let Some(mut arr) = self.arrays.remove(&run.name) {
+                    // The destination of a copy leaves the map for the scan; the array itself
+                    // is its own destination only by mistake, and then there is none.
+                    let mut dest = match &run.dest {
+                        Some(d) if *d != run.name => self.arrays.remove(d).map(|a| (d.clone(), a)),
+                        _ => None,
+                    };
+                    let same_type = dest.as_ref().is_some_and(|(_, a)| a.ty == arr.ty);
+                    let ctx = OpCtx {
+                        inputs: &node.inputs,
+                        texts: &node.texts_in,
+                    };
+                    run.behavior.step(
+                        &mut arr,
+                        dest.as_mut().filter(|_| same_type).map(|(_, a)| a),
+                        &ctx,
+                        &mut node.outputs,
+                        &mut node.texts_out,
+                    );
+                    for (k, v) in node.outputs.iter_mut().enumerate() {
+                        *v = node.types.quantize(k, *v);
+                    }
+                    if let Some((name, a)) = dest {
+                        self.arrays.insert(name, a);
+                    }
+                    self.arrays.insert(run.name.clone(), arr);
                 }
             } else if let Some(m) = &mut node.module {
                 let (outputs, texts) = m

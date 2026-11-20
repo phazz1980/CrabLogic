@@ -2,6 +2,7 @@
 //!
 //! The core knows nothing about GUI, AI or the board tools.
 
+pub mod array_blocks;
 pub mod arrays;
 pub mod blockfile;
 pub mod boardfile;

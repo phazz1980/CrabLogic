@@ -994,7 +994,11 @@ impl Default for Library {
             user: HashSet::new(),
             project: HashSet::new(),
             user_folders: BTreeSet::new(),
-            builtins: crate::vars::builtin_blocks(),
+            builtins: {
+                let mut all = crate::vars::builtin_blocks();
+                all.extend(crate::array_blocks::builtin_blocks());
+                all
+            },
             boards: Boards::default(),
             derived: Derived::default(),
         }
@@ -1180,7 +1184,9 @@ impl Library {
     /// Definition of a schema block, including variable blocks, whose port type comes
     /// from the variable (float while the variable is unknown).
     pub fn resolve(&self, logic: &crate::Logic, block: &crate::Block) -> Option<&LibraryBlock> {
-        match crate::vars::builtin_kind(logic, block) {
+        match crate::vars::builtin_kind(logic, block)
+            .or_else(|| crate::array_blocks::builtin_kind(logic, block))
+        {
             Some(kind) => self.builtins.get(&kind),
             None => {
                 let base = self.get(&block.kind)?;

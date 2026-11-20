@@ -16,6 +16,7 @@
 //! The module keeps its own state between steps.
 //! Indexes follow the order of ports and parameters in `block.toml`.
 
+pub mod arrays;
 pub mod builtin;
 pub mod bus;
 pub mod display;
