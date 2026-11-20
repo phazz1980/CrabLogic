@@ -62,6 +62,7 @@ pub fn error_anchor(kind: DiagKind) -> &'static str {
         DiagKind::CyclePeriod => crate::i18n::tr("период-цикла"),
         DiagKind::StepOverPeriod => crate::i18n::tr("шаг-листа-больше-периода"),
         DiagKind::Array => crate::i18n::tr("массив-или-структура"),
+        DiagKind::NetworkOff => crate::i18n::tr("сеть-выключена"),
     }
 }
 

@@ -36,6 +36,11 @@ pub const WEB_FILE: &str = "web.toml";
 /// Picture of all sheets, for viewing the schema without the editor.
 pub const BOARDS_PDF: &str = "boards.pdf";
 
+/// Blocks that bring the internet to the board, in the order the board prefers them (Ethernet, then
+/// Wi-Fi, then GSM). The block of a switched-off provider is not in the project. `gsm` is the
+/// future data modem (`specs/gsm-data`): it has no block yet, so it only counts once it exists.
+pub const NETWORK_PROVIDERS: [&str; 3] = ["ethernet", "wifi", "gsm"];
+
 /// Blocks of the web page (the `web_ui` host and the widgets) are stored in `web.toml`.
 pub fn is_web_kind(kind: &str) -> bool {
     kind.starts_with("web_") || is_screen_kind(kind)
@@ -246,8 +251,37 @@ impl Project {
             .collect()
     }
 
-    /// A copy without the blocks of switched-off sheets and the links touching them:
-    /// what is checked and built.
+    /// Whether the project has no network provider (none of the blocks of [`NETWORK_PROVIDERS`]):
+    /// the blocks that need the network (see [`Project::network_blocks`]) are then left out of the
+    /// build. One provider that is on is enough.
+    pub fn network_off(&self) -> bool {
+        !self
+            .logic
+            .blocks
+            .iter()
+            .any(|b| NETWORK_PROVIDERS.contains(&b.kind.as_str()))
+    }
+
+    /// Ids of the blocks that need a network provider: MQTT, Sparkplug, NTP, Modbus TCP and the
+    /// web page with its widgets. The providers themselves are not among them.
+    pub fn network_blocks(&self) -> Vec<&str> {
+        self.logic
+            .blocks
+            .iter()
+            .filter(|b| {
+                let k = b.kind.as_str();
+                k == "ntp"
+                    || k.starts_with("mqtt")
+                    || k.starts_with("sparkplug")
+                    || k.starts_with("modbus_tcp")
+                    || k.starts_with("web_")
+            })
+            .map(|b| b.id.as_str())
+            .collect()
+    }
+
+    /// A copy without the blocks of switched-off sheets and the links touching them, and without the
+    /// blocks that need a network when the project has none: what is checked and built.
     pub fn without_disabled(&self) -> Project {
         let mut out = self.clone();
         let mut off: Vec<String> = self
@@ -271,6 +305,10 @@ impl Project {
                     .filter(|b| b.kind.starts_with("web_"))
                     .map(|b| b.id.clone()),
             );
+        }
+        // With no Wi-Fi and no Ethernet the network blocks stay in the project but are not built.
+        if self.network_off() {
+            off.extend(self.network_blocks().into_iter().map(String::from));
         }
         if off.is_empty() {
             return out;

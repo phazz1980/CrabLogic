@@ -46,7 +46,7 @@ impl Project {
             }
             if field == GO {
                 return Err(EditError::BadStruct(format!(
-                    "поле «{GO}» занято входом разрешения блока «Структура: собрать»"
+                    "поле «{GO}» занято входом разрешения блока «Структура: запись»"
                 )));
             }
             if seen.contains(&field) {

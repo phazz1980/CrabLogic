@@ -75,6 +75,14 @@ fn modbus_messages(name: &str, src: &str) -> Vec<String> {
         "[project]\nname = \"t\"\n\n[board]\nfqbn = \"esp32:esp32:esp32\"\n",
     )
     .unwrap();
+    // A network provider keeps the Modbus TCP blocks in the build.
+    let src = format!(
+        "[[block]]
+id = \"net\"
+type = \"ethernet\"
+
+{src}"
+    );
     std::fs::write(dir.join("logic.toml"), src).unwrap();
     let project = Project::load(&dir).unwrap();
     let report = check_project(&project, &library());

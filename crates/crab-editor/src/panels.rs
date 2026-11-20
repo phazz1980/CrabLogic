@@ -991,7 +991,14 @@ pub fn left(app: &mut EditorApp, ui: &mut Ui) {
             net_actions = crate::netpanel::show(app, ui, &mut radio_actions);
             group(ui, "boards", crate::i18n::tr("Платы"), Level::Mid, |_| {}, |ui| {
                 let mut by_sheet: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
-                for b in &logic.blocks {
+                // With every network provider off the network blocks are not built: they stay in
+                // the project but not in this list.
+                let no_network: Vec<&str> = if doc.project.network_off() {
+                    doc.project.network_blocks()
+                } else {
+                    Vec::new()
+                };
+                for b in logic.blocks.iter().filter(|b| !no_network.contains(&b.id.as_str())) {
                     let s = doc.project.layout.blocks.get(&b.id).map_or(1, |p| p.sheet);
                     by_sheet.entry(s).or_default().push(&b.id);
                 }
@@ -1324,6 +1331,21 @@ fn library(app: &mut EditorApp, ui: &mut Ui) {
         if needle.is_empty() || hay.contains(&needle) {
             groups.entry("Массивы").or_default().push((
                 op.kind(),
+                crate::i18n::tr(name).to_owned(),
+                description,
+            ));
+        }
+    }
+    // The structure blocks are built in too: write and read, next to the array blocks.
+    for kind in [
+        crab_core::struct_blocks::PACK,
+        crab_core::struct_blocks::UNPACK,
+    ] {
+        let (name, description) = crab_core::struct_blocks::caption(kind);
+        let hay = format!("{kind} {name} {} {description}", crate::i18n::tr(name)).to_lowercase();
+        if needle.is_empty() || hay.contains(&needle) {
+            groups.entry("Массивы").or_default().push((
+                kind,
                 crate::i18n::tr(name).to_owned(),
                 description,
             ));

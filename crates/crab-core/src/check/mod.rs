@@ -69,8 +69,30 @@ pub fn check(logic: &Logic, lib: &Library, layout: Option<&Layout>) -> Report {
 /// or that do not fit the block, and the UART settings.
 pub fn check_project(project: &Project, lib: &Library) -> Report {
     let links = project.enabled_links();
+    // Network blocks of a project with no network stay in it but are not checked: say so.
+    let skipped_network: Vec<String> = if project.network_off() {
+        project
+            .network_blocks()
+            .into_iter()
+            .map(String::from)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let project = &project.without_disabled();
     let mut report = check(&project.logic, lib, Some(&project.layout));
+    if !skipped_network.is_empty() {
+        report.push(
+            DiagKind::NetworkOff,
+            Severity::Warning,
+            None,
+            None,
+            format!(
+                "блоки сети не собираются, пока выключены Wi-Fi, Ethernet и GSM: {}",
+                skipped_network.join(", ")
+            ),
+        );
+    }
     // An unused tag waits in the project tree: its inputs are not fed yet.
     let unused = project.unused_tags(lib);
     // The same for a widget of the web page: its images on the sheets are fed, not it.

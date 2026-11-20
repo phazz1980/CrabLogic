@@ -155,7 +155,7 @@ pub(super) fn structure_body(ui: &mut Ui, d: &mut StructDialog) {
     if ui
         .button(crate::i18n::tr("Добавить поле"))
         .on_hover_text(crate::i18n::tr(
-            "Поле получает вход и выход у блоков «Структура: собрать» и «Структура: разобрать»",
+            "Поле получает вход и выход у блоков «Структура: запись» и «Структура: чтение»",
         ))
         .clicked()
     {

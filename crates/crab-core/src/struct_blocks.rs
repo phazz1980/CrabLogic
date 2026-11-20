@@ -41,14 +41,15 @@ pub fn struct_name(block: &Block) -> Option<&str> {
     }
 }
 
-fn caption(kind: &str) -> (&'static str, &'static str) {
+/// Name and description of a structure block in Russian (the library on the right lists them).
+pub fn caption(kind: &str) -> (&'static str, &'static str) {
     if kind == PACK {
         (
-            "Структура: собрать",
+            "Структура: запись",
             "Пока вход go включён, записывает входы в поля структуры.",
         )
     } else {
-        ("Структура: разобрать", "Отдаёт поля структуры на выходы.")
+        ("Структура: чтение", "Отдаёт поля структуры на выходы.")
     }
 }
 

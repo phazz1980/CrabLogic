@@ -985,3 +985,68 @@ fn lan8720_block_pins_match_presets() {
         assert_eq!(pins, phy.pins(), "{case:?}");
     }
 }
+
+/// MQTT and the web page of a project whose Wi-Fi, Ethernet and GSM are all off stay in the project
+/// but are not built or checked; one provider that is on brings them back.
+#[test]
+fn network_blocks_are_left_out_while_every_provider_is_off() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/mqtt")).unwrap();
+    assert!(!project.network_off());
+    let with = project.without_disabled();
+    assert!(with.logic.blocks.iter().any(|b| b.kind == "mqtt"));
+    assert!(!check_project_kinds(&project, &lib).contains(&DiagKind::NetworkOff));
+
+    // Wi-Fi is switched off: its block is gone, the network blocks stay but are not built.
+    project.logic.blocks.retain(|b| b.kind != "wifi");
+    assert!(project.network_off());
+    let kept = project.network_blocks().len();
+    assert!(kept >= 3, "{kept}");
+    assert!(project
+        .logic
+        .blocks
+        .iter()
+        .any(|b| b.kind.starts_with("mqtt")));
+    let built = project.without_disabled();
+    assert!(!built
+        .logic
+        .blocks
+        .iter()
+        .any(|b| b.kind.starts_with("mqtt")));
+    // The links of the left-out blocks are gone too, so nothing dangles.
+    for l in &built.logic.links {
+        assert!(built.logic.block(&l.from.block).is_some());
+        assert!(built.logic.block(&l.to.block).is_some());
+    }
+    let report = crab_core::check_project(&project, &lib);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == DiagKind::NetworkOff && d.severity == crab_core::Severity::Warning),
+        "{:?}",
+        report.diagnostics
+    );
+
+    // Ethernet alone is enough.
+    let mut eth = project.logic.blocks[0].clone();
+    eth.id = "lan".into();
+    eth.kind = "ethernet".into();
+    eth.params.clear();
+    project.logic.blocks.push(eth);
+    assert!(!project.network_off());
+    assert!(project
+        .without_disabled()
+        .logic
+        .blocks
+        .iter()
+        .any(|b| b.kind.starts_with("mqtt")));
+}
+
+fn check_project_kinds(project: &Project, lib: &Library) -> Vec<DiagKind> {
+    crab_core::check_project(project, lib)
+        .diagnostics
+        .iter()
+        .map(|d| d.kind)
+        .collect()
+}

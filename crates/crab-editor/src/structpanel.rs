@@ -1,8 +1,8 @@
 //! The «Структуры» folder of the left panel (`specs/arrays-structs`, task 3b), right after
 //! «Массивы»: the structures of the project and nothing else. «+» makes a structure, a double click
 //! or the menu changes it, the menu adds blocks of it or deletes it. A row dragged onto a sheet
-//! gives a `struct_unpack` block of the structure. The blocks «Структура: собрать» and
-//! «Структура: разобрать» are in the library on the right, group «Массивы».
+//! gives a `struct_unpack` block of the structure. The blocks «Структура: запись» and
+//! «Структура: чтение» are in the library on the right, group «Массивы».
 
 use eframe::egui::{Id, Ui};
 
@@ -85,7 +85,7 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<StructAction> {
                     text,
                 )
                 .on_hover_text(crate::i18n::fmt(
-                    "{0}\nПеретащите на плату: появится блок «Структура: разобрать». Двойной щелчок — изменить. Блоки собрать и разобрать — в библиотеке справа, группа «Массивы».",
+                    "{0}\nПеретащите на плату: появится блок «Структура: чтение». Двойной щелчок — изменить. Блоки собрать и разобрать — в библиотеке справа, группа «Массивы».",
                     &[&st.description],
                 ));
                 if resp.double_clicked() {
@@ -98,14 +98,14 @@ pub fn show(app: &EditorApp, ui: &mut Ui) -> Vec<StructAction> {
                     }
                     ui.separator();
                     if ui
-                        .button(crate::i18n::tr("Добавить блок: собрать"))
+                        .button(crate::i18n::tr("Добавить блок: запись"))
                         .clicked()
                     {
                         rows.push(StructAction::AddBlock(PACK, st.name.clone()));
                         ui.close();
                     }
                     if ui
-                        .button(crate::i18n::tr("Добавить блок: разобрать"))
+                        .button(crate::i18n::tr("Добавить блок: чтение"))
                         .clicked()
                     {
                         rows.push(StructAction::AddBlock(UNPACK, st.name.clone()));

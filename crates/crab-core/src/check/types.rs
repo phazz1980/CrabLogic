@@ -66,6 +66,9 @@ pub enum DiagKind {
     StepOverPeriod,
     /// An array or a structure: name, length, initial values, fields, limit of the chip.
     Array,
+    /// Network blocks (MQTT, web page, NTP, Modbus TCP) in a project with no Wi-Fi and no Ethernet:
+    /// they stay in the project and are not built.
+    NetworkOff,
 }
 
 impl DiagKind {
@@ -113,6 +116,7 @@ impl DiagKind {
         DiagKind::CyclePeriod,
         DiagKind::StepOverPeriod,
         DiagKind::Array,
+        DiagKind::NetworkOff,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -161,6 +165,7 @@ impl DiagKind {
             DiagKind::CyclePeriod => "cycle-period",
             DiagKind::StepOverPeriod => "step-over-period",
             DiagKind::Array => "array",
+            DiagKind::NetworkOff => "network-off",
         }
     }
 }
