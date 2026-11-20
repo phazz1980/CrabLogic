@@ -156,6 +156,8 @@ espflash flash -p COM3 --flash-mode dio --partition-table partitions.csv ../../.
 crablogic flash-master --chip esp32 -p COM3
 ```
 
+**Предпочитайте `crablogic flash-master`** (папка `firmware/<чип>/` с `crab-master-rs.elf`, `partitions.csv` и `info.toml`, как её собирает `scripts/build-dist.ps1`): ручная заливка `espflash` с `--flash-mode dio` 20.11.2026 дала на ESP32 AOT в 2,4 раза медленнее (logic_100_aot 92,8 вместо 32,7 мкс), а на ESP32-C3 плата отклоняла модули («flash»).
+
 Отличия от C3 (`sdkconfig.defaults.esp32` добавляется к `sdkconfig.defaults` самим ESP-IDF):
 
 - консоль — UART0 (115200) через мост USB-UART платы (CP2102/CH340), а не встроенный USB;
