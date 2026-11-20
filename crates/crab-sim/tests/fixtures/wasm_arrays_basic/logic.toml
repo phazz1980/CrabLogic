@@ -1,0 +1,241 @@
+# Array read and write in a module against the simulation: an index that runs 0, 1, 2... over the
+# scans (so it leaves the arrays), the four element types, the initial tables.
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[array]]
+name = "a"
+type = "int"
+len = 4
+items = [10, 20]
+
+[[array]]
+name = "b"
+type = "byte"
+len = 3
+items = [250, 255]
+
+[[array]]
+name = "f"
+type = "float"
+len = 2
+items = [1.5]
+
+[[array]]
+name = "z"
+type = "bool"
+len = 2
+items = [true]
+
+# n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# a[n] = n + 1: writes the table, then runs off its end.
+[[block]]
+id = "puta"
+type = "array_set"
+array = "a"
+
+[[link]]
+from = "nr.out"
+to = "puta.index"
+
+[[link]]
+from = "inc.out"
+to = "puta.value"
+
+# b[n] = n + 250: bytes wrap at 256.
+[[block]]
+id = "plus250"
+type = "add"
+[block.const]
+b = 250
+
+[[link]]
+from = "nr.out"
+to = "plus250.a"
+
+[[block]]
+id = "putb"
+type = "array_set"
+array = "b"
+
+[[link]]
+from = "nr.out"
+to = "putb.index"
+
+[[link]]
+from = "plus250.out"
+to = "putb.value"
+
+# f[n] = n + 1 as a float.
+[[block]]
+id = "putf"
+type = "array_set"
+array = "f"
+
+[[link]]
+from = "nr.out"
+to = "putf.index"
+
+[[link]]
+from = "inc.out"
+to = "putf.value"
+
+# z[n] = (n >= 1).
+[[block]]
+id = "ge1"
+type = "compare"
+op = 5
+[block.const]
+b = 1
+
+[[link]]
+from = "nr.out"
+to = "ge1.a"
+
+[[block]]
+id = "putz"
+type = "array_set"
+array = "z"
+
+[[link]]
+from = "nr.out"
+to = "putz.index"
+
+[[link]]
+from = "ge1.out"
+to = "putz.value"
+
+# Every element of every array is read by a constant index.
+[[block]]
+id = "a0"
+type = "array_get"
+array = "a"
+[block.const]
+index = 0
+
+[[block]]
+id = "a1"
+type = "array_get"
+array = "a"
+[block.const]
+index = 1
+
+[[block]]
+id = "a2"
+type = "array_get"
+array = "a"
+[block.const]
+index = 2
+
+[[block]]
+id = "a3"
+type = "array_get"
+array = "a"
+[block.const]
+index = 3
+
+[[block]]
+id = "b0"
+type = "array_get"
+array = "b"
+[block.const]
+index = 0
+
+[[block]]
+id = "b1"
+type = "array_get"
+array = "b"
+[block.const]
+index = 1
+
+[[block]]
+id = "b2"
+type = "array_get"
+array = "b"
+[block.const]
+index = 2
+
+[[block]]
+id = "f0"
+type = "array_get"
+array = "f"
+[block.const]
+index = 0
+
+[[block]]
+id = "f1"
+type = "array_get"
+array = "f"
+[block.const]
+index = 1
+
+[[block]]
+id = "z0"
+type = "array_get"
+array = "z"
+[block.const]
+index = 0
+
+[[block]]
+id = "z1"
+type = "array_get"
+array = "z"
+[block.const]
+index = 1
+
+# The index n itself: past the end it gives 0 and err.
+[[block]]
+id = "far"
+type = "array_get"
+array = "a"
+
+[[link]]
+from = "nr.out"
+to = "far.index"
+
+# A negative index.
+[[block]]
+id = "neg"
+type = "array_get"
+array = "a"
+
+[[block]]
+id = "minus"
+type = "sub"
+[block.const]
+a = 0
+
+[[link]]
+from = "nr.out"
+to = "minus.b"
+
+[[link]]
+from = "minus.out"
+to = "neg.index"

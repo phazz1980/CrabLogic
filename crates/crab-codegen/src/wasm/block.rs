@@ -18,6 +18,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if has_string {
             return Err(self.unsupported(inst, "строки в этом блоке пока не поддержаны в модулях"));
         }
+        if self.array_block(inst)? {
+            return Ok(());
+        }
         let kind = inst.block.kind.as_str();
         if let Some(code) = crab_blocks::wasm_block(kind) {
             let ty = code(&mut BlockEmit { e: self, inst })

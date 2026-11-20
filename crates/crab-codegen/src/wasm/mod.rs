@@ -18,6 +18,9 @@ use wasm_encoder::{
 use crate::program::{Instance, Program, Source};
 use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 
+mod array;
+mod array_queue;
+mod array_stats;
 mod block;
 mod block_emit;
 pub mod display;
@@ -354,6 +357,8 @@ struct Emitter<'a, 'p> {
     consts: HashMap<Vec<u8>, u32>,
     /// Buffers of string signals by signal index.
     bufs: HashMap<usize, Buf>,
+    /// Arrays of the project placed in the memory of this module (`array.rs`).
+    arrays: HashMap<String, array::ArrayMem>,
     /// Retained variables this module owns: loaded in `init`, saved from `step`.
     retained: Vec<Retained>,
     /// Instances of blocks with their own `block.wasm`, in step order (`user_block.rs`).
@@ -477,6 +482,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             data: Vec::new(),
             consts: HashMap::new(),
             bufs: HashMap::new(),
+            arrays: HashMap::new(),
             retained: Vec::new(),
             drivers: Vec::new(),
             parsed_drivers: HashMap::new(),
