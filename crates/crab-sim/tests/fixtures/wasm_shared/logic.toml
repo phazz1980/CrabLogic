@@ -1,0 +1,101 @@
+# An array and a structure used by blocks of two sheets (spec arrays-structs, task 5): the build joins
+# the two sheets into one module, and the module gives the numbers of the simulation.
+# Sheet 1 writes (a counter, `array_set`, `struct_pack`), sheet 2 reads (see layout.toml).
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[array]]
+name = "win"
+type = "int"
+len = 4
+
+[[struct]]
+name = "rec"
+
+[[struct.field]]
+name = "total"
+type = "int"
+init = 5
+
+# Sheet 1: n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# win[n] = n + 100; the index leaves the array after scan 3.
+[[block]]
+id = "plus100"
+type = "add"
+[block.const]
+b = 100
+
+[[link]]
+from = "nr.out"
+to = "plus100.a"
+
+[[block]]
+id = "aset"
+type = "array_set"
+array = "win"
+
+[[link]]
+from = "nr.out"
+to = "aset.index"
+
+[[link]]
+from = "plus100.out"
+to = "aset.value"
+
+[[block]]
+id = "pk"
+type = "struct_pack"
+struct = "rec"
+
+[[link]]
+from = "nr.out"
+to = "pk.total"
+
+# Sheet 2: reads what sheet 1 wrote.
+[[block]]
+id = "aget1"
+type = "array_get"
+array = "win"
+[block.const]
+index = 1
+
+[[block]]
+id = "aget_n"
+type = "array_get"
+array = "win"
+
+[[link]]
+from = "nr.out"
+to = "aget_n.index"
+
+[[block]]
+id = "un"
+type = "struct_unpack"
+struct = "rec"

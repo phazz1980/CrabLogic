@@ -3,6 +3,7 @@
 //! the AI add these to the schema check of `crab-core` (which does not know the generator).
 
 use crab_core::library::ESP32_CPP_TEMPLATE;
+use crab_core::pins::Chip;
 use crab_core::{DiagKind, Diagnostic, Library, Project, Severity};
 
 use crate::{Program, WasmError};
@@ -77,9 +78,14 @@ pub fn has_cpp_code(lib: &Library, kind: &str) -> bool {
 /// only the first refused block is found.
 pub fn rust_master_diagnostics(project: &Project, lib: &Library) -> Vec<Diagnostic> {
     let project = crate::prepare(project, lib);
-    let Ok(program) = Program::build(&project, lib) else {
+    let Ok(mut program) = Program::build(&project, lib) else {
         return Vec::new();
     };
+    // Sheets that share an array or a structure are one module, as in the build.
+    let groups = program.shared_groups(Chip::of_board(&project.config.board));
+    if program.set_groups(groups).is_err() {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for sheet in program.sheets() {
         let Err(WasmError::Unsupported {

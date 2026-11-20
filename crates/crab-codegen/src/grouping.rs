@@ -10,7 +10,10 @@
 //!   every block) stays within [`STEP_BUDGET_PERCENT`] of the period, and it holds at most
 //!   [`MAX_GROUP_BLOCKS`] blocks;
 //! * a sheet is never split: one that does not fit a group starts a new one, and a sheet too big
-//!   for any budget is a module of its own.
+//!   for any budget is a module of its own;
+//! * sheets whose blocks reach the same array or structure are one module whatever the budget
+//!   (`specs/arrays-structs` task 5): the data lives in the memory of a module. They need one class
+//!   and no `web_ui` sheet among them; otherwise they stay apart and the build says why.
 
 use crab_core::cost::costs_for;
 use crab_core::pins::Chip;
@@ -107,7 +110,120 @@ pub fn pack_sheets(
     closed
 }
 
+/// Joins the facts of the sheets of every set of `shared` into one sheet (numbered by the smallest
+/// member), packs, and expands the groups back. A set that cannot be one module (two classes, or a
+/// `web_ui` sheet in it) is left as it is. A joined sheet that packs with no other still makes a group.
+pub fn pack_sheets_shared(
+    sheets: &[SheetFacts],
+    shared: &[Vec<u32>],
+    overhead_us: f32,
+    max_blocks: usize,
+    max_outputs: usize,
+) -> Vec<Vec<u32>> {
+    let mut facts: Vec<SheetFacts> = sheets.to_vec();
+    let mut members: std::collections::BTreeMap<u32, Vec<u32>> = Default::default();
+    for set in shared {
+        let mut found: Vec<SheetFacts> = facts
+            .iter()
+            .filter(|f| set.contains(&f.number))
+            .cloned()
+            .collect();
+        found.sort_unstable_by_key(|f| f.number);
+        if found.len() < 2 || found.iter().any(|f| f.alone || f.class != found[0].class) {
+            continue;
+        }
+        let mut one = found[0].clone();
+        for f in &found[1..] {
+            one.blocks += f.blocks;
+            one.outputs += f.outputs;
+            one.step_us += f.step_us;
+            one.budget_us = one.budget_us.min(f.budget_us);
+        }
+        let all: Vec<u32> = found.iter().map(|f| f.number).collect();
+        facts.retain(|f| !all.contains(&f.number));
+        facts.push(one);
+        members.insert(all[0], all);
+    }
+    facts.sort_unstable_by_key(|f| f.number);
+    let packed = pack_sheets(&facts, overhead_us, max_blocks, max_outputs);
+    let expand = |number: u32| {
+        members
+            .get(&number)
+            .cloned()
+            .unwrap_or_else(|| vec![number])
+    };
+    let mut groups: Vec<Vec<u32>> = packed
+        .iter()
+        .map(|g| {
+            let mut all: Vec<u32> = g.iter().flat_map(|&n| expand(n)).collect();
+            all.sort_unstable();
+            all
+        })
+        .collect();
+    // A joined sheet that no group took still is one module of several sheets.
+    for (number, all) in &members {
+        if !packed.iter().any(|g| g.contains(number)) {
+            groups.push(all.clone());
+        }
+    }
+    groups.sort_unstable_by_key(|g| g[0]);
+    groups
+}
+
 impl Program<'_> {
+    /// Sets of sheets (ascending, two or more each) whose blocks reach the same array or structure.
+    /// Sets that share a sheet are merged.
+    pub fn shared_sheet_sets(&self) -> Vec<Vec<u32>> {
+        use crab_core::array_blocks::{array_name, ArrayOp, DEST_PARAM};
+        use crab_core::struct_blocks::struct_name;
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut users: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+        for b in &self.blocks {
+            let sheet = self.sheet_of(&b.block.id);
+            let mut names: Vec<&str> = Vec::new();
+            names.extend(array_name(b.block));
+            names.extend(struct_name(b.block));
+            if ArrayOp::from_kind(&b.block.kind).is_some() {
+                if let Some(crab_core::ParamValue::Text(d)) = b.block.params.get(DEST_PARAM) {
+                    names.push(d);
+                }
+            }
+            for name in names.into_iter().filter(|n| !n.is_empty()) {
+                users.entry(name.to_owned()).or_default().insert(sheet);
+            }
+        }
+        let mut sets: Vec<BTreeSet<u32>> = users.into_values().filter(|s| s.len() > 1).collect();
+        // Merge sets that have a sheet in common until none do.
+        let mut i = 0;
+        while i < sets.len() {
+            let mut j = i + 1;
+            let mut merged = false;
+            while j < sets.len() {
+                if sets[i].intersection(&sets[j]).next().is_some() {
+                    let other = sets.remove(j);
+                    sets[i].extend(other);
+                    merged = true;
+                } else {
+                    j += 1;
+                }
+            }
+            if !merged {
+                i += 1;
+            }
+        }
+        sets.into_iter().map(|s| s.into_iter().collect()).collect()
+    }
+
+    /// The groups the build must make whatever the budget: the sheets that share an array or a
+    /// structure, where they can be one module.
+    pub fn shared_groups(&self, chip: Option<Chip>) -> Vec<Vec<u32>> {
+        let shared = self.shared_sheet_sets();
+        self.plan_groups(chip)
+            .into_iter()
+            .filter(|g| shared.iter().any(|set| set.iter().all(|s| g.contains(s))))
+            .collect()
+    }
+
     /// The facts about every sheet that has blocks, ascending.
     fn sheet_facts(&self, chip: Option<Chip>) -> (Vec<SheetFacts>, f32) {
         let costs = costs_for(chip);
@@ -169,7 +285,13 @@ impl Program<'_> {
     pub fn plan_groups_for(&self, chip: Option<Chip>, watch: bool) -> Vec<Vec<u32>> {
         let (facts, overhead) = self.sheet_facts(chip);
         let outputs = if watch { MAX_WATCHED } else { usize::MAX };
-        pack_sheets(&facts, overhead, MAX_GROUP_BLOCKS, outputs)
+        pack_sheets_shared(
+            &facts,
+            &self.shared_sheet_sets(),
+            overhead,
+            MAX_GROUP_BLOCKS,
+            outputs,
+        )
     }
 
     /// Joins the sheets as [`Program::plan_groups`] plans.
@@ -187,9 +309,15 @@ impl Program<'_> {
         let chip = Chip::of_board(&self.project.config.board);
         let planned = self.plan_groups_for(chip, watch);
         self.set_groups(planned.clone())?;
+        // A group of sheets that share data stays even if its module does not build: separated, the
+        // sheets would only report that the data is shared, and the real reason is in the module.
+        let shared = self.shared_sheet_sets();
         let kept: Vec<Vec<u32>> = planned
             .into_iter()
-            .filter(|g| self.wasm_module_with(g[0], watch).is_ok())
+            .filter(|g| {
+                shared.iter().any(|set| set.iter().all(|s| g.contains(s)))
+                    || self.wasm_module_with(g[0], watch).is_ok()
+            })
             .collect();
         self.set_groups(kept)
     }
@@ -313,5 +441,46 @@ mod tests {
             pack_sheets(&sheets, 30.0, 1000, usize::MAX),
             vec![vec![1, 3]]
         );
+    }
+
+    #[test]
+    fn sheets_that_share_data_are_one_module_over_the_budget() {
+        // Sheets 1 and 3 share an array: each is too big to join anything, together they are a group.
+        let sheets = [
+            sheet(1, NORMAL, 10, 2000.0),
+            sheet(2, NORMAL, 10, 40.0),
+            sheet(3, NORMAL, 10, 2000.0),
+        ];
+        assert_eq!(
+            pack_sheets_shared(&sheets, &[vec![1, 3]], 30.0, 1000, usize::MAX),
+            vec![vec![1, 3]]
+        );
+        // Without the shared set the budget keeps them apart.
+        assert!(pack_sheets(&sheets, 30.0, 1000, usize::MAX)
+            .iter()
+            .all(|g| g != &vec![1, 3]));
+    }
+
+    #[test]
+    fn a_shared_group_takes_small_sheets_with_it() {
+        let sheets: Vec<_> = (1..=4).map(|n| sheet(n, NORMAL, 10, 40.0)).collect();
+        assert_eq!(
+            pack_sheets_shared(&sheets, &[vec![2, 4]], 30.0, 1000, usize::MAX),
+            vec![vec![1, 2, 3, 4]]
+        );
+    }
+
+    #[test]
+    fn sheets_of_two_classes_or_a_web_sheet_cannot_be_joined_by_sharing() {
+        let fast = Class {
+            speed: 0,
+            period_ms: 0,
+        };
+        let sheets = [sheet(1, NORMAL, 10, 2000.0), sheet(2, fast, 10, 2000.0)];
+        assert!(pack_sheets_shared(&sheets, &[vec![1, 2]], 30.0, 1000, usize::MAX).is_empty());
+        let mut web = sheet(2, NORMAL, 10, 2000.0);
+        web.alone = true;
+        let sheets = [sheet(1, NORMAL, 10, 2000.0), web];
+        assert!(pack_sheets_shared(&sheets, &[vec![1, 2]], 30.0, 1000, usize::MAX).is_empty());
     }
 }

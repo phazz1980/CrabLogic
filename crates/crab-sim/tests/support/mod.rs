@@ -52,7 +52,9 @@ pub fn compare_at(rel: &str, min_outputs: usize, steps: u32, dt: u32) -> usize {
     let name = rel;
     let lib = library();
     let project = Project::load(repo_path(rel)).unwrap();
-    let program = Program::build(&project, &lib).unwrap();
+    let mut program = Program::build(&project, &lib).unwrap();
+    // Sheets are joined as the build joins them (sheets that share an array or a structure).
+    program.auto_group_for_board(true).unwrap();
     let built = program.wasm_module_with(1, true).unwrap();
     let manifest = Manifest::parse(&built.manifest).unwrap();
     let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();

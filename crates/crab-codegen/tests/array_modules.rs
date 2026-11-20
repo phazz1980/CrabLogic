@@ -126,7 +126,7 @@ fn an_array_of_two_sheets_is_refused_with_a_reason() {
     let (p, dir) = project("sheets", logic, layout);
     let err = build(&p, &lib).unwrap_err();
     let _ = std::fs::remove_dir_all(dir);
-    assert!(err.contains("нескольких листов"), "{err}");
+    assert!(err.contains("нескольких модулей"), "{err}");
 }
 
 #[test]
@@ -193,5 +193,5 @@ fn a_structure_on_two_sheets_is_refused() {
         );
     }
     let err = build(&project, &lib).unwrap_err();
-    assert!(err.contains("нескольких листов"), "{err}");
+    assert!(err.contains("нескольких модулей"), "{err}");
 }

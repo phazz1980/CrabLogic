@@ -1,0 +1,18 @@
+[[sheet]]
+number = 2
+name = "Чтение"
+
+[block.aget1]
+x = 40.0
+y = 40.0
+sheet = 2
+
+[block.aget_n]
+x = 200.0
+y = 40.0
+sheet = 2
+
+[block.un]
+x = 360.0
+y = 40.0
+sheet = 2
