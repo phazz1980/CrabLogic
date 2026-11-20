@@ -1,5 +1,6 @@
 //! UART bytes of the blocks (`uart(op, port, a, b)`), as the C++ master does them. Port 0 is the
-//! console of the master (its protocol): a module may only send text or bytes there. Ports 1 and 2
+//! console of the master (its protocol): a module sends text or bytes there and reads what the
+//! editor typed in the debug console (`tin`, ops 1 and 2). Ports 1 and 2
 //! (only 1 on the C3) are set up by codes and then read and written byte by byte.
 //!
 //! op 0 setting: a = code, b = value; code 0 starts the list, 63 starts the port (once).
@@ -10,6 +11,7 @@
 //! fitted; op 7 new frame format as text ("8E1"), 1 if it is a format.
 
 use super::spin::Spin;
+use crab_master_rs::console_in::ConsoleIn;
 use crab_kernel::host::Mem;
 use esp_idf_svc::sys;
 use std::io::Write;
@@ -43,6 +45,15 @@ static UART: Spin<[Port; PORTS]> = Spin::new(
         }
     }; PORTS],
 );
+
+/// Console input for a `uart_read` block on USB (port 0): filled by the io thread (`tin`), emptied
+/// by the scan, so a ceiling lock as the ports above.
+static CONSOLE_IN: Spin<ConsoleIn> = Spin::new(ConsoleIn::new());
+
+/// Puts typed console bytes in the input ring; `false` (nothing taken) when they do not fit.
+pub fn console_push(bytes: &[u8]) -> bool {
+    CONSOLE_IN.lock_ceiling().push(bytes)
+}
 
 fn word_length(bits: i32) -> sys::uart_word_length_t {
     match bits {
@@ -145,6 +156,8 @@ pub fn parse_format(text: &[u8]) -> Option<(i32, i32, i32)> {
 pub fn call(op: i32, port: i32, a: i32, b: i32, mem: &mut Mem<'_>) -> i32 {
     if port == 0 {
         return match op {
+            1 => CONSOLE_IN.lock_scan().pop().map_or(-1, i32::from),
+            2 => CONSOLE_IN.lock_scan().len() as i32,
             3 => {
                 let n = 1usize << b.clamp(0, 2);
                 console(&a.to_le_bytes()[..n]);

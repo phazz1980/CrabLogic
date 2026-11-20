@@ -87,11 +87,11 @@ const MAX_TICKS: u32 = 100_000;
 /// `math`, `tag_text` and `on_fault` are done by `crab-kernel` itself (its host and the pin leases).
 /// `retain` and `retain_text` keep values in NVS (`retain.rs`); UART blocks: `uart.rs`; PCF8574 expanders: `pcf.rs`.
 #[cfg(target_arch = "riscv32")]
-const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,restart,rv32imc";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,uart_input,pcf_expander,modbus,web,restart,rv32imc";
 /// Classic ESP32: AOT images from a wamrc built with Espressif's LLVM, pre-linked by the editor
 /// (`crab-build/src/aot_xtensa.rs`) and run from flash through the instruction bus (`shim.c`).
 #[cfg(not(target_arch = "riscv32"))]
-const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,pcf_expander,modbus,web,dac,restart,xtensa-esp32";
+const MODCAPS: &str = "flashmod,abi5,aot,sparkplug,bus,math,tag_text,on_fault,retain,retain_text,uart_format,uart_console,uart_input,pcf_expander,modbus,web,dac,restart,xtensa-esp32";
 
 type Module = WamrInstance<ModuleHost<BoardDevices>>;
 
@@ -960,6 +960,7 @@ impl Master {
             Ok(Command::NetKey(_)) => println!("err netkey only over USB"),
             // Handled by `crab-io`; here only if handed over anyway.
             Ok(Command::Name(_)) => println!("err name is handled by the io thread"),
+            Ok(Command::ConsoleIn(_)) => println!("err tin is handled by the io thread"),
             // A hang of the scan on purpose: the scan watchdog must restart the board.
             #[cfg(feature = "selftest")]
             Ok(Command::SelfTestHang) => {

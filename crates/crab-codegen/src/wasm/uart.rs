@@ -48,17 +48,23 @@ impl<'a, 'p> Emitter<'a, 'p> {
         let Some((u, _)) = crate::program::uart_of(self.program, inst) else {
             return Err(self.unsupported(inst, "не найден UART блока"));
         };
-        // Sending on USB / UART0 goes to the console of the master (its lines, shown by the editor);
-        // reading and configuring them stay with the master.
-        let console = (u.number == 0 || u.number == crab_core::uart::USB) && kind == "uart_send";
+        // Sending on USB / UART0 goes to the console of the master (its lines, shown by the editor),
+        // and reading on USB takes what the editor typed in the debug console (`tin`); configuring
+        // them stays with the master. UART0 of a board that has it free is read as UART1/2 are.
+        let console = (u.number == 0 && kind == "uart_send")
+            || (u.number == crab_core::uart::USB && kind != "uart_config");
         if !console && !(1..=2).contains(&u.number) {
             return Err(self.unsupported(
                 inst,
-                "USB и UART0 заняты протоколом мастера: читать и настраивать можно UART1 и UART2, отправлять — и в консоль мастера (UART0)",
+                "USB и UART0 заняты протоколом мастера: настраивать можно UART1 и UART2, читать — ещё и USB (ввод консоли), отправлять — в USB и UART0 (консоль мастера)",
             ));
         }
         if console {
-            self.extras.insert("uart_console");
+            self.extras.insert(if kind == "uart_read" {
+                "uart_input"
+            } else {
+                "uart_console"
+            });
         }
         let port = if console { 0 } else { i32::from(u.number) };
         let out_index = |name: &str| {
@@ -71,7 +77,9 @@ impl<'a, 'p> Emitter<'a, 'p> {
         };
         match kind {
             "uart_read" => {
-                self.uart_setup(port, &u);
+                if !console {
+                    self.uart_setup(port, &u);
+                }
                 if self.named_param(inst, "mode")? == 0 {
                     self.uart_read_line(inst, port)?;
                     return Ok(true);

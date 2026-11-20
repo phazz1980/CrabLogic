@@ -136,7 +136,7 @@ const F_LOCAL_BASE: u32 = 1000;
 /// Features the master firmware reports in `modcaps=` of its `stats` answer. The first version of the
 /// master had none of them; a module that uses one is listed in `WasmModule::needs`. A master that
 /// does not report a needed one has to be flashed again.
-pub const MASTER_CAPS: [&str; 14] = [
+pub const MASTER_CAPS: [&str; 15] = [
     "math",
     "retain",
     "tag_text",
@@ -156,6 +156,8 @@ pub const MASTER_CAPS: [&str; 14] = [
     "dac",
     // The restart block (`restart`, `specs/restart`).
     "restart",
+    // `uart_read` on USB: the console input typed in the editor (`tin`).
+    "uart_input",
 ];
 
 /// A finished module: the `.wasm` bytes and the text of `module.toml`.

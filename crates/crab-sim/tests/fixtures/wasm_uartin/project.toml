@@ -1,0 +1,6 @@
+[project]
+name = "wasm_uartin"
+description = "Модуль: чтение строки из консоли отладки через USB"
+
+[board]
+fqbn = "esp32:esp32:esp32"

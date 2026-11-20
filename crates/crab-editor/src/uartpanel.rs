@@ -67,12 +67,14 @@ pub fn show(app: &EditorApp, ui: &mut Ui, blocks: &mut Vec<RadioAction>) -> Vec<
             let logic = &doc.project.logic;
             for (kind, title) in [("uart_read", "Чтение"), ("uart_send", "Отправка")] {
                 let hint = app.lib.get(kind).map_or("", |l| l.def.info.description.as_str());
+                // Reading is added once (the reader of a port is one); sending as many times as needed.
+                let can_add = kind != "uart_read" || !logic.blocks.iter().any(|b| b.kind == kind);
                 let add = crate::panels::add_group(
                     ui,
                     ("uart_kind", kind),
                     crate::i18n::tr(title),
                     crate::i18n::tr(hint),
-                    true,
+                    can_add,
                     |ui| {
                         for b in logic
                             .blocks

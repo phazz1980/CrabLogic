@@ -993,6 +993,35 @@ fn uart_frame_format_comes_from_an_input() {
 }
 
 #[test]
+fn uart_read_on_usb_takes_the_console_input() {
+    let lib = library();
+    let project = Project::load(repo_path("crates/crab-sim/tests/fixtures/wasm_uartin")).unwrap();
+    let program = Program::build(&project, &lib).unwrap();
+    let built = program.wasm_module_with(1, true).unwrap();
+    // The master must have the input (`tin`) to run this module.
+    assert!(
+        built.needs.contains(&"uart_input".to_owned()),
+        "{:?}",
+        built.needs
+    );
+    let manifest = Manifest::parse(&built.manifest).unwrap();
+    let mut module = McuModule::load(&built.wasm, &manifest, built.watched.len()).unwrap();
+    let len = built.watched.iter().position(|l| l == "len.out").unwrap();
+    // The console of the master is port 0: no settings go to it, the line comes whole.
+    module.io_mut().uart_rx.entry(0).or_default().extend(
+        b"hello
+",
+    );
+    module.step(10).unwrap();
+    assert_eq!(module.outputs()[len], Word::int(5));
+    assert!(
+        module.io().uart_cfg.is_empty(),
+        "{:?}",
+        module.io().uart_cfg
+    );
+}
+
+#[test]
 fn block_parameters_taken_from_variables_are_read_every_scan() {
     // The simulation does not know bound parameters, so the module is checked on its own.
     let lib = library();

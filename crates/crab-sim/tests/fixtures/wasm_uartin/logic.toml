@@ -1,0 +1,12 @@
+[[block]]
+id = "rx"
+type = "uart_read"
+port = -1
+
+[[block]]
+id = "len"
+type = "text_length"
+
+[[link]]
+from = "rx.line"
+to = "len.in"

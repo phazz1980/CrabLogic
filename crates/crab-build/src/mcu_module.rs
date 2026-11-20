@@ -415,6 +415,7 @@ fn cap_title(cap: &str) -> &str {
         "retain_text" => "сохранение текста во флеш",
         "uart_format" => "смена формата UART",
         "pcf_expander" => "расширители PCF8574/PCF8575",
+        "uart_input" => "ввод из консоли отладки в блок чтения UART (USB)",
         "uart_console" => "вывод в консоль мастера (UART0/USB)",
         "sparkplug" => "Sparkplug B (MQTT-узел)",
         "modbus" => "Modbus RTU/TCP",

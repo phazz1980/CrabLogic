@@ -140,6 +140,9 @@ pub enum Command {
     /// `name <text>` sets the name the board shows in the network search (the project name),
     /// `name -` clears it. Kept in NVS; accepted over USB and from a logged-in network client.
     Name(Option<String>),
+    /// `tin <hex>`: bytes typed in the debug console, for a `uart_read` block on USB. Answered
+    /// `ok`, or `err full` (nothing taken) when the input ring has no room.
+    ConsoleIn(Vec<u8>),
 }
 
 /// Longest board name, bytes (the search reply cuts at the same length, `crab-netfind`).
@@ -455,6 +458,26 @@ pub fn parse_command(line: &str) -> Result<Command, ParseError> {
                 crate::netauth::from_hex(hex).ok_or(ParseError::InvalidNumber)?,
             )),
         },
+        "tin" => {
+            let hex = one(&mut args)?;
+            no_more(&mut args)?;
+            let digits = hex.as_bytes();
+            if digits.is_empty()
+                || digits.len() % 2 != 0
+                || digits.len() > 2 * crate::console_in::MAX_CHUNK
+            {
+                return Err(ParseError::InvalidNumber);
+            }
+            let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+            let mut bytes = Vec::with_capacity(digits.len() / 2);
+            for pair in digits.chunks(2) {
+                match (digit(pair[0]), digit(pair[1])) {
+                    (Some(hi), Some(lo)) => bytes.push(hi << 4 | lo),
+                    _ => return Err(ParseError::InvalidNumber),
+                }
+            }
+            Command::ConsoleIn(bytes)
+        }
         "name" => {
             let mut text = String::new();
             for word in args.by_ref() {
@@ -699,6 +722,22 @@ mod core_tests {
             Ok(Command::Name(Some("Pump station".into())))
         );
         assert_eq!(parse_command("name -"), Ok(Command::Name(None)));
+        assert_eq!(
+            parse_command("tin 6869 0a"),
+            Err(ParseError::TooManyArguments)
+        );
+        assert_eq!(
+            parse_command("tin 68690A"),
+            Ok(Command::ConsoleIn(vec![0x68, 0x69, 0x0a]))
+        );
+        assert_eq!(parse_command("tin 686"), Err(ParseError::InvalidNumber));
+        assert_eq!(parse_command("tin zz"), Err(ParseError::InvalidNumber));
+        assert_eq!(parse_command("tin"), Err(ParseError::MissingArgument));
+        let long = "41".repeat(crate::console_in::MAX_CHUNK + 1);
+        assert_eq!(
+            parse_command(&format!("tin {long}")),
+            Err(ParseError::InvalidNumber)
+        );
         assert!(parse_command("name").is_err());
         assert!(parse_command(&format!("name {}", "x".repeat(41))).is_err());
         assert!(parse_command("selftest other").is_err());

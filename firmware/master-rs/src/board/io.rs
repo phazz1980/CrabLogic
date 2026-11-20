@@ -149,6 +149,13 @@ fn handle(event: Event, from_net: bool) {
                     println!("err nvs")
                 };
             }
+            Ok(Command::ConsoleIn(bytes)) => {
+                return if super::uart::console_push(&bytes) {
+                    println!("ok")
+                } else {
+                    println!("err full")
+                };
+            }
             Ok(Command::List) => return snapshot::answer_list(),
             Ok(Command::Info) => return snapshot::answer_info(),
             Ok(Command::Outputs { name, count }) => return snapshot::answer_outputs(&name, count),

@@ -21,6 +21,8 @@ const HISTORY: usize = 6000;
 const CONSOLE: usize = 500;
 /// How often the board is asked which modules it runs.
 const LIST_EVERY: Duration = Duration::from_secs(1);
+/// Bytes in one `tin` line (the master takes up to 128).
+const TIN_CHUNK: usize = 128;
 /// How often the board is asked for `info` (flash wear counters).
 const INFO_EVERY: Duration = Duration::from_secs(10);
 /// Pause between two polls of the board.
@@ -444,6 +446,12 @@ fn handle_line(
     if text == "ok" || text.is_empty() {
         return false;
     }
+    // The answer to `tin` when the input ring of the master has no room: the line was not taken.
+    let text = if text == "err full" {
+        "Ввод не принят: буфер ввода платы полон, повторите строку"
+    } else {
+        text
+    };
     if text.starts_with("err no such module") {
         // The answer to the request for the oldest unanswered module.
         let name = asked
@@ -706,7 +714,15 @@ fn send_command(
             b"rmax
 ",
         ),
-        // The master has no setpoints or console input yet.
+        // Console input for a `uart_read` block on USB: hex lines of at most `MAX_CHUNK` bytes.
+        Command::TextIn(bytes) => {
+            for chunk in bytes.chunks(TIN_CHUNK) {
+                let hex: String = chunk.iter().map(|b| format!("{b:02x}")).collect();
+                port.write_all(format!("tin {hex}\n").as_bytes())?;
+            }
+            Ok(())
+        }
+        // The master has no setpoints yet.
         _ => Ok(()),
     }
 }
@@ -751,6 +767,51 @@ mod tests {
             entries: vec![entry("a", SignalType::Int), entry("b", SignalType::Float)],
             texts: Vec::new(),
         }
+    }
+
+    struct Wire(Vec<u8>);
+
+    impl Transport for Wire {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            self.0.extend_from_slice(data);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn console_input_goes_to_the_master_as_hex_lines() {
+        let live = Arc::new(Mutex::new(Live::default()));
+        let mut wire = Wire(Vec::new());
+        // A long line is cut into lines the master takes, none of them longer than `TIN_CHUNK`.
+        let mut bytes = b"hi\r\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b'A', TIN_CHUNK));
+        send_command(Command::TextIn(bytes), &table(), &[], &mut wire, &live).unwrap();
+        let text = String::from_utf8(wire.0).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("tin 68690d0a41"), "{}", lines[0]);
+        assert_eq!(lines[0].len(), 4 + 2 * TIN_CHUNK);
+        assert_eq!(lines[1], format!("tin {}", "41".repeat(4)));
+    }
+
+    #[test]
+    fn a_refused_input_line_is_told_in_the_console() {
+        let live = Arc::new(Mutex::new(Live::default()));
+        let changed = handle_line(
+            "err full",
+            &table(),
+            &[],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Aux::default(),
+            Instant::now(),
+            &live,
+        );
+        assert!(changed);
+        assert!(live.lock().unwrap().console[0].contains("Ввод не принят"));
     }
 
     #[test]
