@@ -1,0 +1,423 @@
+# Arrays of strings in a module against the simulation: get, set, fill, copy, find, shift, ring and
+# stack. The counter n runs 0, 1, 2... over the scans; the texts are "ab" + n (cat), n as text (nt)
+# and constants. The outputs are strings, so they are watched through numeric proxies: text_length
+# (the length) and text_compare (the content against a constant).
+
+[[var]]
+name = "n"
+type = "int"
+init = 0
+
+[[array]]
+name = "sa"
+type = "string"
+len = 4
+items = ["ab", "cde"]
+
+[[array]]
+name = "sc"
+type = "string"
+len = 4
+
+[[array]]
+name = "sd"
+type = "string"
+len = 2
+
+[[array]]
+name = "sf"
+type = "string"
+len = 3
+
+[[array]]
+name = "sh"
+type = "string"
+len = 3
+items = ["x"]
+
+[[array]]
+name = "sr"
+type = "string"
+len = 3
+
+[[array]]
+name = "sk"
+type = "string"
+len = 3
+
+# n counts the scans.
+[[block]]
+id = "nr"
+type = "var_get"
+var = "n"
+
+[[block]]
+id = "inc"
+type = "add"
+[block.const]
+b = 1
+
+[[block]]
+id = "nw"
+type = "var_set"
+var = "n"
+
+[[link]]
+from = "nr.out"
+to = "inc.a"
+
+[[link]]
+from = "inc.out"
+to = "nw.in"
+
+# Texts: nt is n as text, cat is "ab" + n, k_cde is a constant.
+[[block]]
+id = "nt"
+type = "num_to_text"
+decimals = 0
+
+[[link]]
+from = "nr.out"
+to = "nt.in"
+
+[[block]]
+id = "k_ab"
+type = "text_const"
+value = "ab"
+
+[[block]]
+id = "cat"
+type = "text_concat"
+count = 2
+separator = ""
+
+[[link]]
+from = "k_ab.out"
+to = "cat.a"
+
+[[link]]
+from = "nt.out"
+to = "cat.b"
+
+[[block]]
+id = "k_cde"
+type = "text_const"
+value = "cde"
+
+# Edges: ge2 = n >= 2, eq4 = n == 4, eq6 = n == 6, odd = n % 2 == 1, zero3 = n % 3 == 0.
+[[block]]
+id = "ge2"
+type = "compare"
+op = 5
+[block.const]
+b = 2
+
+[[block]]
+id = "eq4"
+type = "compare"
+op = 0
+[block.const]
+b = 4
+
+[[block]]
+id = "eq6"
+type = "compare"
+op = 0
+[block.const]
+b = 6
+
+[[block]]
+id = "m2"
+type = "mod"
+[block.const]
+b = 2
+
+[[link]]
+from = "nr.out"
+to = "m2.a"
+
+[[block]]
+id = "odd"
+type = "compare"
+op = 0
+[block.const]
+b = 1
+
+[[link]]
+from = "m2.out"
+to = "odd.a"
+
+[[block]]
+id = "m3"
+type = "mod"
+[block.const]
+b = 3
+
+[[link]]
+from = "nr.out"
+to = "m3.a"
+
+[[block]]
+id = "zero3"
+type = "compare"
+op = 0
+[block.const]
+b = 0
+
+[[link]]
+from = "m3.out"
+to = "zero3.a"
+
+[[link]]
+from = "nr.out"
+to = "ge2.a"
+
+[[link]]
+from = "nr.out"
+to = "eq4.a"
+
+[[link]]
+from = "nr.out"
+to = "eq6.a"
+
+# Set: sa[n] = "ab" + n (out of range from the fourth scan on: err).
+[[block]]
+id = "set_sa"
+type = "array_set"
+array = "sa"
+
+[[link]]
+from = "nr.out"
+to = "set_sa.index"
+
+[[link]]
+from = "cat.out"
+to = "set_sa.value"
+
+# Get: sa[n] (err from the fourth scan on), sa[1] and sa[2] as the constant reads.
+[[block]]
+id = "get_sa"
+type = "array_get"
+array = "sa"
+
+[[link]]
+from = "nr.out"
+to = "get_sa.index"
+
+[[block]]
+id = "len_get_sa"
+type = "text_length"
+
+[[link]]
+from = "get_sa.out"
+to = "len_get_sa.in"
+
+[[block]]
+id = "is_cde"
+type = "text_compare"
+b = "cde"
+mode = 0
+
+[[link]]
+from = "get_sa.out"
+to = "is_cde.a"
+
+[[block]]
+id = "get_sa2"
+type = "array_get"
+array = "sa"
+[block.const]
+index = 2
+
+[[block]]
+id = "len_sa2"
+type = "text_length"
+
+[[link]]
+from = "get_sa2.out"
+to = "len_sa2.in"
+
+# Fill sf with "ab" + n while n >= 2; read sf[1].
+[[block]]
+id = "fill_sf"
+type = "array_fill"
+array = "sf"
+
+[[link]]
+from = "cat.out"
+to = "fill_sf.value"
+
+[[link]]
+from = "ge2.out"
+to = "fill_sf.go"
+
+[[block]]
+id = "get_sf"
+type = "array_get"
+array = "sf"
+[block.const]
+index = 1
+
+[[block]]
+id = "len_sf"
+type = "text_length"
+
+[[link]]
+from = "get_sf.out"
+to = "len_sf.in"
+
+# Copy sa to sc on n == 4 (four elements), sa to sd on n == 6 (two elements); read them back.
+[[block]]
+id = "copy_sc"
+type = "array_copy"
+array = "sa"
+dest = "sc"
+
+[[link]]
+from = "eq4.out"
+to = "copy_sc.go"
+
+[[block]]
+id = "copy_sd"
+type = "array_copy"
+array = "sa"
+dest = "sd"
+
+[[link]]
+from = "eq6.out"
+to = "copy_sd.go"
+
+[[block]]
+id = "get_sc"
+type = "array_get"
+array = "sc"
+[block.const]
+index = 2
+
+[[block]]
+id = "len_sc"
+type = "text_length"
+
+[[link]]
+from = "get_sc.out"
+to = "len_sc.in"
+
+[[block]]
+id = "is_sd1"
+type = "text_compare"
+b = "cde"
+mode = 0
+
+[[block]]
+id = "get_sd"
+type = "array_get"
+array = "sd"
+[block.const]
+index = 1
+
+[[link]]
+from = "get_sd.out"
+to = "is_sd1.a"
+
+# Find: the text "ab" + n in sa, and the constant "cde" in sc.
+[[block]]
+id = "find_sa"
+type = "array_find"
+array = "sa"
+
+[[link]]
+from = "cat.out"
+to = "find_sa.value"
+
+[[block]]
+id = "find_sc"
+type = "array_find"
+array = "sc"
+
+[[link]]
+from = "k_cde.out"
+to = "find_sc.value"
+
+# Shift sh by the text of n on every odd scan; read sh[0].
+[[block]]
+id = "shift_sh"
+type = "array_shift"
+array = "sh"
+
+[[link]]
+from = "nt.out"
+to = "shift_sh.value"
+
+[[link]]
+from = "odd.out"
+to = "shift_sh.go"
+
+[[block]]
+id = "get_sh"
+type = "array_get"
+array = "sh"
+[block.const]
+index = 0
+
+[[block]]
+id = "len_sh"
+type = "text_length"
+
+[[link]]
+from = "get_sh.out"
+to = "len_sh.in"
+
+# Ring sr: the text of n on every odd scan (head and count are watched); read sr[1].
+[[block]]
+id = "ring_sr"
+type = "array_ring"
+array = "sr"
+
+[[link]]
+from = "nt.out"
+to = "ring_sr.value"
+
+[[link]]
+from = "odd.out"
+to = "ring_sr.push"
+
+[[block]]
+id = "get_sr"
+type = "array_get"
+array = "sr"
+[block.const]
+index = 1
+
+[[block]]
+id = "len_sr"
+type = "text_length"
+
+[[link]]
+from = "get_sr.out"
+to = "len_sr.in"
+
+# Stack sk: push "ab" + n on odd scans, pop every third scan; the top text and the flags are watched.
+[[block]]
+id = "stack_sk"
+type = "array_stack"
+array = "sk"
+
+[[link]]
+from = "cat.out"
+to = "stack_sk.value"
+
+[[link]]
+from = "odd.out"
+to = "stack_sk.push"
+
+[[link]]
+from = "zero3.out"
+to = "stack_sk.pop"
+
+[[block]]
+id = "len_top"
+type = "text_length"
+
+[[link]]
+from = "stack_sk.out"
+to = "len_top.in"

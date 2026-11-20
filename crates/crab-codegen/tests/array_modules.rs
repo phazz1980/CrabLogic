@@ -54,6 +54,7 @@ fn one_block(op: ArrayOp, ty: ElemType) -> String {
     let init = match ty {
         ElemType::Bool => "true",
         ElemType::Float => "1.5",
+        ElemType::String => "\"ab\"",
         _ => "7",
     };
     let dest = if op == ArrayOp::Copy {
@@ -101,15 +102,61 @@ fn every_array_block_builds_a_valid_module_on_every_numeric_type() {
     assert_eq!(built, 8 * 4 + 3 * 3);
 }
 
+/// Every block that exists on an array of strings builds a valid module (`array_text.rs`).
 #[test]
-fn a_string_array_is_refused_with_a_reason() {
+fn every_array_block_builds_a_valid_module_on_strings() {
     let lib = library();
-    let logic = "[[array]]\nname = \"s\"\ntype = \"string\"\nlen = 2\n\n\
-                 [[block]]\nid = \"g\"\ntype = \"array_get\"\narray = \"s\"\n";
-    let (p, dir) = project("string", logic, "");
+    let mut built = 0;
+    for op in ArrayOp::ALL {
+        if !op.exists_for(ElemType::String) {
+            continue;
+        }
+        let (p, dir) = project("text", &one_block(op, ElemType::String), "");
+        let result = build(&p, &lib);
+        let _ = std::fs::remove_dir_all(dir);
+        let modules = result.unwrap_or_else(|e| panic!("{} on strings: {e}", op.kind()));
+        assert_eq!(modules.len(), 1);
+        built += 1;
+    }
+    // get, set, fill, copy, find, shift, ring, stack: sum, min and max have no string form.
+    assert_eq!(built, 8);
+}
+
+/// Two string arrays of the longest length a chip takes (256) need 2 * 256 * 132 bytes, more than the
+/// 64 KB page: the module is refused with the memory reason, not a panic.
+#[test]
+fn string_arrays_that_do_not_fit_the_memory_page_are_refused() {
+    let lib = library();
+    let mut logic = String::new();
+    for name in ["s1", "s2"] {
+        logic.push_str(&format!(
+            "[[array]]\nname = \"{name}\"\ntype = \"string\"\nlen = 256\n\n\
+             [[block]]\nid = \"g{name}\"\ntype = \"array_get\"\narray = \"{name}\"\n\
+             [block.const]\nindex = 0\n\n"
+        ));
+    }
+    let (p, dir) = project("text_big", &logic, "");
     let err = build(&p, &lib).unwrap_err();
     let _ = std::fs::remove_dir_all(dir);
-    assert!(err.contains("строки"), "{err}");
+    assert!(err.contains("памяти"), "{err}");
+}
+
+/// A copy between a string array and a numeric one is not a schema the checker lets through: the
+/// check reports the mismatch before any module is made (the codegen guard is the second line).
+#[test]
+fn a_copy_between_string_and_numeric_arrays_is_refused() {
+    let lib = library();
+    let logic = "[[array]]\nname = \"s\"\ntype = \"string\"\nlen = 2\n\n\
+                 [[array]]\nname = \"n\"\ntype = \"int\"\nlen = 2\n\n\
+                 [[block]]\nid = \"c\"\ntype = \"array_copy\"\narray = \"s\"\ndest = \"n\"\n";
+    let (p, dir) = project("text_mixed", logic, "");
+    let report = crab_core::check::check_project(&p, &lib);
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(
+        report.errors().any(|d| d.message.contains("разных типов")),
+        "{:?}",
+        report.diagnostics
+    );
 }
 
 #[test]

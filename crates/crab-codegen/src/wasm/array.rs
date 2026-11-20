@@ -10,12 +10,15 @@
 //! - edges (`go`, `push`, `pop`) are rising edges, the previous level lives in a global of the block;
 //! - loops over the elements call [`Emitter::fuel_check`] at the top (see `array_loop`).
 //!
-//! Strings arrays are not supported yet (`specs/arrays-structs/tasks.md` 4б); an array used by blocks
-//! of several sheets is an error until the shared arrays are done (task 5).
+//! Arrays of strings are in `array_text.rs`; an array used by blocks of several sheets is an error
+//! until the shared arrays are done (task 5).
 
 use super::*;
 use crab_core::array_blocks::{array_name, ArrayOp, DEST_PARAM};
 use crab_core::arrays::ElemType;
+
+/// Why an array that blocks of several modules use cannot be placed yet (see `array_mem`).
+pub(super) const SHARED_ARRAY_REASON: &str = "массивы используют блоки нескольких модулей: листы с общим массивом объединяются в один модуль при сборке, если у них одна скорость и среди них нет листа с web_ui";
 
 /// A numeric array placed in the memory of the module.
 #[derive(Debug, Clone, Copy)]
@@ -86,8 +89,20 @@ impl Emitter<'_, '_> {
         Ok(true)
     }
 
+    /// Whether blocks of other modules use the array `name` (as the array or as a copy destination).
+    pub(super) fn array_used_elsewhere(&self, name: &str) -> bool {
+        let module = self.module;
+        self.program.blocks.iter().enumerate().any(|(i, b)| {
+            !module.blocks.contains(&i)
+                && ArrayOp::from_kind(&b.block.kind).is_some()
+                && (array_name(b.block) == Some(name)
+                    || matches!(b.block.params.get(DEST_PARAM), Some(ParamValue::Text(d)) if d == name))
+        })
+    }
+
     /// The region of array `name` in this module: allocated at the first use, with its initial table
-    /// in the data segment. Errors: no such array, a string array, blocks of other sheets use it.
+    /// in the data segment. Errors: no such array, a string array copied to or from a numeric one,
+    /// blocks of other sheets use it.
     pub(super) fn array_mem(&mut self, inst: &Instance, name: &str) -> Result<ArrayMem, WasmError> {
         if let Some(&mem) = self.arrays.get(name) {
             return Ok(mem);
@@ -97,20 +112,13 @@ impl Emitter<'_, '_> {
             return Err(self.unsupported(inst, "массив не найден"));
         };
         if var.ty == ElemType::String {
-            return Err(self.unsupported(inst, "массивы строк пока не поддержаны в модулях"));
-        }
-        let module = self.module;
-        let used_elsewhere = program.blocks.iter().enumerate().any(|(i, b)| {
-            !module.blocks.contains(&i)
-                && ArrayOp::from_kind(&b.block.kind).is_some()
-                && (array_name(b.block) == Some(name)
-                    || matches!(b.block.params.get(DEST_PARAM), Some(ParamValue::Text(d)) if d == name))
-        });
-        if used_elsewhere {
             return Err(self.unsupported(
                 inst,
-                "массив используют блоки нескольких модулей: листы с общим массивом объединяются в один модуль при сборке, если у них одна скорость и среди них нет листа с web_ui",
+                "копирование между массивом строк и числовым массивом пока не поддержано в модулях",
             ));
+        }
+        if self.array_used_elsewhere(name) {
+            return Err(self.unsupported(inst, SHARED_ARRAY_REASON));
         }
         let mem = ArrayMem {
             base: 0,
@@ -247,7 +255,7 @@ impl Emitter<'_, '_> {
     /// Counts one fault of the module (an index outside its array): the counter is a global that the
     /// module reports through its `faults()` export, and the master adds it to the failures of the
     /// module. The counter wraps; the master takes the difference between two reads.
-    fn count_fault(&mut self) {
+    pub(super) fn count_fault(&mut self) {
         let counter = match self.fault_counter {
             Some(g) => g,
             None => {

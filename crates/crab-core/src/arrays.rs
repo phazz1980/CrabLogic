@@ -12,6 +12,9 @@ use crate::{Logic, ParamValue, SignalType};
 
 /// Longest array on the chips with the larger RAM (ESP32, ESP32-S3).
 pub const MAX_LEN: u32 = 256;
+/// Bytes of one element of a string array in a module: a 4-byte length and the text buffer of a
+/// string signal (`STR_CAP` = 128 in `crab-codegen`, which tests that the two agree).
+pub const STRING_ELEM_BYTES: u32 = 4 + 128;
 /// Longest array on the ESP32-C3.
 pub const MAX_LEN_C3: u32 = 64;
 
@@ -112,17 +115,11 @@ pub fn max_len(chip: Option<Chip>) -> u32 {
 
 impl ArrayVar {
     /// Bytes the array takes in the RAM of a module: 4 per `bool`, `int` and `float`, 1 per `byte`;
-    /// text is counted by its longest initial value plus the length byte.
+    /// a string element takes [`STRING_ELEM_BYTES`].
     pub fn bytes(&self) -> u32 {
         let each = match self.ty {
             ElemType::Byte => 1,
-            ElemType::String => {
-                let longest = self.items.iter().fold(0, |m, v| match v {
-                    ParamValue::Text(s) => m.max(s.len()),
-                    _ => m,
-                });
-                u32::try_from(longest).unwrap_or(u32::MAX).saturating_add(1)
-            }
+            ElemType::String => STRING_ELEM_BYTES,
             _ => 4,
         };
         self.len.saturating_mul(each)

@@ -21,6 +21,7 @@ use crate::sheet::{signal_label, SheetError, SheetModule, TagKind};
 mod array;
 mod array_queue;
 mod array_stats;
+mod array_text;
 mod block;
 mod block_emit;
 pub mod display;
@@ -362,6 +363,8 @@ struct Emitter<'a, 'p> {
     bufs: HashMap<usize, Buf>,
     /// Arrays of the project placed in the memory of this module (`array.rs`).
     arrays: HashMap<String, array::ArrayMem>,
+    /// Arrays of strings placed in the memory of this module (`array_text.rs`).
+    text_arrays: HashMap<String, array_text::TextArray>,
     /// Structures of the project placed in the memory of this module: one slot per field (`structs.rs`).
     structs: HashMap<String, Vec<array::ArrayMem>>,
     /// Retained variables this module owns: loaded in `init`, saved from `step`.
@@ -489,6 +492,7 @@ impl<'a, 'p> Emitter<'a, 'p> {
             consts: HashMap::new(),
             bufs: HashMap::new(),
             arrays: HashMap::new(),
+            text_arrays: HashMap::new(),
             structs: HashMap::new(),
             retained: Vec::new(),
             drivers: Vec::new(),

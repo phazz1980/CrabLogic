@@ -5,7 +5,7 @@
 use super::*;
 
 /// One page of memory, the most a module may use.
-const MEM_PAGE: u32 = 65536;
+pub(super) const MEM_PAGE: u32 = 65536;
 /// The first bytes of the memory are scratch for results of `text` (a float, four IP bytes).
 pub(super) const MEM_START: u32 = 16;
 /// Buffer size of a string signal; longer text is cut (the built-in simulator keeps all of it).

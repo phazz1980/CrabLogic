@@ -10,6 +10,10 @@ impl<'a, 'p> Emitter<'a, 'p> {
         if self.hardware_block(inst)? {
             return Ok(());
         }
+        // Blocks of an array of strings take their texts from the element memory, not as signals.
+        if self.text_array_block(inst)? {
+            return Ok(());
+        }
         let has_string = inst.inputs.values().any(|i| i.ty == SignalType::String)
             || inst
                 .outputs
