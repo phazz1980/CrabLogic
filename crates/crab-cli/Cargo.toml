@@ -15,6 +15,7 @@ crab-build = { path = "../crab-build" }
 crab-codegen = { path = "../crab-codegen" }
 crab-core = { path = "../crab-core" }
 crab-pdf = { path = "../crab-pdf" }
+crab-schematic = { path = "../crab-schematic" }
 crab-debug = { path = "../crab-debug", features = ["serial"] }
 crab-sim = { path = "../crab-sim" }
 serialport = { version = "4", default-features = false }

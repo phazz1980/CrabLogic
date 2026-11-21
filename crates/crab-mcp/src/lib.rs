@@ -20,6 +20,8 @@ const INSTRUCTIONS: &str = "Сервер проекта CrabLogic — визуа
 Если открыто несколько окон редактора — спросите пользователя, какое нужно, \
 посмотрите list_editors и выберите select_editor. \
 Начните с get_schema и list_block_types; после правок смотрите поле check в ответе. \
+Электрический щит — команды get_panel, add_panel_device, set_panel_device, \
+remove_panel_device, set_panel_supply, build_panel (документация щита в PDF). \
 Правки сразу сохраняются в файл проекта .crab.";
 
 const LIST_EDITORS: &str = "list_editors";

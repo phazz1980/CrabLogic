@@ -41,7 +41,8 @@ mod toml_io;
 pub use arrays::{ArrayVar, ElemType, StructField, StructVar};
 pub use boards::{BoardDef, Boards, UserBoard};
 pub use check::{
-    bindable_type, check, check_project, port_types, DiagKind, Diagnostic, Report, Severity,
+    bindable_type, check, check_panel, check_project, panel_binding, panel_tags, port_types,
+    DiagKind, Diagnostic, PanelTag, Report, Severity,
 };
 pub use edit::{EditError, Fragment};
 pub use error::{Error, Result};
@@ -54,7 +55,7 @@ pub use library::{
 pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
 pub use logic::{SheetExecution, SheetSpeed};
-pub use panel::{Device, DeviceKind, Panel, Supply};
+pub use panel::{Device, DeviceKind, Panel, Supply, PANEL_FILE, PANEL_PDF};
 pub use pins::PinFunction;
 pub use project::{
     hash_hex, BoardConfig, Project, ProjectConfig, ProjectInfo, RetainConfig, RunConfig,

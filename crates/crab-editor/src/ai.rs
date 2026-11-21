@@ -9,7 +9,7 @@ use std::thread;
 
 use crab_ai::agent::{run_turn, Event};
 use crab_ai::Context;
-use crab_core::{Layout, Library, Logic, Project};
+use crab_core::{Layout, Library, Logic, Panel, Project};
 use eframe::egui::{self, RichText, ScrollArea, Ui};
 use serde_json::Value;
 
@@ -32,7 +32,7 @@ pub enum Entry {
 
 enum Msg {
     Event(Event),
-    Edit(Logic, Layout),
+    Edit(Box<(Logic, Layout, Panel)>),
     ReloadLibrary,
     UploadModules {
         port: Option<String>,
@@ -48,7 +48,7 @@ enum Msg {
 
 /// Requests from the worker that the editor carries out.
 pub enum Request {
-    Apply(Box<Logic>, Layout),
+    Apply(Box<Logic>, Layout, Box<Panel>),
     ReloadLibrary,
     /// Upload the modules of the sheets (an editor job, its progress is in the log).
     UploadModules {
@@ -205,7 +205,10 @@ impl AiChat {
                     }
                 }
                 Msg::Session(id) => self.session = Some(id),
-                Msg::Edit(logic, layout) => requests.push(Request::Apply(Box::new(logic), layout)),
+                Msg::Edit(edit) => {
+                    let (logic, layout, panel) = *edit;
+                    requests.push(Request::Apply(Box::new(logic), layout, Box::new(panel)))
+                }
                 Msg::ReloadLibrary => requests.push(Request::ReloadLibrary),
                 Msg::UploadModules { port, debug } => {
                     requests.push(Request::UploadModules { port, debug })
@@ -259,9 +262,11 @@ impl Context for WorkerContext {
     ) -> Result<(), String> {
         let mut changed = self.project.clone();
         edit(&mut changed)?;
-        let _ = self
-            .tx
-            .send(Msg::Edit(changed.logic.clone(), changed.layout.clone()));
+        let _ = self.tx.send(Msg::Edit(Box::new((
+            changed.logic.clone(),
+            changed.layout.clone(),
+            changed.panel.clone(),
+        ))));
         self.wake.request_repaint();
         self.project = changed;
         Ok(())

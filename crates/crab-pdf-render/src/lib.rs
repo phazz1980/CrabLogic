@@ -12,6 +12,15 @@ use typst_embed::{FontSet, RenderEnvironment, RenderError};
 
 /// Placeholder of the font list in the markup, see `crab_pdf::source`.
 const FONTS_TOKEN: &str = "font: FONTS";
+/// Placeholder of the font list of the schematic sheets: the drawing font first, then the system
+/// ones.
+const GOST_FONTS_TOKEN: &str = "font: GOST_FONTS";
+
+/// OpenGost Type B (GOST 2.304 type B, SIL OFL 1.1, see `fonts/README.md`): the drawing font that
+/// GOST IEC 61082-1 5.11 asks for. Always present, so the sheets look the same on every computer.
+const GOST_FONT: &[u8] = include_bytes!("../fonts/OpenGostTypeB-Regular.ttf");
+/// Its family name.
+const GOST_FAMILY: &str = "OpenGost Type B";
 
 /// Fonts of this computer that have Cyrillic: (family, regular file, bold file).
 const SYSTEM_FONTS: [(&str, &str, &str); 2] = [
@@ -21,7 +30,9 @@ const SYSTEM_FONTS: [(&str, &str, &str); 2] = [
 
 /// Renders the markup to PDF bytes; the error is a short text for the user.
 pub fn render(source: &str) -> Result<Vec<u8>, String> {
-    let source = source.replace(FONTS_TOKEN, &format!("font: {}", font_list()));
+    let source = source
+        .replace(FONTS_TOKEN, &format!("font: {}", font_list(false)))
+        .replace(GOST_FONTS_TOKEN, &format!("font: {}", font_list(true)));
     let project = typst_embed::Project::from_source(source);
     let pdf = typst_embed::render_pdf(&project, environment()).map_err(describe)?;
     Ok(pdf.bytes().to_vec())
@@ -59,9 +70,12 @@ fn system_fonts() -> &'static [(&'static str, Vec<u8>)] {
     })
 }
 
-/// Typst array of the font families that were found.
-fn font_list() -> String {
+/// Typst array of the font families that were found; with `drawing` the drawing font comes first.
+fn font_list(drawing: bool) -> String {
     let mut names: Vec<&str> = Vec::new();
+    if drawing {
+        names.push(GOST_FAMILY);
+    }
     for (family, _) in system_fonts() {
         if !names.contains(family) {
             names.push(family);
@@ -74,7 +88,8 @@ fn font_list() -> String {
 fn environment() -> &'static RenderEnvironment {
     static ENV: OnceLock<RenderEnvironment> = OnceLock::new();
     ENV.get_or_init(|| {
-        let files: Vec<Vec<u8>> = system_fonts().iter().map(|(_, d)| d.clone()).collect();
+        let mut files: Vec<Vec<u8>> = system_fonts().iter().map(|(_, d)| d.clone()).collect();
+        files.push(GOST_FONT.to_vec());
         RenderEnvironment::builder()
             .font_set(FontSet::from_font_files(files))
             .build()

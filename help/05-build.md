@@ -169,7 +169,7 @@ crablogic gen-wasm examples/pump --upload
 
 `crablogic block check папка_блока` проверяет один пользовательский блок (`block.toml`, `block.wasm`, `docs.md`): описание, импорты и экспорты модуля, пробную сборку модуля листа с одним этим блоком; каждая ошибка — с кодом и подсказкой, код выхода 1 при ошибках. `crablogic board check папка_платы` — то же для своей платы.
 
-`crablogic monitor` показывает живые значения. Папку библиотеки можно задать переменной `CRAB_LIBRARY`.
+`crablogic panel проект [--lang ru|en] [--format a3|a4] [-o файл.pdf] [--csv папка] [--save-numbers]` собирает документацию электрического щита ([щит](help:panel)). `crablogic monitor` показывает живые значения. Папку библиотеки можно задать переменной `CRAB_LIBRARY`.
 
 `crablogic upload-wasm модуль.wasm --port COM3 --allow gpio_write,millis` заливает один WASM-модуль на плату с мастер-прошивкой (раздел «WASM-модули на плате» спецификации `specs/wasm-on-mcu`): модуль заменяется на ходу, остальные модули и выходы не сбрасываются. Имя берётся из `--name`, из `module.toml` рядом с файлом или из имени файла; права на железо — из `--allow` или `module.toml`.
 

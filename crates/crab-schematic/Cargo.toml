@@ -1,0 +1,13 @@
+[package]
+name = "crab-schematic"
+description = "Electrical documentation of a panel: circuits, wire numbers, sheets"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crab-core = { path = "../crab-core" }
+crab-pdf = { path = "../crab-pdf" }
+thiserror.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

@@ -9,6 +9,7 @@ crab-codegen = { path = "../crab-codegen" }
 crab-build = { path = "../crab-build" }
 crab-core = { path = "../crab-core" }
 crab-pdf = { path = "../crab-pdf" }
+crab-schematic = { path = "../crab-schematic" }
 crab-debug = { path = "../crab-debug", features = ["serial"] }
 serde.workspace = true
 serde_json.workspace = true

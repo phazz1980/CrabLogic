@@ -1128,6 +1128,7 @@ dependencies = [
  "crab-core",
  "crab-debug",
  "crab-pdf",
+ "crab-schematic",
  "serde",
  "serde_json",
  "toml 0.8.23",
@@ -1171,6 +1172,7 @@ dependencies = [
  "crab-core",
  "crab-debug",
  "crab-pdf",
+ "crab-schematic",
  "crab-sim",
  "serde",
  "serialport",
@@ -1252,6 +1254,7 @@ dependencies = [
  "crab-mcp",
  "crab-netfind",
  "crab-pdf",
+ "crab-schematic",
  "crab-sim",
  "eframe",
  "egui_extras",
@@ -1308,6 +1311,16 @@ dependencies = [
  "crab-core",
  "crab-pdf",
  "typst-embed",
+]
+
+[[package]]
+name = "crab-schematic"
+version = "2.2.1"
+dependencies = [
+ "crab-core",
+ "crab-pdf",
+ "thiserror 2.0.21",
+ "toml 0.8.23",
 ]
 
 [[package]]

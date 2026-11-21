@@ -42,8 +42,9 @@ pub enum PdfError {
 /// Typst lives only in this executable (it is large); everything else starts it.
 const HELPER: &str = "crablogic-pdf.exe";
 
-/// Typst helpers: one canvas unit is a quarter of a millimetre.
-const PRELUDE: &str = r##"#let u = 0.25mm
+/// Typst helpers: one canvas unit is a quarter of a millimetre. Other documents made with the
+/// same helper (the electrical documentation of `crab-schematic`) start with it as well.
+pub const PRELUDE: &str = r##"#let u = 0.25mm
 #set text(font: FONTS, lang: "ru")
 #let T(x, y, w, al, sz, c, s) = place(top + left, dx: x * u, dy: (y - sz) * u,
   box(width: w * u, height: 2 * sz * u, align(al + horizon, text(size: sz * u, fill: rgb(c), s))))
@@ -64,6 +65,12 @@ const PRELUDE: &str = r##"#let u = 0.25mm
 /// Renders every sheet of the project; blocks without coordinates are skipped.
 pub fn render(project: &Project, lib: &Library) -> Result<Vec<u8>, PdfError> {
     run_helper(&helper_path()?, source(project, lib))
+}
+
+/// Compiles Typst markup (the text must start with [`PRELUDE`]) into PDF bytes with the helper
+/// that lies next to the running program.
+pub fn compile(source: String) -> Result<Vec<u8>, PdfError> {
+    run_helper(&helper_path()?, source)
 }
 
 /// The helper lies next to the running program (in tests, one level up from `deps`).
@@ -378,7 +385,7 @@ fn param_page(items: &[Item]) -> String {
 }
 
 /// Typst string literal.
-fn quote(s: &str) -> String {
+pub fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {
@@ -402,6 +409,16 @@ fn quote(s: &str) -> String {
 /// Values of `local` parameters (Wi-Fi passwords) never go into the archive: if
 /// the project still holds some, they are moved to [`LocalValues`] of this computer.
 pub fn save_project(project: &Project, lib: &Library) -> crab_core::Result<Option<String>> {
+    save_project_with(project, lib, &[])
+}
+
+/// [`save_project`] with more entries of the archive (name, contents): the documentation of the
+/// panel that the editor makes.
+pub fn save_project_with(
+    project: &Project,
+    lib: &Library,
+    more: &[(&str, &[u8])],
+) -> crab_core::Result<Option<String>> {
     let mut clean = project.clone();
     if clean.take_local(lib, &mut LocalValues::default()) {
         clean = project.clone();
@@ -420,6 +437,7 @@ pub fn save_project(project: &Project, lib: &Library) -> crab_core::Result<Optio
         .iter()
         .map(|(n, d)| (n.as_str(), d.as_slice()))
         .collect();
+    extra.extend(more.iter().copied());
     match render(project, lib) {
         Ok(pdf) => {
             extra.push((BOARDS_PDF, &pdf));

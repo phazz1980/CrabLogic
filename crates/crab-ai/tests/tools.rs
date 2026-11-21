@@ -459,3 +459,146 @@ fn parameter_becomes_an_input() {
     .unwrap();
     assert!(c.project.logic.block("t").unwrap().param_in.is_empty());
 }
+
+#[test]
+fn panel_commands_build_the_panel_step_by_step() {
+    let mut c = ctx("panel_steps");
+    // An empty panel: nothing bound, the free inputs and outputs of the project are listed.
+    let r = run(&mut c, "get_panel", json!({})).unwrap();
+    assert_eq!(r["devices"].as_array().unwrap().len(), 0);
+    let free: Vec<&str> = r["free_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        free.contains(&"button") && free.contains(&"led"),
+        "{free:?}"
+    );
+    // Designations are given by the kind.
+    let a = run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "bind": "led", "load": "M1"}),
+    )
+    .unwrap();
+    assert_eq!(a["id"], "K1");
+    run(&mut c, "add_panel_device", json!({"kind": "motor"})).unwrap();
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "button", "id": "S1", "bind": "button"}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.devices.len(), 3);
+    assert_eq!(c.project.panel.device("K1").unwrap().bind, "led");
+    // Mistakes are refused and change nothing.
+    let edits = c.edits;
+    assert!(run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "motor", "id": "K1"})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "motor", "id": "a b"})
+    )
+    .is_err());
+    assert!(run(&mut c, "add_panel_device", json!({"kind": "teapot"})).is_err());
+    assert!(run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "Z9", "rating": "1"})
+    )
+    .is_err());
+    assert_eq!(c.edits, edits);
+    // A wrong binding is not refused (the panel is drawn while unfinished) but the check says so.
+    let r = run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "S1", "bind": "led"}),
+    )
+    .unwrap();
+    assert!(!r["check"]["errors"].as_array().unwrap().is_empty());
+    let r = run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "S1", "bind": "button", "rating": "10 A"}),
+    )
+    .unwrap();
+    assert!(r["check"]["errors"].as_array().unwrap().is_empty(), "{r}");
+    // Renaming: what the device switches follows it.
+    run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "M1", "new_id": "M2"}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.device("K1").unwrap().load, "M2");
+    // null clears.
+    run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "S1", "rating": null}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.device("S1").unwrap().rating, "");
+    // Removing clears the links to the device.
+    run(&mut c, "remove_panel_device", json!({"id": "M2"})).unwrap();
+    assert_eq!(c.project.panel.device("K1").unwrap().load, "");
+    assert!(run(&mut c, "remove_panel_device", json!({"id": "M2"})).is_err());
+    // Supply.
+    run(&mut c, "set_panel_supply", json!({"supply": "ac400"})).unwrap();
+    assert_eq!(c.project.panel.supply, crab_core::Supply::Ac400);
+    assert!(run(&mut c, "set_panel_supply", json!({"supply": "110v"})).is_err());
+    // The schema is untouched by all this.
+    assert_eq!(
+        c.project.logic,
+        Project::load(repo_path("examples/button")).unwrap().logic
+    );
+}
+
+#[test]
+fn building_the_panel_needs_devices_and_writes_a_pdf() {
+    let mut c = ctx("panel_build");
+    let out = c.lib_dir.join("щит.pdf");
+    let args = json!({"out": out.to_str().unwrap(), "lang": "en", "format": "a4"});
+    assert!(run(&mut c, "build_panel", args.clone())
+        .unwrap_err()
+        .contains("щит пуст"));
+    for (kind, id, load) in [
+        ("feed", "X1", ""),
+        ("breaker", "Q1", "M1"),
+        ("motor", "M1", ""),
+    ] {
+        run(
+            &mut c,
+            "add_panel_device",
+            json!({"kind": kind, "id": id, "load": load}),
+        )
+        .unwrap();
+    }
+    assert!(run(&mut c, "build_panel", json!({"lang": "de"})).is_err());
+    assert!(run(&mut c, "build_panel", json!({"format": "a0"})).is_err());
+    // The PDF needs the `crablogic-pdf` helper; without it the command says why.
+    match run(&mut c, "build_panel", args) {
+        Ok(r) => {
+            assert!(r["sheets"].as_u64().unwrap() >= 3);
+            assert!(fs::metadata(&out).unwrap().len() > 1000);
+            // The numbers of the wires are kept in the project.
+            assert!(!c.project.panel.wire_numbers.is_empty());
+        }
+        Err(e) => assert!(!e.is_empty()),
+    }
+}
+
+#[test]
+fn panel_commands_are_offered_to_the_model() {
+    let names: Vec<&str> = tools().iter().map(|t| t.name).collect();
+    for n in crab_ai::panel::NAMES {
+        assert!(names.contains(&n), "{n}");
+    }
+}

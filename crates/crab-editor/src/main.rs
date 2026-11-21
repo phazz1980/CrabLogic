@@ -34,6 +34,7 @@ mod modbuspanel;
 mod netfind_ui;
 mod netpanel;
 mod panels;
+mod panelview;
 mod pictures;
 mod pullview;
 mod radiopanel;

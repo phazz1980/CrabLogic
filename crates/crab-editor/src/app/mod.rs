@@ -37,6 +37,7 @@ use crate::dialogs::{self, Dialog};
 use crate::doc::Doc;
 use crate::job::{Job, JobEvent, JobKind, QuestionKind, UploadQuestion};
 use crate::panels;
+use crate::panelview::{AppMode, PanelView};
 use crate::selfupdate;
 use crate::theme::{self, Theme};
 use crate::update::{self, Check, Release};
@@ -195,6 +196,10 @@ pub struct EditorApp {
     pub canvas: CanvasState,
     pub right_tab: RightTab,
     pub left_tab: LeftTab,
+    /// The schema or the electrical panel.
+    pub mode: AppMode,
+    /// State of the mode «Щит».
+    pub panel_view: PanelView,
     /// Panel sizes and which side panels are expanded; saved in the editor settings.
     pub panels: theme::PanelSizes,
     pub log: Vec<LogLine>,
@@ -331,6 +336,8 @@ impl EditorApp {
             canvas: CanvasState::default(),
             right_tab: RightTab::Library,
             left_tab: LeftTab::Tree,
+            mode: AppMode::Logic,
+            panel_view: PanelView::default(),
             panels: theme::saved_panels(),
             log: Vec::new(),
             bottom_tab: BottomTab::Log,
@@ -457,6 +464,11 @@ impl EditorApp {
         theme::save_choice(&theme.name);
         theme::apply(ctx, &theme);
         self.theme = theme;
+    }
+
+    /// Opens the right panel (the properties of the device in the mode «Щит»).
+    pub fn right_open_for_panel(&mut self) {
+        self.panels.right_open = true;
     }
 
     pub fn info(&mut self, level: LogLevel, text: impl Into<crate::i18n::LogText>) {
@@ -587,6 +599,9 @@ impl eframe::App for EditorApp {
         egui::Panel::top("menu").show(ui, |ui| {
             self.title_bar(ui);
         });
+        if self.doc.is_some() {
+            egui::Panel::top("mode_tabs").show(ui, |ui| crate::panelview::tabs(self, ui));
+        }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         let mut sizes = self.panels;
         if sizes.log_open {
@@ -624,7 +639,13 @@ impl eframe::App for EditorApp {
             self.panels = sizes;
             theme::save_panels(sizes);
         }
-        egui::CentralPanel::default_margins().show(ui, |ui| canvas::show(self, ui));
+        egui::CentralPanel::default_margins().show(ui, |ui| {
+            if self.mode == AppMode::Panel && self.doc.is_some() {
+                crate::panelview::sheet(self, ui);
+            } else {
+                canvas::show(self, ui);
+            }
+        });
 
         dialogs::show(self, &ctx);
         crate::pullview::show(self, &ctx);

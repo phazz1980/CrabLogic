@@ -674,6 +674,10 @@ fn var_color(pal: &crate::theme::Palette, ty: crab_core::VarType) -> egui::Color
 
 /// Project tree: controller → tags (inputs, outputs, variables) → sheets.
 pub fn left(app: &mut EditorApp, ui: &mut Ui) {
+    if app.mode == crate::panelview::AppMode::Panel {
+        crate::panelview::tree(app, ui);
+        return;
+    }
     let pal = app.theme.palette;
     // The tree is read more than edited: slightly larger text and looser rows.
     {
@@ -1194,6 +1198,10 @@ fn project_blocks(app: &mut EditorApp, ui: &mut Ui) {
 }
 
 pub fn right(app: &mut EditorApp, ui: &mut Ui) {
+    if app.mode == crate::panelview::AppMode::Panel {
+        crate::panelview::properties(app, ui);
+        return;
+    }
     ui.horizontal(|ui| {
         ui.selectable_value(
             &mut app.right_tab,

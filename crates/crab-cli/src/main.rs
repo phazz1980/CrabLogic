@@ -228,6 +228,27 @@ enum Command {
         /// Папка проекта в старом формате
         project: PathBuf,
     },
+    /// Собрать электрическую документацию щита (panel.toml) в PDF: схемы на листах A4
+    Panel {
+        /// Файл проекта .crab (или папка с ним)
+        project: PathBuf,
+        /// Язык подписей на листах: ru или en
+        #[arg(long, default_value = "ru")]
+        lang: String,
+        /// Формат листов: a3 (по умолчанию; ГОСТ IEC 61082-1 рекомендует его для схем) или a4
+        #[arg(long, default_value = "a3")]
+        format: String,
+        /// Куда записать PDF (по умолчанию `<имя проекта>_panel.pdf` в текущей папке)
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Записать номера проводов в проект, чтобы провода не меняли номера при правках щита
+        #[arg(long)]
+        save_numbers: bool,
+        /// Папка для таблиц в CSV (перечень клемм, перечень проводов, спецификация; разделитель `;`,
+        /// UTF-8 с меткой, открывается в Excel)
+        #[arg(long)]
+        csv: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -416,6 +437,22 @@ fn run() -> ExitCode {
         } => run_board_check(&dir, cli.library.as_deref()),
         Command::Block { action } => run_block(action, cli.library.as_deref()),
         Command::Convert { project } => run_convert(&project, cli.library.as_deref()),
+        Command::Panel {
+            project,
+            lang,
+            format,
+            out,
+            save_numbers,
+            csv,
+        } => run_panel(
+            &project,
+            cli.library.as_deref(),
+            &lang,
+            &format,
+            out.as_deref(),
+            save_numbers,
+            csv.as_deref(),
+        ),
     }
 }
 
@@ -587,6 +624,115 @@ fn run_convert(dir: &Path, library: Option<&Path>) -> ExitCode {
     }
 }
 
+/// `crablogic panel`: the electrical documentation of the panel as a PDF.
+fn run_panel(
+    project_dir: &Path,
+    library: Option<&Path>,
+    lang: &str,
+    format: &str,
+    out: Option<&Path>,
+    save_numbers: bool,
+    csv: Option<&Path>,
+) -> ExitCode {
+    let Some(format) = crab_schematic::Format::from_code(format) else {
+        eprintln!("ошибка: формат листов — a3 или a4, а не «{format}»");
+        return ExitCode::from(EXIT_LOAD_FAILED);
+    };
+    let Some(lang) = crab_schematic::Lang::from_code(lang) else {
+        eprintln!("ошибка: язык подписей — ru или en, а не «{lang}»");
+        return ExitCode::from(EXIT_LOAD_FAILED);
+    };
+    let (mut project, lib) = match load(project_dir, library) {
+        Ok(loaded) => loaded,
+        Err(code) => return code,
+    };
+    if project.panel.is_empty() {
+        eprintln!("ошибка: в проекте нет щита (panel.toml)");
+        return ExitCode::from(EXIT_SCHEMA_ERRORS);
+    }
+    let report = crab_core::check_panel(&project, &lib);
+    print_diagnostics(&report.diagnostics);
+    let errors = report.errors().count();
+    if errors > 0 {
+        eprintln!(
+            "Щит {}: ошибок — {errors}, документация не собрана",
+            project_dir.display()
+        );
+        return ExitCode::from(EXIT_SCHEMA_ERRORS);
+    }
+    let (doc, nets) = match crab_schematic::build_document_in(&project, &lib, lang, format) {
+        Ok(built) => built,
+        Err(e) => {
+            eprintln!("ошибка: {e}");
+            return ExitCode::from(EXIT_GEN_FAILED);
+        }
+    };
+    if doc.sheets.is_empty() {
+        eprintln!("ошибка: в щите нет силовых цепей, рисовать нечего");
+        return ExitCode::from(EXIT_SCHEMA_ERRORS);
+    }
+    let pdf = match crab_pdf::compile(crab_schematic::doc::typst_source(&doc, lang)) {
+        Ok(pdf) => pdf,
+        Err(e) => {
+            eprintln!("ошибка: {e}");
+            return ExitCode::from(EXIT_BUILD_FAILED);
+        }
+    };
+    let path = out.map_or_else(
+        || PathBuf::from(format!("{}_panel.pdf", project.display_name())),
+        Path::to_path_buf,
+    );
+    if let Err(e) = std::fs::write(&path, pdf) {
+        eprintln!("ошибка: не записан {}: {e}", path.display());
+        return ExitCode::from(EXIT_BUILD_FAILED);
+    }
+    println!(
+        "Записан {}: листов — {}, проводов — {}",
+        path.display(),
+        doc.sheets.len(),
+        nets.wires.len()
+    );
+    if let Some(dir) = csv {
+        let stem = project.display_name();
+        let tables = &doc.tables;
+        let files = [
+            ("terminals", &tables.terminals),
+            ("wires", &tables.wires),
+            ("bom", &tables.bom),
+        ];
+        let written = std::fs::create_dir_all(dir).and_then(|()| {
+            for (name, table) in files {
+                if table.rows.is_empty() {
+                    continue;
+                }
+                let path = dir.join(format!("{stem}_{name}.csv"));
+                std::fs::write(&path, crab_schematic::tables::to_csv(table))?;
+                println!("Записан {}", path.display());
+            }
+            Ok(())
+        });
+        if let Err(e) = written {
+            eprintln!("ошибка: таблицы CSV не записаны: {e}");
+            return ExitCode::from(EXIT_BUILD_FAILED);
+        }
+    }
+    if save_numbers {
+        nets.store(&mut project.panel);
+        match crab_pdf::save_project(&project, &lib) {
+            Ok(None) => println!("Номера проводов записаны в проект"),
+            Ok(Some(warning)) => {
+                println!("Номера проводов записаны в проект");
+                println!("предупреждение: {warning}");
+            }
+            Err(e) => {
+                eprintln!("ошибка: номера не записаны: {e}");
+                return ExitCode::from(EXIT_BUILD_FAILED);
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_check(project_dir: &Path, library: Option<&Path>) -> ExitCode {
     let (project, lib) = match load(project_dir, library) {
         Ok(loaded) => loaded,
@@ -595,8 +741,12 @@ fn run_check(project_dir: &Path, library: Option<&Path>) -> ExitCode {
 
     let report = crab_codegen::check_project(&project, &lib);
     print_diagnostics(&report.diagnostics);
+    // The panel is checked apart from the schema: its mistakes never stop a build, but they
+    // are reported here so the documentation can be trusted.
+    let panel = crab_core::check_panel(&project, &lib);
+    print_diagnostics(&panel.diagnostics);
 
-    let errors = report.errors().count();
+    let errors = report.errors().count() + panel.errors().count();
     if errors > 0 {
         eprintln!("Проверка {}: ошибок — {errors}", project_dir.display());
         return ExitCode::from(EXIT_SCHEMA_ERRORS);

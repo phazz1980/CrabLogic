@@ -3,13 +3,14 @@
 use std::path::Path;
 
 use crab_core::project::is_web_kind;
-use crab_core::{BlockPos, Layout, Library, Logic, ParamKind, Project, Report};
+use crab_core::{BlockPos, Layout, Library, Logic, Panel, ParamKind, Project, Report};
 
 /// State that undo/redo restores.
 #[derive(Clone)]
 struct Snapshot {
     logic: Logic,
     layout: Layout,
+    panel: Panel,
 }
 
 pub struct Doc {
@@ -18,6 +19,9 @@ pub struct Doc {
     pub dirty: bool,
     /// Bumped on every change of the project; background precompilation compares it.
     pub revision: u64,
+    /// Bumped on every change of the electrical panel (and by undo and redo): the preview of the
+    /// sheets is made again when it or `revision` changes. The firmware does not depend on it.
+    pub panel_revision: u64,
     /// Check result for the current schema, refreshed after every edit.
     pub report: Report,
     /// The schema is frozen (debugging or simulation is running): edits change nothing.
@@ -59,6 +63,7 @@ impl Doc {
             project,
             dirty: false,
             revision: 0,
+            panel_revision: 0,
             report,
             locked: false,
             undo: Vec::new(),
@@ -104,6 +109,38 @@ impl Doc {
                     self.revision += 1;
                     self.recheck(lib);
                 }
+                Ok(value)
+            }
+            Err(e) => {
+                self.restore(before);
+                Err(e)
+            }
+        }
+    }
+
+    /// Applies an edit of the electrical panel as one undo step (`key` merges consecutive edits
+    /// of the same thing, as in [`Doc::edit`]). The panel does not change the firmware: nothing is
+    /// rebuilt, the project only becomes unsaved. A panel can be edited while the schema is
+    /// frozen (debugging, simulation): it is not part of what runs.
+    pub fn edit_panel<T, E>(
+        &mut self,
+        key: Option<String>,
+        f: impl FnOnce(&mut Panel) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let before = self.snapshot();
+        let merge = key.is_some() && key == self.last_key;
+        match f(&mut self.project.panel) {
+            Ok(value) => {
+                if !merge {
+                    self.undo.push(before);
+                    if self.undo.len() > UNDO_LIMIT {
+                        self.undo.remove(0);
+                    }
+                }
+                self.redo.clear();
+                self.last_key = key;
+                self.dirty = true;
+                self.panel_revision += 1;
                 Ok(value)
             }
             Err(e) => {
@@ -195,15 +232,50 @@ impl Doc {
     /// Saves the project archive with the PDF of all sheets; returns a warning
     /// if the PDF could not be made.
     pub fn save(&mut self, lib: &Library) -> crab_core::Result<Option<String>> {
-        let warning = crab_pdf::save_project(&self.project, lib)?;
+        let (panel_pdf, panel_warning) = self.panel_pdf(lib);
+        let more: Vec<(&str, &[u8])> = panel_pdf
+            .iter()
+            .map(|p| (crab_core::PANEL_PDF, p.as_slice()))
+            .collect();
+        let warning = crab_pdf::save_project_with(&self.project, lib, &more)?;
         self.dirty = false;
-        Ok(warning)
+        Ok(warning.or(panel_warning))
+    }
+
+    /// The PDF of the panel documentation for the archive (Russian, A3); none for an empty panel.
+    /// The numbers of the wires are kept in the panel, so that they stay the same later.
+    fn panel_pdf(&mut self, lib: &Library) -> (Option<Vec<u8>>, Option<String>) {
+        use crab_schematic::{build_document_in, doc::typst_source, Format, Lang};
+        if self.project.panel.devices.is_empty() {
+            return (None, None);
+        }
+        let lang = Lang::Ru;
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            build_document_in(&self.project, lib, lang, Format::A3)
+        }));
+        match built {
+            Ok(Ok((doc, nets))) => {
+                if doc.sheets.is_empty() {
+                    return (None, None);
+                }
+                if nets.wire_numbers() != self.project.panel.wire_numbers {
+                    nets.store(&mut self.project.panel);
+                }
+                match crab_pdf::compile(typst_source(&doc, lang)) {
+                    Ok(pdf) => (Some(pdf), None),
+                    Err(e) => (None, Some(format!("panel.pdf: {e}"))),
+                }
+            }
+            Ok(Err(e)) => (None, Some(format!("panel.pdf: {e}"))),
+            Err(_) => (None, Some("panel.pdf: internal error".to_owned())),
+        }
     }
 
     fn after_history(&mut self, lib: &Library) {
         self.last_key = None;
         self.dirty = true;
         self.revision += 1;
+        self.panel_revision += 1;
         self.recheck(lib);
     }
 
@@ -211,12 +283,14 @@ impl Doc {
         Snapshot {
             logic: self.project.logic.clone(),
             layout: self.project.layout.clone(),
+            panel: self.project.panel.clone(),
         }
     }
 
     fn restore(&mut self, s: Snapshot) {
         self.project.logic = s.logic;
         self.project.layout = s.layout;
+        self.project.panel = s.panel;
     }
 }
 
@@ -291,6 +365,108 @@ mod tests {
                 b.id
             );
         }
+    }
+
+    fn device(id: &str) -> crab_core::Device {
+        toml::from_str(&format!(
+            "id = \"{id}\"
+kind = \"breaker\"
+"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn panel_edits_are_undone_and_do_not_rebuild_the_firmware() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        let (revision, panel) = (doc.revision, doc.project.panel.clone());
+        assert!(!doc.dirty);
+        doc.edit_panel::<(), ()>(None, |p| {
+            p.devices.push(device("Q1"));
+            Ok(())
+        })
+        .unwrap();
+        assert!(doc.dirty);
+        assert_eq!(doc.project.panel.devices.len(), panel.devices.len() + 1);
+        // The firmware is not rebuilt, the preview of the sheets is.
+        assert_eq!(doc.revision, revision);
+        assert_eq!(doc.panel_revision, 1);
+        assert!(doc.can_undo());
+        doc.undo(&lib);
+        assert_eq!(doc.project.panel, panel);
+        doc.redo(&lib);
+        assert_eq!(doc.project.panel.devices.len(), panel.devices.len() + 1);
+        // An edit that fails leaves no trace.
+        let before = doc.project.panel.clone();
+        let failed = doc.edit_panel::<(), &str>(None, |p| {
+            p.devices.clear();
+            Err("no")
+        });
+        assert!(failed.is_err());
+        assert_eq!(doc.project.panel, before);
+    }
+
+    #[test]
+    fn saving_puts_the_panel_pdf_into_the_archive_only_for_a_panel_with_devices() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        let dir = std::env::temp_dir().join(format!("crab_panel_pdf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        doc.project.path = dir.join("pump.crab");
+        let names_in = |file: &Path| {
+            let bytes = std::fs::read(file).unwrap();
+            let has = |name: &str| bytes.windows(name.len()).any(|w| w == name.as_bytes());
+            (has("project.toml"), has(crab_core::PANEL_PDF))
+        };
+        // No devices: nothing to document.
+        doc.project.panel = crab_core::Panel::default();
+        doc.save(&lib).unwrap();
+        assert_eq!(names_in(&dir.join("pump.crab")), (true, false));
+        // A panel with a feed, a breaker and a load. The PDF needs the `crablogic-pdf` helper; where
+        // it is not built the save still succeeds and says why.
+        doc.project.panel = toml::from_str(
+            "supply = \"ac230\"\n[[device]]\nid = \"X1\"\nkind = \"feed\"\n\
+             [[device]]\nid = \"Q1\"\nkind = \"breaker\"\nload = \"M1\"\n\
+             [[device]]\nid = \"M1\"\nkind = \"motor\"\n",
+        )
+        .unwrap();
+        let warning = doc.save(&lib).unwrap();
+        assert!(!doc.dirty);
+        let (_, has_pdf) = names_in(&dir.join("pump.crab"));
+        assert!(has_pdf || warning.is_some(), "no panel.pdf and no warning");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn consecutive_panel_edits_of_one_thing_are_one_undo_step() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        // The example has a panel of its own: start from an empty one.
+        doc.project.panel = crab_core::Panel::default();
+        doc.edit_panel::<(), ()>(None, |p| {
+            p.devices.push(device("Q1"));
+            Ok(())
+        })
+        .unwrap();
+        for text in ["C", "C1", "C16"] {
+            doc.edit_panel::<(), ()>(Some("rating:Q1".into()), |p| {
+                p.devices[0].rating = text.into();
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(doc.project.panel.devices[0].rating, "C16");
+        doc.undo(&lib);
+        assert_eq!(doc.project.panel.devices[0].rating, "");
+        doc.undo(&lib);
+        assert!(doc.project.panel.devices.is_empty());
     }
 
     #[test]

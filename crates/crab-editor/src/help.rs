@@ -63,6 +63,7 @@ pub fn error_anchor(kind: DiagKind) -> &'static str {
         DiagKind::StepOverPeriod => crate::i18n::tr("шаг-листа-больше-периода"),
         DiagKind::Array => crate::i18n::tr("массив-или-структура"),
         DiagKind::NetworkOff => crate::i18n::tr("сеть-выключена"),
+        DiagKind::Panel => crate::i18n::tr("щит"),
     }
 }
 
@@ -86,6 +87,7 @@ const FILES: &[(&str, &str)] = &[
     ("displays", include_str!("../../../help/13-displays.md")),
     ("lora", include_str!("../../../help/16-lora.md")),
     ("arrays", include_str!("../../../help/17-arrays.md")),
+    ("panel", include_str!("../../../help/18-panel.md")),
     ("build", include_str!("../../../help/05-build.md")),
     ("debug", include_str!("../../../help/06-debug.md")),
     ("ai", include_str!("../../../help/07-ai.md")),

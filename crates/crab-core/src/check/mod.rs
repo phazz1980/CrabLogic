@@ -22,6 +22,7 @@ mod flow;
 mod graph;
 mod lora;
 mod modbus;
+mod panel;
 mod retain;
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,7 @@ use self::cycle::check_cycle;
 pub use self::display::{screen_size, LCD_CYRILLIC_LIMIT};
 pub use self::flow::*;
 use self::graph::*;
+pub use self::panel::{check_panel, panel_binding, panel_tags, PanelTag};
 use self::retain::check_retain_fast;
 pub use self::types::*;
 

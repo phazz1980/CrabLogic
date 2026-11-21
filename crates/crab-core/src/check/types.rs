@@ -69,6 +69,9 @@ pub enum DiagKind {
     /// Network blocks (MQTT, web page, NTP, Modbus TCP) in a project with no Wi-Fi and no Ethernet:
     /// they stay in the project and are not built.
     NetworkOff,
+    /// The electrical panel (`panel.toml`): designations, bindings to inputs and outputs, loads.
+    /// Reported by [`crate::check_panel`], never by the schema check.
+    Panel,
 }
 
 impl DiagKind {
@@ -117,6 +120,7 @@ impl DiagKind {
         DiagKind::StepOverPeriod,
         DiagKind::Array,
         DiagKind::NetworkOff,
+        DiagKind::Panel,
     ];
 
     /// Stable machine-readable id, kebab-case.
@@ -166,6 +170,7 @@ impl DiagKind {
             DiagKind::StepOverPeriod => "step-over-period",
             DiagKind::Array => "array",
             DiagKind::NetworkOff => "network-off",
+            DiagKind::Panel => "panel",
         }
     }
 }

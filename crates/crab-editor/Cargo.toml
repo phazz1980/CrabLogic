@@ -19,6 +19,7 @@ crab-build = { path = "../crab-build" }
 crab-codegen = { path = "../crab-codegen" }
 crab-core = { path = "../crab-core" }
 crab-pdf = { path = "../crab-pdf" }
+crab-schematic = { path = "../crab-schematic" }
 crab-sim = { path = "../crab-sim" }
 serialport = { version = "4", default-features = false }
 crab-mcp = { path = "../crab-mcp" }

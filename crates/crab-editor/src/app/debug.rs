@@ -199,14 +199,28 @@ impl EditorApp {
     pub(super) fn poll_ai(&mut self, ctx: &egui::Context) {
         for request in self.ai.poll() {
             match request {
-                crate::ai::Request::Apply(logic, layout) => {
+                crate::ai::Request::Apply(logic, layout, panel) => {
                     let lib = self.lib.clone();
                     if let Some(doc) = &mut self.doc {
-                        let _ = doc.edit(&lib, None, |p| {
-                            p.logic = *logic;
-                            p.layout = layout;
-                            Ok::<_, String>(())
-                        });
+                        let schema_same =
+                            doc.project.logic == *logic && doc.project.layout == layout;
+                        if schema_same {
+                            // Only the panel changed: no rebuild of the firmware.
+                            if doc.project.panel != *panel {
+                                let _ = doc.edit_panel(None, |p| {
+                                    *p = *panel;
+                                    Ok::<_, String>(())
+                                });
+                            }
+                        } else {
+                            // One undo step for the schema and the panel together.
+                            let _ = doc.edit(&lib, None, |p| {
+                                p.logic = *logic;
+                                p.layout = layout;
+                                p.panel = *panel;
+                                Ok::<_, String>(())
+                            });
+                        }
                     }
                     // A password set by AI goes to the program, not into the file.
                     self.take_local();

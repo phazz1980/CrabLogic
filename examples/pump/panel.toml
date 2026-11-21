@@ -1,0 +1,46 @@
+# Щит насосной станции: ввод 230 В, автомат на насос, блок питания 24 В для датчика.
+# Документация: `crablogic panel examples/pump` (или режим «Щит» в редакторе).
+supply = "ac230"
+
+[[device]]
+id = "X1"
+kind = "feed"
+rating = "230 В, 16 А"
+
+[[device]]
+id = "Q1"
+kind = "breaker"
+rating = "C10"
+part = "S201-C10"
+load = "K1"
+
+# Контактор включается выходом `pump`.
+[[device]]
+id = "K1"
+kind = "contactor"
+rating = "9 А, катушка 24 В"
+bind = "pump"
+load = "M1"
+
+[[device]]
+id = "M1"
+kind = "motor"
+rating = "0,55 кВт"
+
+[[device]]
+id = "Q2"
+kind = "breaker"
+rating = "C2"
+load = "G1"
+
+[[device]]
+id = "G1"
+kind = "psu"
+rating = "24 В, 1,25 А"
+
+# Датчик давления 0…10 бар, выход на АЦП `sensor`.
+[[device]]
+id = "B1"
+kind = "sensor"
+rating = "0…10 бар, 4…20 мА"
+bind = "sensor"

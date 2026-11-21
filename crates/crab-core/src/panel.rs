@@ -2,10 +2,16 @@
 //! bound to (`specs/electrical-schematics`). The panel does not change the schema or the
 //! firmware: it only feeds the electrical documentation.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Entry of the project archive with the panel; written only when the panel is not empty.
 pub const PANEL_FILE: &str = "panel.toml";
+
+/// Entry of the project archive with the documentation of the panel as a PDF (made by the editor
+/// at saving, only for a panel that is not empty).
+pub const PANEL_PDF: &str = "panel.pdf";
 
 /// Supply of the panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +143,11 @@ pub struct Panel {
     pub supply: Supply,
     #[serde(default, rename = "device", skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<Device>,
+    /// Numbers given to the wires, kept so that a wire keeps its number when the panel changes:
+    /// the key is the ends of the wire (`K1:2>M1:L1`), the value its number. Written by the
+    /// documentation generator, not typed by hand.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub wire_numbers: BTreeMap<String, u32>,
 }
 
 impl Panel {
@@ -148,6 +159,69 @@ impl Panel {
     /// The device with this designation (`K1`).
     pub fn device(&self, id: &str) -> Option<&Device> {
         self.devices.iter().find(|d| d.id == id)
+    }
+
+    /// The first free designation for a device of `kind`: `K1`, then `K2`...
+    pub fn next_id(&self, kind: DeviceKind) -> String {
+        (1..)
+            .map(|n| format!("{}{n}", kind.letter()))
+            .find(|id| self.device(id).is_none())
+            .unwrap_or_default()
+    }
+
+    /// Gives the device `old` the designation `new`: the devices that it feeds or switches
+    /// (`load`) and the stored numbers of its wires follow it. The designation must be free and a
+    /// valid identifier.
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<(), String> {
+        if old == new {
+            return Ok(());
+        }
+        if !crate::ident::is_valid_ident(new) {
+            return Err(format!(
+                "«{new}»: недопустимое обозначение (буквы, цифры, «_» и «-», без пробелов)"
+            ));
+        }
+        if self.device(new).is_some() {
+            return Err(format!("обозначение «{new}» уже занято"));
+        }
+        let Some(device) = self.devices.iter_mut().find(|d| d.id == old) else {
+            return Err(format!("нет устройства «{old}»"));
+        };
+        device.id = new.to_owned();
+        for d in &mut self.devices {
+            if d.load == old {
+                d.load = new.to_owned();
+            }
+        }
+        // The keys are `K1:2>M1:L1`: the device is the part before the colon of each end.
+        let numbers = std::mem::take(&mut self.wire_numbers);
+        for (key, number) in numbers {
+            let renamed = key
+                .split('>')
+                .map(|end| match end.split_once(':') {
+                    Some((device, pin)) if device == old => format!("{new}:{pin}"),
+                    _ => end.to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join(">");
+            self.wire_numbers.insert(renamed, number);
+        }
+        Ok(())
+    }
+
+    /// Removes the device; what it fed or switched is left without a feeder, and the stored
+    /// numbers of its wires go with it.
+    pub fn remove(&mut self, id: &str) {
+        self.devices.retain(|d| d.id != id);
+        for d in &mut self.devices {
+            if d.load == id {
+                d.load.clear();
+            }
+        }
+        self.wire_numbers.retain(|key, _| {
+            !key.split('>')
+                .any(|end| end.split_once(':').is_some_and(|(device, _)| device == id))
+        });
     }
 }
 
@@ -173,6 +247,9 @@ load = "M1"
 id = "M1"
 kind = "motor"
 rating = "0,75 кВт"
+
+[wire_numbers]
+"K1:2>M1:L1" = 7
 "#;
 
     #[test]
@@ -182,6 +259,7 @@ rating = "0,75 кВт"
         assert_eq!(panel.devices.len(), 3);
         assert_eq!(panel.device("K1").unwrap().load, "M1");
         assert_eq!(panel.device("K1").unwrap().designation(), "-K1");
+        assert_eq!(panel.wire_numbers["K1:2>M1:L1"], 7);
         let text = toml::to_string_pretty(&panel).unwrap();
         assert_eq!(toml::from_str::<Panel>(&text).unwrap(), panel);
     }
@@ -212,5 +290,84 @@ rating = "0,75 кВт"
     fn unknown_kind_is_an_error() {
         let text = "[[device]]\nid = \"X1\"\nkind = \"toaster\"";
         assert!(toml::from_str::<Panel>(text).is_err());
+    }
+
+    #[test]
+    fn next_id_is_the_first_free_one() {
+        let mut panel = Panel::default();
+        assert_eq!(panel.next_id(DeviceKind::Contactor), "K1");
+        for id in ["K1", "K2", "K4"] {
+            panel.devices.push(Device {
+                id: id.into(),
+                kind: DeviceKind::Relay,
+                rating: String::new(),
+                part: String::new(),
+                bind: String::new(),
+                load: String::new(),
+            });
+        }
+        assert_eq!(panel.next_id(DeviceKind::Contactor), "K3");
+        assert_eq!(panel.next_id(DeviceKind::Breaker), "Q1");
+    }
+
+    fn pair() -> Panel {
+        toml::from_str(
+            r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K1"
+[[device]]
+id = "K1"
+kind = "contactor"
+bind = "pump"
+load = "M1"
+[[device]]
+id = "M1"
+kind = "motor"
+[wire_numbers]
+"Q1:2>K1:1" = 3
+"K1:2>M1:L" = 4
+"X1:L>Q1:1" = 1
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn rename_follows_loads_and_wire_numbers() {
+        let mut panel = pair();
+        panel.rename("K1", "K7").unwrap();
+        assert!(panel.device("K1").is_none() && panel.device("K7").is_some());
+        assert_eq!(panel.device("Q1").unwrap().load, "K7");
+        assert_eq!(panel.wire_numbers["Q1:2>K7:1"], 3);
+        assert_eq!(panel.wire_numbers["K7:2>M1:L"], 4);
+        assert_eq!(panel.wire_numbers["X1:L>Q1:1"], 1);
+        assert_eq!(panel.wire_numbers.len(), 3);
+        // The other end of a key is renamed as well.
+        panel.rename("M1", "M2").unwrap();
+        assert_eq!(panel.wire_numbers["K7:2>M2:L"], 4);
+        assert_eq!(panel.device("K7").unwrap().load, "M2");
+    }
+
+    #[test]
+    fn rename_refuses_a_taken_or_bad_designation() {
+        let mut panel = pair();
+        assert!(panel.rename("K1", "Q1").is_err());
+        assert!(panel.rename("K1", "K 1").is_err());
+        assert!(panel.rename("K1", "").is_err());
+        assert!(panel.rename("Z9", "Z8").is_err());
+        assert!(panel.rename("K1", "K1").is_ok());
+        assert_eq!(panel, pair());
+    }
+
+    #[test]
+    fn remove_drops_the_device_its_links_and_its_wire_numbers() {
+        let mut panel = pair();
+        panel.remove("K1");
+        assert!(panel.device("K1").is_none());
+        assert_eq!(panel.device("Q1").unwrap().load, "");
+        assert_eq!(panel.wire_numbers.len(), 1);
+        assert!(panel.wire_numbers.contains_key("X1:L>Q1:1"));
     }
 }

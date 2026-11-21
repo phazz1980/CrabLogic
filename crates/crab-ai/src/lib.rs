@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod folder;
 pub mod openai;
+pub mod panel;
 pub mod provider;
 
 use std::fs;
@@ -247,6 +248,9 @@ pub fn tools() -> Vec<Tool> {
             }, "required": ["type", "block_toml", "wasm_base64"]}),
         },
     ]
+    .into_iter()
+    .chain(panel::tools())
+    .collect()
 }
 
 /// Runs one tool. Errors are user-facing text the model can act on.
@@ -264,6 +268,9 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
             .parse()
             .map_err(|e: crab_core::PortRefError| e.to_string())
     };
+    if let Some(result) = panel::call(ctx, name, &Value::Object(args.clone())) {
+        return result;
+    }
     let lib = ctx.library().clone();
     match name {
         "get_schema" => {
