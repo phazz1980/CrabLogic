@@ -18,6 +18,12 @@ use crate::{
 pub enum EditError {
     #[error("нет блока «{0}»")]
     NoBlock(String),
+    #[error("в {0} не входит связь")]
+    NoLink(PortRef),
+    #[error("блок «{0}» нельзя вставить в его же связь")]
+    InsertOwnLink(String),
+    #[error("блок «{0}» нельзя вставить в связь: нет подходящего свободного входа и подходящего выхода по типу")]
+    InsertNoPort(String),
     #[error("неизвестный тип блока «{0}»")]
     UnknownType(String),
     #[error("недопустимый id «{0}»: только буквы (можно русские), цифры, «_» и «-» (имя может состоять и из одних цифр), без пробелов и точек")]
@@ -1154,7 +1160,11 @@ impl Project {
             .ok_or_else(|| EditError::NoBlock(id.to_owned()))
     }
 
-    fn block_def<'l>(&self, lib: &'l Library, id: &str) -> Result<&'l crate::BlockDef, EditError> {
+    pub(crate) fn block_def<'l>(
+        &self,
+        lib: &'l Library,
+        id: &str,
+    ) -> Result<&'l crate::BlockDef, EditError> {
         let block = &self.logic.blocks[self.block_index(id)?];
         lib.resolve(&self.logic, block)
             .map(|b| &b.def)

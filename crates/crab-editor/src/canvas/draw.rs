@@ -348,6 +348,9 @@ pub(super) struct LinkOut {
     /// Live values above the input end of each wire; drawn after the blocks to stay on top.
     pub(super) wire_labels: Vec<(Pos2, crab_debug::Value, bool, PortRef)>,
     pub(super) text_labels: Vec<(Pos2, String, PortRef)>,
+    /// Drawn line of every unbroken link: input end, output end, points (a block dropped on it
+    /// goes into the link).
+    pub(super) wire_lines: Vec<(PortRef, PortRef, Vec<Pos2>)>,
 }
 
 /// Draws every link and collects clicks on them.
@@ -376,6 +379,7 @@ pub(super) fn draw_links(ui: &mut Ui, f: &Frame, live: Live, click_pos: Option<P
     let mut wire_jump: Option<String> = None;
     let mut wire_labels = Vec::new();
     let mut text_labels = Vec::new();
+    let mut wire_lines = Vec::new();
     for link in &logic.links {
         let (Some((a, ty)), Some((b, _))) =
             (port_screen(&link.from, true), port_screen(&link.to, false))
@@ -502,6 +506,9 @@ pub(super) fn draw_links(ui: &mut Ui, f: &Frame, live: Live, click_pos: Option<P
                 });
             }
         }
+        if !broken {
+            wire_lines.push((link.to.clone(), link.from.clone(), lines[0].clone()));
+        }
         for pts in &lines {
             painter.line(pts.clone(), stroke);
             if click_pos.is_some_and(|p| near_polyline(pts, p, 5.0)) {
@@ -558,6 +565,7 @@ pub(super) fn draw_links(ui: &mut Ui, f: &Frame, live: Live, click_pos: Option<P
         wire_jump,
         wire_labels,
         text_labels,
+        wire_lines,
     }
 }
 

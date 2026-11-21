@@ -11,15 +11,17 @@ pub(super) struct Edits {
     pub(super) wire_break: Option<(PortRef, bool)>,
     pub(super) connect: Option<(PortRef, PortRef)>,
     pub(super) drop: Option<(DragItem, BlockPos)>,
+    /// Link (its input end) under the dragged block: the block goes into it.
+    pub(super) insert_into: Option<PortRef>,
 }
 
-/// Applies `edits` to the document; returns the problems to report and the id of a block that
-/// was added (to select it).
+/// Applies `edits` to the document; returns the problems to report, notes (what an insertion
+/// into a link did) and the id of a block that was added (to select it).
 pub(super) fn apply_edits(
     app: &mut EditorApp,
     lib: &crab_core::Library,
     edits: Edits,
-) -> (Vec<String>, Option<String>) {
+) -> (Vec<String>, Vec<String>, Option<String>) {
     let Edits {
         moves,
         drag_end,
@@ -29,8 +31,10 @@ pub(super) fn apply_edits(
         wire_break,
         connect,
         drop,
+        insert_into,
     } = edits;
     let mut problems = Vec::new();
+    let mut notes = Vec::new();
     let mut added = None;
     if let Some(doc) = &mut app.doc {
         let group = moves.len() > 1;
@@ -72,6 +76,20 @@ pub(super) fn apply_edits(
                 Ok::<_, crab_core::EditError>(())
             });
             doc.end_edit();
+        } else if let (Some(id), Some(pos), Some(to)) = (&drag_end, landing, &insert_into) {
+            // The move and the insertion are one undo step; a refused insertion leaves the move.
+            let done = doc.edit(lib, None, |p| {
+                p.move_block(id, pos)?;
+                p.insert_into_link(lib, id, to)
+            });
+            match done {
+                Ok(done) => notes.push(insert_note(&done)),
+                Err(e) => {
+                    problems.push(e.to_string());
+                    let _ = doc.edit(lib, Some(format!("move:{id}")), |p| p.move_block(id, pos));
+                }
+            }
+            doc.end_edit();
         } else if let (Some(id), Some(pos)) = (&drag_end, landing) {
             let _ = doc.edit(lib, Some(format!("move:{id}")), |p| p.move_block(id, pos));
             doc.end_edit();
@@ -99,7 +117,15 @@ pub(super) fn apply_edits(
         }
         if let Some((item, pos)) = drop {
             let result = match item {
-                DragItem::Block(kind) => doc.edit(lib, None, |p| p.add_block(lib, &kind, pos)),
+                DragItem::Block(kind) => match &insert_into {
+                    Some(to) => doc.edit(lib, None, |p| {
+                        let id = p.add_block(lib, &kind, pos)?;
+                        let done = p.insert_into_link(lib, &id, to)?;
+                        notes.push(insert_note(&done));
+                        Ok(id)
+                    }),
+                    None => doc.edit(lib, None, |p| p.add_block(lib, &kind, pos)),
+                },
                 DragItem::Var(name) => doc.edit(lib, None, |p| p.add_var_block(&name, false, pos)),
                 DragItem::Struct(name) => doc.edit(lib, None, |p| {
                     p.add_struct_block(crab_core::struct_blocks::UNPACK, &name, pos)
@@ -141,7 +167,22 @@ pub(super) fn apply_edits(
             }
         }
     }
-    (problems, added)
+    (problems, notes, added)
+}
+
+/// What the status line says about a block that went into a link; a plain insertion needs no
+/// words.
+fn insert_note(done: &crab_core::Insert) -> String {
+    let text = match done {
+        crab_core::Insert::Spliced { .. } => crate::i18n::tr("Блок встал в связь"),
+        crab_core::Insert::Replaced { .. } => crate::i18n::tr(
+            "У блока нет входа: связь заменена его выходом, источник остался без этой связи",
+        ),
+        crab_core::Insert::Branch { .. } => crate::i18n::tr(
+            "У блока нет выхода: связь осталась, к входу блока добавлено ответвление от источника",
+        ),
+    };
+    text.to_owned()
 }
 
 /// Swaps two sheets in the document and in the editor state; the focus and the view follow

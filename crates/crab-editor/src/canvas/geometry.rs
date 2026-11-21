@@ -234,6 +234,35 @@ pub(super) fn rounded(points: &[Pos2], radius: f32) -> Vec<Pos2> {
     out
 }
 
+/// Distance from `p` to the nearest point of the polyline.
+pub(super) fn polyline_distance(points: &[Pos2], p: Pos2) -> f32 {
+    points
+        .windows(2)
+        .map(|w| {
+            let (s, d) = (w[0], w[1] - w[0]);
+            let t = ((p - s).dot(d) / d.length_sq().max(1e-6)).clamp(0.0, 1.0);
+            (s + d * t).distance(p)
+        })
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The link whose line passes nearest to `p`, within `tolerance`. Links of the block `skip`
+/// (the one being moved) do not count.
+pub(super) fn link_under<'a>(
+    lines: &'a [(PortRef, crab_core::PortRef, Vec<Pos2>)],
+    p: Pos2,
+    tolerance: f32,
+    skip: Option<&str>,
+) -> Option<&'a PortRef> {
+    lines
+        .iter()
+        .filter(|(to, from, _)| skip.is_none_or(|id| to.block != id && from.block != id))
+        .map(|(to, _, pts)| (to, polyline_distance(pts, p)))
+        .filter(|(_, d)| *d <= tolerance)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(to, _)| to)
+}
+
 pub(super) fn near_polyline(points: &[Pos2], p: Pos2, tolerance: f32) -> bool {
     points.windows(2).any(|w| {
         let (s, d) = (w[0], w[1] - w[0]);

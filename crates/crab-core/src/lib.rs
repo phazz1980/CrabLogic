@@ -19,6 +19,7 @@ pub mod ident;
 pub mod lan8720;
 pub mod layout;
 pub mod library;
+mod link_insert;
 pub mod local;
 pub mod logic;
 pub mod modbus_map;
@@ -52,6 +53,7 @@ pub use library::{
     param_input_type, save_block, user_library_dir, BlockDef, Choice, Library, LibraryBlock,
     ParamDef, ParamKind, ParamShow, PinMode, PortDef, SignalType,
 };
+pub use link_insert::Insert;
 pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
 pub use logic::{SheetExecution, SheetSpeed};

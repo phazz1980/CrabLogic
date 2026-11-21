@@ -443,6 +443,36 @@ kind = \"breaker\"
     }
 
     #[test]
+    fn a_block_put_into_a_link_is_one_undo_step() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        let before = doc.project.logic.clone();
+        let to: crab_core::PortRef = "delay.in".parse().unwrap();
+        let pos = crab_core::BlockPos {
+            sheet: 1,
+            x: 100.0,
+            y: 100.0,
+        };
+        let id = doc
+            .edit(&lib, None, |p| {
+                let id = p.add_block(&lib, "not", pos)?;
+                p.insert_into_link(&lib, &id, &to)?;
+                Ok::<_, crab_core::EditError>(id)
+            })
+            .unwrap();
+        assert!(doc
+            .project
+            .logic
+            .links
+            .iter()
+            .any(|l| l.from.block == id && l.to == to));
+        doc.undo(&lib);
+        assert_eq!(doc.project.logic, before);
+    }
+
+    #[test]
     fn consecutive_panel_edits_of_one_thing_are_one_undo_step() {
         let (lib, _) =
             Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();

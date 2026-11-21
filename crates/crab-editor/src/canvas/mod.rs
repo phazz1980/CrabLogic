@@ -45,6 +45,20 @@ const SHEET_MIN_W: f32 = 1200.0;
 const SHEET_GAP: f32 = 14.0;
 const SHEET_PAD: f32 = 60.0;
 const ADD_SHEET_H: f32 = 28.0;
+/// How near (in screen pixels) a dragged block must be to a link to go into it.
+const INSERT_RANGE: f32 = 10.0;
+
+/// A block of the sheet with no link at all: only such a block is put into a link by dragging,
+/// so moving a wired block across the sheet never rewires it.
+fn dragged_block_is_free(app: &EditorApp, id: &str) -> bool {
+    app.doc.as_ref().is_some_and(|d| {
+        !d.project
+            .logic
+            .links
+            .iter()
+            .any(|l| l.from.block == id || l.to.block == id)
+    })
+}
 
 /// Payload dragged from the library or the variable list onto a sheet.
 #[derive(Debug, Clone)]
@@ -282,6 +296,7 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         wire_jump,
         wire_labels,
         text_labels,
+        wire_lines,
     } = draw_links(ui, &frame, live, click_pos);
 
     // Blocks.
@@ -531,6 +546,30 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
             app.canvas.band = None;
         }
     }
+    // A block dragged over a link goes into it: from the library, or a block of the sheet that
+    // has no links of its own yet.
+    let carried = egui::DragAndDrop::payload::<DragItem>(ui.ctx());
+    let carried_block = match (&carried, &app.canvas.moving) {
+        (Some(item), _) if matches!(**item, DragItem::Block(_)) => Some(None),
+        (None, Some(id)) if dragged_block_is_free(app, id) => Some(Some(id.clone())),
+        _ => None,
+    };
+    let insert_into = if app.schema_locked() || app.canvas.wire.is_some() {
+        None
+    } else {
+        carried_block.and_then(|skip| {
+            let p = pointer.filter(|p| rect.contains(*p))?;
+            link_under(&wire_lines, p, INSERT_RANGE, skip.as_deref()).cloned()
+        })
+    };
+    if let Some(to) = &insert_into {
+        if let Some((_, _, pts)) = wire_lines.iter().find(|(t, _, _)| t == to) {
+            painter.line(
+                pts.clone(),
+                Stroke::new(5.0, pal.accent.gamma_multiply(0.55)),
+            );
+        }
+    }
     let drop = dropped.and_then(|item| Some(((*item).clone(), drop_at(pointer?)?)));
     // Where a moved block ends up: the sheet under its top-left corner, or the sheet it
     // already stands on when Shift is held.
@@ -626,7 +665,7 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
         );
     }
     let lib = app.lib.clone();
-    let (problems, added) = apply_edits(
+    let (problems, notes, added) = apply_edits(
         app,
         &lib,
         Edits {
@@ -638,6 +677,7 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
             wire_break,
             connect,
             drop,
+            insert_into,
         },
     );
     if drag_end.is_some() {
@@ -664,6 +704,9 @@ pub fn show(app: &mut EditorApp, ui: &mut Ui) {
     }
     for e in problems {
         app.info(LogLevel::Error, e);
+    }
+    for note in notes {
+        app.info(LogLevel::Info, note);
     }
     if let Some(id) = open_dialog {
         app.dialog = Dialog::for_block(app, &id);

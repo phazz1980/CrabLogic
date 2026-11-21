@@ -602,3 +602,64 @@ fn panel_commands_are_offered_to_the_model() {
         assert!(names.contains(&n), "{n}");
     }
 }
+
+fn has_link(c: &Mem, from: &str, to: &str) -> bool {
+    c.project
+        .logic
+        .links
+        .iter()
+        .any(|l| l.from.to_string() == from && l.to.to_string() == to)
+}
+
+#[test]
+fn a_new_block_goes_into_a_link_in_one_edit() {
+    let mut c = ctx("insert");
+    let r = run(
+        &mut c,
+        "insert_block_in_link",
+        json!({"to": "led.in", "type": "not"}),
+    )
+    .unwrap();
+    assert_eq!(r["result"], "spliced");
+    let id = r["id"].as_str().unwrap().to_owned();
+    assert_eq!(c.edits, 1);
+    assert!(!has_link(&c, "button.out", "led.in"));
+    assert!(has_link(&c, "button.out", &format!("{id}.in")));
+    assert!(has_link(&c, &format!("{id}.out"), "led.in"));
+}
+
+#[test]
+fn a_block_of_the_schema_goes_into_a_link_and_a_branch_is_reported() {
+    let mut c = ctx("insert-existing");
+    run(
+        &mut c,
+        "add_block",
+        json!({"type": "digital_out", "id": "lamp"}),
+    )
+    .unwrap();
+    let r = run(
+        &mut c,
+        "insert_block_in_link",
+        json!({"to": "led.in", "block": "lamp"}),
+    )
+    .unwrap();
+    assert_eq!(r["result"], "branch");
+    assert!(has_link(&c, "button.out", "led.in"));
+    assert!(has_link(&c, "button.out", "lamp.in"));
+}
+
+#[test]
+fn a_refused_insertion_changes_nothing() {
+    let mut c = ctx("insert-refused");
+    let before = c.project.clone();
+    let err = run(
+        &mut c,
+        "insert_block_in_link",
+        json!({"to": "led.en", "type": "not"}),
+    )
+    .unwrap_err();
+    assert!(err.contains("led.en"), "{err}");
+    assert_eq!(c.project, before);
+    // Exactly one of `block` and `type`.
+    assert!(run(&mut c, "insert_block_in_link", json!({"to": "led.in"})).is_err());
+}

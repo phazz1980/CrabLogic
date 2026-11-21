@@ -1340,5 +1340,8 @@
  "Щит": "Panel",
  "Электрический щит: устройства, схемы силовой части и цепей управления, перечни": "Electrical panel: devices, schematics of the power and control circuits, lists",
  "не привязано": "not bound",
- "ничего": "nothing"
+ "ничего": "nothing",
+ "Блок встал в связь": "The block was put into the link",
+ "У блока нет входа: связь заменена его выходом, источник остался без этой связи": "The block has no input: the link was replaced by its output, the source is left without this link",
+ "У блока нет выхода: связь осталась, к входу блока добавлено ответвление от источника": "The block has no output: the link stays, a branch from the source to the block input was added"
 }

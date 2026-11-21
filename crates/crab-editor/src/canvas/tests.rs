@@ -47,3 +47,30 @@ fn rounding_keeps_ends() {
     assert_eq!(r.last(), Some(&pts[2]));
     assert!(r.len() > 3);
 }
+
+fn line(to: &str, from: &str, pts: &[(f32, f32)]) -> (PortRef, PortRef, Vec<Pos2>) {
+    (
+        to.parse().unwrap(),
+        from.parse().unwrap(),
+        pts.iter().map(|&(x, y)| Pos2::new(x, y)).collect(),
+    )
+}
+
+#[test]
+fn the_nearest_link_under_the_pointer_is_chosen() {
+    let lines = [
+        line("b.in", "a.out", &[(0.0, 0.0), (100.0, 0.0)]),
+        line("d.in", "c.out", &[(0.0, 6.0), (100.0, 6.0)]),
+    ];
+    let pick =
+        |p: Pos2, skip: Option<&str>| link_under(&lines, p, 10.0, skip).map(|t| t.to_string());
+    assert_eq!(pick(Pos2::new(50.0, 1.0), None).as_deref(), Some("b.in"));
+    assert_eq!(pick(Pos2::new(50.0, 5.0), None).as_deref(), Some("d.in"));
+    // Too far from both.
+    assert_eq!(pick(Pos2::new(50.0, 40.0), None), None);
+    // Links of the moved block do not count.
+    assert_eq!(
+        pick(Pos2::new(50.0, 1.0), Some("a")).as_deref(),
+        Some("d.in")
+    );
+}

@@ -120,6 +120,15 @@ pub fn tools() -> Vec<Tool> {
             }, "required": ["from", "to"]}),
         },
         Tool {
+            name: "insert_block_in_link",
+            description: "Вставить блок в существующую связь (ту, что ведёт во вход `to`): связь разрывается, концы идут к первому подходящему свободному входу и выходу блока. Укажите либо `block` (блок уже на схеме), либо `type` (новый блок, как в add_block). Блок без выхода получает ответвление от источника (связь остаётся), блок без входа заменяет связь своим выходом; если ничего не подходит, схема не меняется. Ответ: id блока и что сделано (spliced, replaced, branch).",
+            input_schema: json!({"type": "object", "properties": {
+                "to": port,
+                "block": {"type": "string", "description": "id блока, уже стоящего на схеме"},
+                "type": {"type": "string", "description": "тип нового блока из библиотеки"}
+            }, "required": ["to"]}),
+        },
+        Tool {
             name: "disconnect",
             description: "Убрать связь, ведущую во вход.",
             input_schema: json!({"type": "object", "properties": {"to": port}, "required": ["to"]}),
@@ -424,6 +433,36 @@ pub fn call(ctx: &mut dyn Context, name: &str, args: &Value) -> Result<Value, St
                     .map_err(|e| e.to_string())
             })?;
             Ok(ok(ctx, &lib))
+        }
+        "insert_block_in_link" => {
+            let to = port("to")?;
+            let existing = args.get("block").and_then(Value::as_str).map(str::to_owned);
+            let kind = args.get("type").and_then(Value::as_str).map(str::to_owned);
+            if existing.is_none() == kind.is_none() {
+                return Err("нужен ровно один из аргументов: «block» или «type»".to_owned());
+            }
+            let mut result = (String::new(), "");
+            ctx.edit(&mut |p| {
+                let id = match (&existing, &kind) {
+                    (Some(id), _) => id.clone(),
+                    (None, Some(kind)) => {
+                        let pos = p.free_position(1);
+                        p.add_block(&lib, kind, pos).map_err(|e| e.to_string())?
+                    }
+                    (None, None) => unreachable!("checked above"),
+                };
+                let done = p
+                    .insert_into_link(&lib, &id, &to)
+                    .map_err(|e| e.to_string())?;
+                let what = match done {
+                    crab_core::Insert::Spliced { .. } => "spliced",
+                    crab_core::Insert::Replaced { .. } => "replaced",
+                    crab_core::Insert::Branch { .. } => "branch",
+                };
+                result = (id, what);
+                Ok(())
+            })?;
+            Ok(json!({"id": result.0, "result": result.1, "check": report(ctx.project(), &lib)}))
         }
         "disconnect" => {
             let to = port("to")?;
