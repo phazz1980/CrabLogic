@@ -94,6 +94,19 @@ fn refused_rename_leaves_the_panel_and_the_layout_unchanged() {
 }
 
 #[test]
+fn rename_device_moves_the_placed_coil_part() {
+    let dir = scratch("rename-coil");
+    let mut project = project_in(&dir, "coil");
+    project.panel_layout.place("K1/coil", 0, 40.0, 20.0);
+    crab_core::rename_device(&mut project, "K1", "K5").unwrap();
+    assert_eq!(
+        project.panel_layout.placed.keys().collect::<Vec<_>>(),
+        vec!["K5/coil"]
+    );
+    assert_eq!(project.panel_layout.placed["K5/coil"].x, 40.0);
+}
+
+#[test]
 fn shifts_and_bends_snap_and_disappear_at_zero() {
     let mut layout = PanelLayout::default();
     let key = crab_core::symbol_key("main", "K1");

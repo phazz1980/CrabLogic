@@ -130,8 +130,9 @@ impl Grid {
 /// The power sheets of the panel; none if the panel has no power circuits.
 ///
 /// The first sheet is number `first_sheet`; `coils` says where the coils of the contactors and
-/// relays are drawn (for the references under them). Returns the sheets and the place of every
-/// device drawn: the middle of its contacts, as `contacts_at` of the control sheet.
+/// relays and the auxiliary contacts are drawn (for the references under them). Returns the sheets,
+/// the place of every device drawn on them (the contacts of a device), and the places of the coils
+/// and auxiliary contacts put on these sheets by hand.
 pub fn power_sheets(
     panel: &Panel,
     layout: &PanelLayout,
@@ -140,7 +141,7 @@ pub fn power_sheets(
     first_sheet: usize,
     coils: &Xrefs,
     page: &Page,
-) -> Result<(Vec<Sheet>, Xrefs), Error> {
+) -> Result<(Vec<Sheet>, Xrefs, Xrefs), Error> {
     let n = mains(panel.supply).len();
     let feed = panel.devices.iter().find(|d| d.kind == DeviceKind::Feed);
     let root = feed.map_or(EXTERNAL, |f| f.id.as_str());
@@ -185,7 +186,7 @@ pub fn power_sheets(
         }
     }
     if starts.is_empty() && branches.is_empty() {
-        return Ok((Vec::new(), Xrefs::new()));
+        return Ok((Vec::new(), Xrefs::new(), Xrefs::new()));
     }
     let mut chains: Vec<Vec<&Device>> = starts
         .iter()
@@ -374,6 +375,8 @@ pub fn power_sheets(
     }
 
     let mut sheets = Vec::new();
+    // The coils and auxiliary contacts put on these sheets by hand.
+    let mut hand = Xrefs::new();
     for index in 0..total {
         let mut placed: Vec<(&Device, Slot)> = panel
             .devices
@@ -813,19 +816,29 @@ pub fn power_sheets(
 
         // The devices put on the sheet by hand, and the wires drawn by hand between them.
         let mut pins = crate::control::Pins::new();
-        for (id, at) in &layout.placed {
-            let Some(device) = panel.device(id) else {
-                continue;
-            };
-            if !at.power || at.sheet.min(total - 1) != index || slot.contains_key(id.as_str()) {
+        for (key, at) in &layout.placed {
+            let (id, _) = crab_core::split_part(key);
+            if panel.device(id).is_none() {
                 continue;
             }
-            let (dx, dy) = layout.shift(&symbol_key("control", id));
+            if !at.power || at.sheet.min(total - 1) != index || slot.contains_key(id) {
+                continue;
+            }
+            let (dx, dy) = layout.shift(&symbol_key("control", key));
             let origin = (
                 (at.x + dx).clamp(page.x0() + 10.0, page.x1() - 80.0),
                 (at.y + dy).clamp(page.y0() + 30.0, page.y1() - 60.0),
             );
-            crate::control::draw_manual(&mut c, panel, device, origin, &mut pins);
+            let refs = crate::control::Refs {
+                power: &places,
+                coils,
+            };
+            crate::control::draw_placed(&mut c, panel, key, origin, layout, &mut pins, refs);
+            if let Some((name, xref)) =
+                crate::control::placed_xref(panel, key, origin, page, first_sheet + index)
+            {
+                hand.insert(name, xref);
+            }
         }
         for (lane, link) in panel.links.iter().enumerate() {
             let end = |s: &str| {
@@ -863,7 +876,7 @@ pub fn power_sheets(
             c,
         ));
     }
-    Ok((sheets, places))
+    Ok((sheets, places, hand))
 }
 
 /// The chain that starts with `first`: each device feeds the next one.

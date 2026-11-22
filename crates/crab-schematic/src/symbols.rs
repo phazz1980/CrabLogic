@@ -504,14 +504,17 @@ pub struct Field {
 /// Room a device of the control sheet takes to each side of its terminal: the column pitch.
 pub const FIELD_PITCH: f32 = 120.0;
 
+/// Height of a line of the contact table under a coil.
+pub(crate) const TABLE_LINE_H: f32 = 13.0;
+
 /// Draws a coil, a sensor or a button on the control sheet, its top terminal at `(x, top)`.
-/// `contacts_at` says where the contacts of a coil are drawn. `None` for kinds that have no place
-/// on the control sheet.
+/// `contacts` is the table of the contacts of a coil, one line each (`control::contact_table`);
+/// it is drawn under the coil. Kinds without a place on the control sheet draw nothing.
 pub fn draw_field_device(
     c: &mut Canvas,
     device: &Device,
     (x, top): (f32, f32),
-    contacts_at: Option<&str>,
+    contacts: &[String],
 ) -> Option<Field> {
     let name = device.designation();
     let dot = |c: &mut Canvas, x: f32, y: f32| c.circle(x, y, DOT, THIN, INK);
@@ -524,8 +527,10 @@ pub fn draw_field_device(
             c.bold(x - 18.0, top + 25.0, &name, TEXT, Align::Right, INK);
             c.text(x + 15.0, top + 8.0, "A1", TEXT, Align::Left, WEAK);
             c.text(x + 15.0, top + 42.0, "A2", TEXT, Align::Left, WEAK);
-            if let Some(at) = contacts_at {
-                c.text(x + 15.0, top + 25.0, at, TEXT, Align::Left, INK);
+            // Under the A2 terminal, right of the wire that runs down from it to the 0 V bus.
+            for (i, line) in contacts.iter().enumerate() {
+                let y = top + 64.0 + i as f32 * TABLE_LINE_H;
+                c.text(x + 6.0, y, line, TEXT_S, Align::Left, INK);
             }
             Some(Field {
                 signal: (x, top),

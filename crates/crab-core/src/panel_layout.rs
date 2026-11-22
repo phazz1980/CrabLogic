@@ -82,6 +82,24 @@ pub fn symbol_key(view: &str, device: &str) -> String {
     format!("{view}:{device}")
 }
 
+/// Name of the coil part of a contactor or relay.
+pub const COIL: &str = "coil";
+
+/// Key of a part of a device: `"K1/coil"`. Device ids never contain `/`, so the part is the
+/// text after the first `/`.
+pub fn part_key(device: &str, part: &str) -> String {
+    format!("{device}/{part}")
+}
+
+/// Splits a key of a device or of a part: `"K1/coil"` → `("K1", Some("coil"))`, `"K1"` → `("K1", None)`.
+/// An empty device or part (`"/coil"`, `"K1/"`) is malformed: it matches no device of the panel.
+pub fn split_part(key: &str) -> (&str, Option<&str>) {
+    match key.split_once('/') {
+        Some((device, part)) => (device, Some(part)),
+        None => (key, None),
+    }
+}
+
 /// Snaps a coordinate to the grid; a value that is not finite counts as zero.
 fn snap(value: f32) -> f32 {
     if value.is_finite() {
@@ -116,6 +134,19 @@ fn devices_of_wire(key: &str) -> Option<(&str, &str)> {
     Some((a.split_once(':')?.0, b.split_once(':')?.0))
 }
 
+/// Device piece of a key (`K1` or the device of a part `K1/coil`) with the device `old` replaced
+/// by `new`; the part stays. `None` when the piece belongs to another device.
+fn renamed_piece(piece: &str, old: &str, new: &str) -> Option<String> {
+    let (device, part) = split_part(piece);
+    if device != old {
+        return None;
+    }
+    Some(match part {
+        Some(part) => part_key(new, part),
+        None => new.to_owned(),
+    })
+}
+
 /// Symbol key with the device `old` replaced by `new`. A bus key has no device and stays as it is.
 fn renamed_symbol(key: &str, old: &str, new: &str) -> String {
     if key.starts_with("bus:") {
@@ -123,20 +154,26 @@ fn renamed_symbol(key: &str, old: &str, new: &str) -> String {
     }
     if let Some(rest) = key.strip_prefix("label:") {
         return match rest.split_once(':') {
-            Some((device, tag)) if device == old => {
-                // The tag of a wire number is `#<wire key>`: the wire key follows the rename too.
-                let tag = match tag.strip_prefix('#') {
-                    Some(wire) => format!("#{}", renamed_wire(wire, old, new)),
-                    None => tag.to_owned(),
-                };
-                format!("label:{new}:{tag}")
-            }
-            _ => key.to_owned(),
+            Some((piece, tag)) => match renamed_piece(piece, old, new) {
+                Some(device) => {
+                    // The tag of a wire number is `#<wire key>`: the wire key follows the rename too.
+                    let tag = match tag.strip_prefix('#') {
+                        Some(wire) => format!("#{}", renamed_wire(wire, old, new)),
+                        None => tag.to_owned(),
+                    };
+                    format!("label:{device}:{tag}")
+                }
+                None => key.to_owned(),
+            },
+            None => key.to_owned(),
         };
     }
     match key.split_once(':') {
-        Some((view, device)) if device == old => format!("{view}:{new}"),
-        _ => key.to_owned(),
+        Some((view, piece)) => match renamed_piece(piece, old, new) {
+            Some(device) => format!("{view}:{device}"),
+            None => key.to_owned(),
+        },
+        None => key.to_owned(),
     }
 }
 
@@ -248,7 +285,8 @@ impl PanelLayout {
         self.bus_to.clear();
     }
 
-    /// Puts the device on a control sheet at a place; the place snaps to the grid.
+    /// Puts the device on a control sheet at a place; the place snaps to the grid. `device` may
+    /// be a part key (`K1/coil`).
     pub fn place(&mut self, device: &str, sheet: usize, x: f32, y: f32) {
         self.placed.insert(
             device.to_owned(),
@@ -263,7 +301,8 @@ impl PanelLayout {
         self.symbols.remove(&symbol_key("control", device));
     }
 
-    /// Puts the device on a power sheet (counted among the power sheets) at a place.
+    /// Puts the device on a power sheet (counted among the power sheets) at a place. `device` may
+    /// be a part key (`K1/coil`).
     pub fn place_power(&mut self, device: &str, sheet: usize, x: f32, y: f32) {
         self.place(device, sheet, x, y);
         if let Some(p) = self.placed.get_mut(device) {
@@ -272,7 +311,7 @@ impl PanelLayout {
         self.symbols.remove(&symbol_key("power", device));
     }
 
-    /// Takes the device off the control sheets.
+    /// Takes the device off the control sheets. `device` may be a part key (`K1/coil`).
     pub fn unplace(&mut self, device: &str) {
         self.placed.remove(device);
         self.symbols.remove(&symbol_key("control", device));
@@ -292,22 +331,26 @@ impl PanelLayout {
         };
     }
 
-    /// Removes the entries that no longer match the panel: symbols of devices that the panel
-    /// does not have, and wires that mention a device the panel does not have (or whose key is
-    /// malformed, so it can never match a wire).
+    /// Removes the entries that no longer match the panel: symbols and placed devices of devices
+    /// that the panel does not have (a part such as `K1/coil` belongs to its device `K1`), and
+    /// wires that mention a device the panel does not have (or whose key is malformed, so it can
+    /// never match a wire).
     pub fn prune(&mut self, panel: &Panel) {
-        let exists = |id: &str| panel.device(id).is_some();
+        let exists = |id: &str| panel.device(split_part(id).0).is_some();
         self.symbols.retain(|key, _| {
             key.starts_with("bus:")
                 || device_of_symbol(key).is_some_and(|d| d.is_empty() || exists(d))
         });
+        // Wire keys name devices, never parts (a terminal belongs to the device: `K1:A1`).
+        let device = |id: &str| panel.device(id).is_some();
         self.wires
-            .retain(|key, _| devices_of_wire(key).is_some_and(|(a, b)| exists(a) && exists(b)));
+            .retain(|key, _| devices_of_wire(key).is_some_and(|(a, b)| device(a) && device(b)));
         self.placed.retain(|device, _| exists(device));
     }
 
     /// Makes the entries of device `old` follow its new designation `new` (symbols, labels, wires,
-    /// placed devices). An entry already stored under the new key is replaced.
+    /// placed devices; the parts of the device such as `K1/coil` too). An entry already stored
+    /// under the new key is replaced.
     pub fn rename(&mut self, old: &str, new: &str) {
         if old == new {
             return;
@@ -315,11 +358,7 @@ impl PanelLayout {
         rekey(&mut self.symbols, |key| renamed_symbol(key, old, new));
         rekey(&mut self.wires, |key| renamed_wire(key, old, new));
         rekey(&mut self.placed, |device| {
-            if device == old {
-                new.to_owned()
-            } else {
-                device.to_owned()
-            }
+            renamed_piece(device, old, new).unwrap_or_else(|| device.to_owned())
         });
     }
 
@@ -513,5 +552,67 @@ mod tests {
         assert_eq!(layout.shift("power:K1"), (0.0, 10.0));
         assert_eq!(layout.bend("K2:2>K1:1"), Some(5.0));
         assert_eq!(layout.bend("K1:2>K2:1"), None);
+    }
+
+    #[test]
+    fn part_key_and_split_part_round_trip() {
+        assert_eq!(part_key("K1", COIL), "K1/coil");
+        assert_eq!(split_part("K1/coil"), ("K1", Some("coil")));
+        assert_eq!(split_part("K1"), ("K1", None));
+        assert_eq!(split_part(&part_key("K10", "coil")), ("K10", Some("coil")));
+    }
+
+    #[test]
+    fn prune_keeps_parts_of_existing_devices_only() {
+        let panel = panel_with(&["K1"]);
+        let mut layout = PanelLayout::default();
+        // `place` drops the control offset of the device, so the places come first.
+        layout.place(&part_key("K1", COIL), 0, 10.0, 10.0);
+        layout.place(&part_key("Q9", COIL), 0, 10.0, 10.0);
+        layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 0.0);
+        layout.set_shift(&label_key(&part_key("K1", COIL), "name"), 5.0, 0.0);
+        layout.set_shift(&symbol_key("control", &part_key("Q9", COIL)), 5.0, 0.0);
+        layout.set_shift(&label_key(&part_key("Q9", COIL), "name"), 5.0, 0.0);
+        layout.prune(&panel);
+        assert_eq!(
+            layout.symbols.keys().collect::<Vec<_>>(),
+            vec!["control:K1/coil", "label:K1/coil:name"]
+        );
+        assert_eq!(layout.placed.keys().collect::<Vec<_>>(), vec!["K1/coil"]);
+    }
+
+    #[test]
+    fn rename_moves_part_entries_and_leaves_similar_devices_alone() {
+        let mut layout = PanelLayout::default();
+        layout.place(&part_key("K1", COIL), 0, 40.0, 20.0);
+        layout.place(&part_key("K10", COIL), 0, 60.0, 20.0);
+        layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 5.0);
+        layout.set_shift(&symbol_key("control", &part_key("K10", COIL)), 10.0, 0.0);
+        layout.set_shift(&label_key(&part_key("K1", COIL), "name"), 5.0, -5.0);
+        layout.rename("K1", "K5");
+        assert_eq!(layout.shift("control:K5/coil"), (5.0, 5.0));
+        assert_eq!(layout.shift("control:K1/coil"), (0.0, 0.0));
+        assert_eq!(layout.shift("control:K10/coil"), (10.0, 0.0));
+        assert_eq!(layout.shift("label:K5/coil:name"), (5.0, -5.0));
+        assert_eq!(layout.shift("label:K1/coil:name"), (0.0, 0.0));
+        assert_eq!(
+            layout.placed.keys().collect::<Vec<_>>(),
+            vec!["K10/coil", "K5/coil"]
+        );
+        assert_eq!(layout.placed["K5/coil"].x, 40.0);
+    }
+
+    #[test]
+    fn rename_all_swaps_devices_with_their_parts() {
+        let mut layout = PanelLayout::default();
+        layout.place(&part_key("K1", COIL), 0, 40.0, 20.0);
+        layout.place(&part_key("K2", COIL), 0, 80.0, 20.0);
+        layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 0.0);
+        layout.set_shift(&symbol_key("control", &part_key("K2", COIL)), 0.0, 10.0);
+        layout.rename_all(&[("K1".into(), "K2".into()), ("K2".into(), "K1".into())]);
+        assert_eq!(layout.shift("control:K2/coil"), (5.0, 0.0));
+        assert_eq!(layout.shift("control:K1/coil"), (0.0, 10.0));
+        assert_eq!(layout.placed["K2/coil"].x, 40.0);
+        assert_eq!(layout.placed["K1/coil"].x, 80.0);
     }
 }

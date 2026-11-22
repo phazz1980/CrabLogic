@@ -58,11 +58,13 @@ pub fn build_document_in(
     // Two passes: the first one places the devices (the number of sheets and the zones do not
     // depend on the captions), the second one writes the references to the places of the other part.
     let none = Xrefs::new();
-    let (power, power_at) =
+    let (power, power_at, hand) =
         power::power_sheets(panel, &project.panel_layout, &nets, lang, 2, &none, &page)?;
     let first_control = power.len() + 2;
-    let (_, coil_at) = control::control_sheets(project, &nets, lang, first_control, &none, &page);
-    let (power, _) = power::power_sheets(
+    let (_, control_coils) =
+        control::control_sheets(project, &nets, lang, first_control, &none, &none, &page);
+    let coil_at = merge_coils(control_coils, hand);
+    let (power, _, _) = power::power_sheets(
         panel,
         &project.panel_layout,
         &nets,
@@ -71,8 +73,15 @@ pub fn build_document_in(
         &coil_at,
         &page,
     )?;
-    let (control, _) =
-        control::control_sheets(project, &nets, lang, first_control, &power_at, &page);
+    let (control, _) = control::control_sheets(
+        project,
+        &nets,
+        lang,
+        first_control,
+        &power_at,
+        &coil_at,
+        &page,
+    );
     let mut sheets = power;
     sheets.extend(control);
     // The tables come last; the sheets are only for the panel that has something to draw.
@@ -96,6 +105,16 @@ pub fn build_document_in(
         tables,
     };
     Ok((doc, nets))
+}
+
+/// The places of the coils and auxiliary contacts: the ones drawn on the control sheets, then the
+/// ones put on the power sheets by hand. A device whose place is known from the control sheets
+/// keeps it.
+fn merge_coils(mut coils: Xrefs, hand: Xrefs) -> Xrefs {
+    for (device, at) in hand {
+        coils.entry(device).or_insert(at);
+    }
+    coils
 }
 
 /// The Typst markup of the documentation of a project.

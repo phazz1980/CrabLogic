@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use crab_core::{symbol_key, Device, DeviceKind, Panel, Project};
+use crab_core::{
+    part_key, split_part, symbol_key, Device, DeviceKind, Panel, PanelLayout, Project, COIL,
+};
 
 use crate::bus::{self, Elsewhere};
 use crate::canvas::{Align, Canvas, DOT, INK, LOW, TEXT, TEXT_S, THICK, THIN, WEAK};
@@ -15,7 +17,7 @@ use crate::lang::Lang;
 use crate::nets::{aux_terminals, terminals_of, Nets, Wire, WireClass, BOARD, EXTERNAL};
 use crate::route;
 use crate::scene::{Dir, End, ItemKind, Port};
-use crate::symbols::{draw_aux_field, draw_field_device, AUX_H, FIELD_PITCH};
+use crate::symbols::{draw_aux_field, draw_field_device, AUX_H, FIELD_PITCH, TABLE_LINE_H};
 use crate::xref::{Xref, Xrefs};
 
 /// Distance between the columns: the room of the widest device of a column.
@@ -86,15 +88,21 @@ pub fn terminal_of_port(panel: &Panel, device: &Device, port: &str) -> String {
 pub(crate) type Pins = HashMap<(String, String), ((f32, f32), Dir)>;
 
 /// Draws a device put on the sheet by hand: a box with the designation and its terminals along
-/// the top and the bottom edge. Returns nothing; the terminals are noted in `pins`.
+/// the top and the bottom edge, except the terminals in `leave_out` (drawn elsewhere, such as the
+/// coil terminals of a contactor put on the sheet as its own coil symbol). Returns nothing; the
+/// terminals are noted in `pins`.
 pub(crate) fn draw_manual(
     c: &mut Canvas,
     panel: &Panel,
     device: &Device,
     (x, y): (f32, f32),
+    leave_out: &[&str],
     pins: &mut Pins,
 ) {
-    let terminals = terminals_of(panel, device);
+    let terminals: Vec<String> = terminals_of(panel, device)
+        .into_iter()
+        .filter(|t| !leave_out.contains(&t.as_str()))
+        .collect();
     let top_n = terminals.len().div_ceil(2);
     let bottom_n = terminals.len() - top_n;
     let (w, h) = (top_n.max(2) as f32 * 20.0 + 10.0, 40.0);
@@ -141,6 +149,132 @@ pub(crate) fn draw_manual(
         c.text(px, ty, terminal, TEXT_S, Align::Center, INK);
         c.port(item, port(terminal, (px, py), dir));
         pins.insert((device.id.clone(), terminal.clone()), ((px, py), dir));
+    }
+}
+
+/// The places of the devices on the other sheets, which the symbols drawn on a sheet write under
+/// their devices (the contacts under a coil, the references of the hand-placed parts).
+#[derive(Clone, Copy)]
+pub(crate) struct Refs<'a> {
+    /// Where the devices stand on the power sheets.
+    pub power: &'a Xrefs,
+    /// Where the coils and the auxiliary contacts are drawn.
+    pub coils: &'a Xrefs,
+}
+
+/// The table of the contacts under the coil of `device`, one line each, in the order of the panel:
+/// the main contacts with their terminals (`1-4 /2.3`, where the device stands on the power
+/// sheets), then every auxiliary contact with its terminals (`13-14 /3.1`, where it is drawn).
+/// A reference is left out where the contact is not drawn. Empty for a device without a coil.
+pub(crate) fn contact_table(
+    panel: &Panel,
+    device: &Device,
+    power: &Xrefs,
+    coils: &Xrefs,
+) -> Vec<String> {
+    if !matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay) {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let poles: Vec<String> = terminals_of(panel, device)
+        .into_iter()
+        .filter(|t| t != "A1" && t != "A2")
+        .collect();
+    if let (Some(first), Some(last)) = (poles.first(), poles.last()) {
+        let at = power
+            .get(&device.id)
+            .map_or_else(String::new, |at| format!(" {at}"));
+        lines.push(format!("{first}-{last}{at}"));
+    }
+    for aux in panel.aux_of(&device.id) {
+        let (near, far) = aux_terminals(panel, aux);
+        let at = coils
+            .get(&aux.id)
+            .map_or_else(String::new, |at| format!(" {at}"));
+        lines.push(format!("{near}-{far}{at}"));
+    }
+    lines
+}
+
+/// The place of a hand-placed part that the other sheets refer to, with the name it is kept under:
+/// the coil `K1/coil` of a contactor or relay (under the device, `K1`) and an auxiliary contact put
+/// on the sheet by hand (under its own id). `origin` is where the part is drawn on the sheet
+/// `sheet`. `None` for the other parts.
+pub(crate) fn placed_xref(
+    panel: &Panel,
+    key: &str,
+    origin: (f32, f32),
+    page: &Page,
+    sheet: usize,
+) -> Option<(String, Xref)> {
+    let (id, part) = split_part(key);
+    let device = panel.device(id)?;
+    let name = match (part, device.kind) {
+        (Some(COIL), DeviceKind::Contactor | DeviceKind::Relay) => id,
+        (None, DeviceKind::Aux) => id,
+        _ => return None,
+    };
+    let zone = page.zone(origin.0, origin.1 + 25.0);
+    Some((name.to_owned(), Xref { sheet, zone }))
+}
+
+/// Draws the coil of a contactor or relay put on the sheet by hand as its own symbol, under the
+/// key of the part (`K1/coil`). Its terminals `A1` (top) and `A2` (bottom) are noted in `pins`
+/// under the device. `table` is the contact table under the coil (`contact_table`).
+pub(crate) fn draw_coil(
+    c: &mut Canvas,
+    device: &Device,
+    key: &str,
+    (x, top): (f32, f32),
+    table: &[String],
+    pins: &mut Pins,
+) {
+    let item = c.begin(ItemKind::Symbol {
+        view: "control",
+        device: key.to_owned(),
+        origin: (x, top),
+        ports: Vec::new(),
+    });
+    draw_field_device(c, device, (x, top), table);
+    c.port(item, port("A1", (x, top), Dir::Up));
+    c.port(item, port("A2", (x, top + 50.0), Dir::Down));
+    c.end();
+    pins.insert((device.id.clone(), "A1".to_owned()), ((x, top), Dir::Up));
+    pins.insert(
+        (device.id.clone(), "A2".to_owned()),
+        ((x, top + 50.0), Dir::Down),
+    );
+}
+
+/// Draws one entry of the hand-placed layout on a sheet at `origin`: a device as a box with its
+/// terminals (`draw_manual`), or the coil part `K1/coil` of a contactor or relay as its own symbol
+/// (`draw_coil`). Other parts are not drawn. A device whose coil is put apart leaves the coil
+/// terminals out of its box.
+pub(crate) fn draw_placed(
+    c: &mut Canvas,
+    panel: &Panel,
+    key: &str,
+    origin: (f32, f32),
+    layout: &PanelLayout,
+    pins: &mut Pins,
+    refs: Refs,
+) {
+    let (id, part) = split_part(key);
+    let Some(device) = panel.device(id) else {
+        return;
+    };
+    let coil_device = matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay);
+    match part {
+        None => {
+            let coil_apart = coil_device && layout.placed.contains_key(&part_key(id, COIL));
+            let leave_out: &[&str] = if coil_apart { &["A1", "A2"] } else { &[] };
+            draw_manual(c, panel, device, origin, leave_out, pins);
+        }
+        Some(COIL) if coil_device => {
+            let table = contact_table(panel, device, refs.power, refs.coils);
+            draw_coil(c, device, key, origin, &table, pins);
+        }
+        Some(_) => {}
     }
 }
 
@@ -215,13 +349,15 @@ fn draw_wire(
 /// The control sheets of the panel; none if no terminal of the board is bound to a device.
 ///
 /// The first sheet is number `first_sheet`; `contacts` says where the contacts of the coils are
-/// drawn. Returns the sheets and the place of every device drawn.
+/// drawn on the power sheets, `coils` where the coils and the auxiliary contacts are drawn (the
+/// references under the coils). Returns the sheets and the place of every device drawn.
 pub fn control_sheets(
     project: &Project,
     nets: &Nets,
     lang: Lang,
     first_sheet: usize,
     contacts: &Xrefs,
+    coils: &Xrefs,
     page: &Page,
 ) -> (Vec<Sheet>, Xrefs) {
     let board_x = page.x0() + BOARD_DX;
@@ -250,7 +386,15 @@ pub fn control_sheets(
         .max()
         .unwrap_or(0);
     let device_top = board_top + BOARD_H + DEVICE_DY + series_most as f32 * SERIES_STEP;
-    let plus_bus = device_top + PLUS_DY;
+    // The contact tables under the coils need room above the buses: the buses go down past the
+    // four lines that fit already, so the last line keeps its margin above `+24V`.
+    let table_lines = rows
+        .iter()
+        .map(|(_, _, d)| contact_table(panel, d, contacts, coils).len())
+        .max()
+        .unwrap_or(0);
+    let table_shift = table_lines.saturating_sub(4) as f32 * TABLE_LINE_H;
+    let plus_bus = device_top + PLUS_DY + table_shift;
     let minus_bus = plus_bus + BUS_GAP;
     let board = &project.config.board;
     let board_name = board.model.as_deref().unwrap_or(&board.fqbn);
@@ -337,7 +481,7 @@ pub fn control_sheets(
             );
 
             let series = series_of(panel, device);
-            let contacts_at = contacts.get(&device.id).map(ToString::to_string);
+            let table = contact_table(panel, device, contacts, coils);
             let item = c.begin(ItemKind::Symbol {
                 view: "control",
                 device: device.id.clone(),
@@ -357,7 +501,7 @@ pub fn control_sheets(
                     parent_at.as_deref(),
                 ))
             } else {
-                draw_field_device(&mut c, device, (sx, sy), contacts_at.as_deref())
+                draw_field_device(&mut c, device, (sx, sy), &table)
             };
             c.end();
             let Some(field) = field else {
@@ -500,22 +644,30 @@ pub fn control_sheets(
 
         // The devices put on the sheet by hand, then the wires drawn by hand between terminals.
         let drawn: Vec<&str> = rows.iter().map(|(_, _, d)| d.id.as_str()).collect();
-        for (id, at) in &layout.placed {
+        let refs = Refs {
+            power: contacts,
+            coils,
+        };
+        for (key, at) in &layout.placed {
+            let (id, _) = split_part(key);
             let Some(device) = panel.device(id) else {
                 continue;
             };
             let sheet = at.sheet.min(total - 1);
-            let automatic = drawn.contains(&id.as_str())
+            let automatic = drawn.contains(&id)
                 || (device.kind == DeviceKind::Aux && !device.series.is_empty());
             if at.power || sheet != index || automatic {
                 continue;
             }
-            let (dx, dy) = layout.shift(&symbol_key("control", id));
+            let (dx, dy) = layout.shift(&symbol_key("control", key));
             let origin = (
                 (at.x + dx).clamp(page.x0() + 10.0, page.x1() - 80.0),
                 (at.y + dy).clamp(page.y0() + 30.0, page.y1() - 60.0),
             );
-            draw_manual(&mut c, panel, device, origin, &mut pins);
+            draw_placed(&mut c, panel, key, origin, layout, &mut pins, refs);
+            if let Some((name, xref)) = placed_xref(panel, key, origin, page, first_sheet + index) {
+                places.insert(name, xref);
+            }
         }
         for (lane, link) in panel.links.iter().enumerate() {
             let end = |s: &str| {

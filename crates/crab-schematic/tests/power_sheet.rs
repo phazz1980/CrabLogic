@@ -1019,3 +1019,41 @@ fn a_device_put_on_the_power_sheet_is_drawn_there_not_on_the_control_sheet() {
         });
     assert!(!manual_q2);
 }
+
+#[test]
+fn a_coil_of_a_free_contactor_put_on_the_power_sheet_is_its_own_symbol() {
+    use crab_schematic::ItemKind;
+    let mut project = with_links("");
+    project
+        .panel
+        .devices
+        .push(toml::from_str("id = \"K9\"\nkind = \"contactor\"\nfree = true").unwrap());
+    project.panel_layout.place_power("K9/coil", 0, 300.0, 300.0);
+    let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
+    let drawn = doc
+        .sheets
+        .iter()
+        .filter(|s| s.title.starts_with("Силовая часть"))
+        .flat_map(|s| &s.items)
+        .any(|i| {
+            matches!(&i.kind, ItemKind::Symbol { view: "control", device, .. } if device == "K9/coil")
+        });
+    assert!(drawn);
+}
+
+/// A coil of a free contactor put on the power sheet by hand is the place of the contactor's coil:
+/// the references of the other sheets point to that sheet.
+#[test]
+fn a_coil_put_by_hand_on_the_power_sheet_is_the_place_of_its_contactor() {
+    let mut project = with_links("");
+    project
+        .panel
+        .devices
+        .push(toml::from_str("id = \"K9\"\nkind = \"contactor\"\nfree = true").unwrap());
+    project.panel_layout.place_power("K9/coil", 0, 300.0, 300.0);
+    let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
+    let coil = &doc.coil_at["K9"];
+    assert!(doc.sheets[coil.sheet - 1]
+        .title
+        .starts_with("Силовая часть"));
+}
