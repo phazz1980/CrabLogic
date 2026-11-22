@@ -248,6 +248,7 @@ fqbn = \"x:y:z\"
         .unwrap();
         Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: Default::default(),
             config,
             logic: Logic::default(),

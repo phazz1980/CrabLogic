@@ -116,8 +116,21 @@ fn numbers_are_unique_and_the_same_every_time() {
     let lib = library();
     let first = build_nets(&project, &lib);
     assert_eq!(first, build_nets(&project, &lib));
+    // One number to a conductor: the wires of a net share it, two nets never do.
     let numbers: HashSet<u32> = first.wires.iter().map(|w| w.number).collect();
-    assert_eq!(numbers.len(), first.wires.len());
+    let nets: HashSet<usize> = first.wires.iter().map(|w| w.net).collect();
+    assert_eq!(numbers.len(), nets.len());
+    for a in &first.wires {
+        for b in &first.wires {
+            assert_eq!(
+                a.net == b.net,
+                a.number == b.number,
+                "{} {}",
+                a.key(),
+                b.key()
+            );
+        }
+    }
     assert!(first.wires.iter().all(|w| w.number >= 1));
     assert_eq!(first.wires[0].number, 1);
 }
@@ -146,7 +159,16 @@ fn wires_keep_their_numbers_when_the_panel_changes() {
         .filter(|w| !before.wires.iter().any(|b| b.key() == w.key()))
         .collect();
     assert_eq!(added.len(), 2, "{added:#?}");
-    assert!(added.iter().all(|w| w.number > largest));
+    // The new breaker hangs on the buses of the feed: its wires take the numbers of those buses.
+    for w in &added {
+        let bus = before
+            .wires
+            .iter()
+            .find(|b| b.from == w.from)
+            .unwrap_or_else(|| panic!("{}", w.key()));
+        assert_eq!(w.number, bus.number, "{}", w.key());
+    }
+    assert!(after.wires.iter().all(|w| w.number <= largest));
     after.store(&mut project.panel);
 
     // A device is taken away: its wires and numbers go, the others keep theirs.
@@ -238,4 +260,202 @@ bind = "nowhere"
         .wires
         .iter()
         .all(|w| w.from.device != BOARD && w.to.device != BOARD));
+}
+
+/// A breaker with fewer poles passes on only the first conductors, and what stands under it gets
+/// just those (the numbers of poles of a device are 1 or 2 on 230 V, 3 or 4 on 400 V).
+#[test]
+fn the_poles_of_a_breaker_limit_the_conductors_under_it() {
+    let power_wires = |supply: &str, poles: &str| {
+        let text = format!(
+            "supply = \"{supply}\"\n[[device]]\nid = \"X1\"\nkind = \"feed\"\n\
+             [[device]]\nid = \"Q1\"\nkind = \"breaker\"\n{poles}load = \"M1\"\n\
+             [[device]]\nid = \"M1\"\nkind = \"motor\"\n"
+        );
+        let mut project = Project::load(repo_path("examples/pump")).unwrap();
+        project.panel = toml::from_str::<Panel>(&text).unwrap();
+        let nets = build_nets(&project, &library());
+        let on = |device: &str| {
+            nets.wires
+                .iter()
+                .filter(|w| w.class == crab_schematic::WireClass::Power && w.to.device == device)
+                .count()
+        };
+        (on("Q1"), on("M1"))
+    };
+    assert_eq!(power_wires("ac230", ""), (2, 2));
+    assert_eq!(power_wires("ac230", "poles = 1\n"), (1, 1));
+    assert_eq!(power_wires("ac400", ""), (4, 4));
+    assert_eq!(power_wires("ac400", "poles = 3\n"), (3, 3));
+    // Out of the range of the supply: brought into it.
+    assert_eq!(power_wires("ac400", "poles = 1\n"), (3, 3));
+}
+
+fn nets_of(panel: &str) -> Nets {
+    let mut project = Project::load(repo_path("examples/pump")).unwrap();
+    project.panel = toml::from_str::<Panel>(panel).unwrap();
+    build_nets(&project, &library())
+}
+
+fn key_set(nets: &Nets) -> HashSet<String> {
+    nets.wires.iter().map(|w| w.key()).collect()
+}
+
+/// A terminal block in the chain passes every conductor and the earth on (`specs/panel-aux`).
+#[test]
+fn a_terminal_block_in_the_chain_passes_the_conductors_and_the_earth() {
+    let nets = nets_of(
+        r#"
+supply = "ac230"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "X1.1"
+[[device]]
+id = "X1.1"
+kind = "terminal"
+load = "M1"
+[[device]]
+id = "M1"
+kind = "motor"
+[[device]]
+id = "X9"
+kind = "terminal"
+"#,
+    );
+    let k = key_set(&nets);
+    for wire in [
+        "Q1:2>X1.1:L",
+        "Q1:4>X1.1:N",
+        "X1.1:L>M1:L",
+        "X1.1:N>M1:N",
+        "X1:PE>X1.1:PE",
+        "X1.1:PE>M1:PE",
+    ] {
+        assert!(k.contains(wire), "no wire {wire} in {k:?}");
+    }
+    // Nothing leaves the earth of the feed for the motor behind the terminal block, and a
+    // terminal block outside any chain gets no wires.
+    assert!(!k.contains("X1:PE>M1:PE"));
+    assert!(!nets
+        .wires
+        .iter()
+        .any(|w| w.to.device == "X9" || w.from.device == "X9"));
+}
+
+/// Auxiliary contacts: on an input of the board, and in series with a coil (`13-14`, `21-22`).
+#[test]
+fn auxiliary_contacts_go_to_an_input_or_in_series_with_a_coil() {
+    let nets = nets_of(
+        r#"
+supply = "ac230"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K1"
+[[device]]
+id = "Q1_1"
+kind = "aux"
+of = "Q1"
+form = "nc"
+bind = "sensor"
+[[device]]
+id = "K1"
+kind = "contactor"
+bind = "pump"
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+series = "K1"
+[[device]]
+id = "K1_2"
+kind = "aux"
+of = "K1"
+series = "K1"
+"#,
+    );
+    let k = key_set(&nets);
+    for wire in [
+        // The first contact of the breaker, normally closed: 11-12.
+        "EXT:+24V>Q1_1:11",
+        "Q1_1:12>A1:IO34",
+        // Two contacts in series with the coil, normally open: 13-14 and 23-24.
+        "A1:IO26>K1_1:13",
+        "K1_1:14>K1_2:23",
+        "K1_2:24>K1:A1",
+        "K1:A2>EXT:0V",
+    ] {
+        assert!(k.contains(wire), "no wire {wire} in {k:?}");
+    }
+    // The coil is no longer fed straight from the board.
+    assert!(!k.contains("A1:IO26>K1:A1"));
+}
+
+const TERMINAL_PANEL: &str = r#"
+supply = "ac230"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "X2"
+[[device]]
+id = "X2"
+kind = "terminal"
+load = "M1"
+[[device]]
+id = "M1"
+kind = "motor"
+"#;
+
+/// The wires that share a terminal are one conductor with one number; a terminal block splits the
+/// conductor, and the number after it can be given by hand.
+#[test]
+fn a_terminal_block_splits_the_numbers_and_the_number_after_it_can_be_set_by_hand() {
+    let lib = library();
+    let mut project = pump(TERMINAL_PANEL);
+    let nets = build_nets(&project, &lib);
+    let number = |key: &str| nets.wires.iter().find(|w| w.key() == key).unwrap().number;
+    // Before and after the terminal block the conductor has two numbers.
+    assert_ne!(number("Q1:2>X2:L"), number("X2:L>M1:L"));
+    assert_ne!(number("X1:L>Q1:1"), number("Q1:2>X2:L"));
+    // The earth is one conductor to the terminal block and another after it.
+    assert_ne!(number("X1:PE>X2:PE"), number("X2:PE>M1:PE"));
+
+    // A number given by hand stays, and is not given again to another conductor.
+    let mut manual = nets.clone();
+    manual.store(&mut project.panel);
+    project
+        .panel
+        .wire_numbers
+        .insert("X2:L>M1:L".to_owned(), 101);
+    let again = build_nets(&project, &lib);
+    assert_eq!(
+        again
+            .wires
+            .iter()
+            .find(|w| w.key() == "X2:L>M1:L")
+            .unwrap()
+            .number,
+        101
+    );
+    for w in &again.wires {
+        if w.key() != "X2:L>M1:L" {
+            assert_ne!(w.number, 101, "{}", w.key());
+        }
+    }
+    again.store(&mut project.panel);
+    assert_eq!(project.panel.wire_numbers["X2:L>M1:L"], 101);
+    manual.wires.clear();
 }

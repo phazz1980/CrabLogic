@@ -7,8 +7,7 @@
 use std::collections::HashMap;
 
 use super::{DiagKind, Report, Severity};
-use crate::ident::is_valid_ident;
-use crate::panel::{Device, DeviceKind};
+use crate::panel::{is_valid_designation, Device, DeviceKind};
 use crate::{Library, ParamKind, PinMode, Project};
 
 /// Which way a tag of the project carries the signal, seen from the board.
@@ -53,6 +52,7 @@ fn need(kind: DeviceKind) -> Option<Need> {
         DeviceKind::Relay => (Way::Output, true, "катушка реле"),
         DeviceKind::Button => (Way::Input, true, "кнопка"),
         DeviceKind::Sensor => (Way::Input, false, "датчик"),
+        DeviceKind::Aux => (Way::Input, true, "доп. контакт"),
         _ => return None,
     };
     Some(Need {
@@ -150,9 +150,9 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     // Designations: valid and unique.
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for device in &panel.devices {
-        if !is_valid_ident(&device.id) {
+        if !is_valid_designation(&device.id) {
             error(format!(
-                "устройство «{}»: недопустимое обозначение (буквы, цифры, «_» и «-», без пробелов)",
+                "устройство «{}»: недопустимое обозначение (буквы, цифры, «_», «-» и «.», без пробелов)",
                 device.id
             ));
         }
@@ -174,7 +174,8 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     for device in &panel.devices {
         let want = need(device.kind);
         if device.bind.is_empty() {
-            if want.is_some() {
+            // An auxiliary contact may stay unbound: it is then only drawn on the power sheet.
+            if want.is_some() && device.kind != DeviceKind::Aux {
                 error(format!(
                     "{} не привязано к входу или выходу проекта",
                     device.designation()
@@ -221,6 +222,96 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
         }
     }
 
+    // A sensor of a motor (a thermistor) belongs to a motor.
+    for device in panel
+        .devices
+        .iter()
+        .filter(|d| d.kind == DeviceKind::Sensor && !d.of.is_empty())
+    {
+        match panel.device(&device.of) {
+            None => error(format!(
+                "датчик {}: нет двигателя «{}», у которого он стоит",
+                device.id, device.of
+            )),
+            Some(parent) if parent.kind != DeviceKind::Motor => error(format!(
+                "датчик {}: {} не двигатель (датчик температуры ставится у двигателя)",
+                device.id,
+                parent.designation()
+            )),
+            Some(_) => {}
+        }
+    }
+
+    // Devices on a branch of another device (`from`): the source must exist and feed others.
+    for device in panel.devices.iter().filter(|d| !d.from.is_empty()) {
+        let fine = panel.device(&device.from).is_some_and(|s| {
+            s.id != device.id
+                && matches!(
+                    s.kind,
+                    DeviceKind::Feed
+                        | DeviceKind::Breaker
+                        | DeviceKind::Rcd
+                        | DeviceKind::Fuse
+                        | DeviceKind::Switch
+                        | DeviceKind::Psu
+                        | DeviceKind::Contactor
+                        | DeviceKind::Relay
+                        | DeviceKind::Terminal
+                )
+        });
+        if !fine {
+            error(format!(
+                "{}: питается от «{}», а такого источника нет",
+                device.designation(),
+                device.from
+            ));
+        }
+    }
+
+    // Auxiliary contacts: they belong to a switching device and go to the board or to a coil.
+    for device in panel.devices.iter().filter(|d| d.kind == DeviceKind::Aux) {
+        let name = format!("доп. контакт {}", device.id);
+        match panel.device(&device.of) {
+            None => error(format!(
+                "{name}: нет аппарата «{}», которому он принадлежит",
+                device.of
+            )),
+            Some(parent)
+                if !matches!(
+                    parent.kind,
+                    DeviceKind::Breaker
+                        | DeviceKind::Rcd
+                        | DeviceKind::Contactor
+                        | DeviceKind::Relay
+                ) =>
+            {
+                error(format!(
+                    "{name}: у {} не бывает доп. контактов (автомат, УЗО, контактор или реле)",
+                    parent.designation()
+                ));
+            }
+            Some(_) => {}
+        }
+        if !device.series.is_empty() {
+            if !device.bind.is_empty() {
+                error(format!(
+                    "{name}: задан и вход платы, и катушка «{}», нужно что-то одно",
+                    device.series
+                ));
+            }
+            match panel.device(&device.series) {
+                None => error(format!("{name}: нет катушки «{}»", device.series)),
+                Some(coil) if !matches!(coil.kind, DeviceKind::Contactor | DeviceKind::Relay) => {
+                    error(format!(
+                        "{name}: {} не катушка (контактор или реле)",
+                        coil.designation()
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
     // What a device switches or feeds.
     for device in &panel.devices {
         if device.load.is_empty() {
@@ -257,7 +348,7 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
         let letter = device.kind.letter();
         let fits = device.id.starts_with(letter)
             || (device.kind == DeviceKind::Load && device.id.starts_with(['E', 'Y', 'H', 'R']));
-        if !fits && is_valid_ident(&device.id) {
+        if !fits && device.kind != DeviceKind::Aux && is_valid_designation(&device.id) {
             report.push(
                 DiagKind::Panel,
                 Severity::Warning,

@@ -17,6 +17,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::panel::PANEL_FILE;
+use crate::panel_layout::{PanelLayout, PANEL_LAYOUT_FILE};
 use crate::toml_io::{parse_toml, read_toml, to_toml};
 use crate::{Error, Layout, Logic, Panel, Result};
 
@@ -206,6 +207,9 @@ pub struct Project {
     /// Electrical panel (`panel.toml`); empty if the project has none. It feeds the electrical
     /// documentation only, so it is not part of [`Project::content_hash`].
     pub panel: Panel,
+    /// Manual layout of the panel sheets (`panel-layout.toml`); empty if there is none. Like the
+    /// panel, it is not part of [`Project::content_hash`].
+    pub panel_layout: PanelLayout,
 }
 
 impl Project {
@@ -399,12 +403,17 @@ impl Project {
             Some(text) => parse_toml(&text, &inner(PANEL_FILE))?,
             None => Panel::default(),
         };
+        let panel_layout = match entry(PANEL_LAYOUT_FILE)? {
+            Some(text) => parse_toml(&text, &inner(PANEL_LAYOUT_FILE))?,
+            None => PanelLayout::default(),
+        };
         Ok(Self {
             path: path.to_owned(),
             config,
             logic,
             layout,
             panel,
+            panel_layout,
         }
         .migrated())
     }
@@ -419,6 +428,7 @@ impl Project {
             logic: parse_toml(logic, &at(LOGIC_FILE))?,
             layout: parse_toml(layout, &at(LAYOUT_FILE))?,
             panel: Panel::default(),
+            panel_layout: PanelLayout::default(),
         }
         .migrated())
     }
@@ -443,6 +453,12 @@ impl Project {
         } else {
             Panel::default()
         };
+        let panel_layout_path = dir.join(PANEL_LAYOUT_FILE);
+        let panel_layout = if panel_layout_path.exists() {
+            read_toml(&panel_layout_path)?
+        } else {
+            PanelLayout::default()
+        };
         let name = dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -453,6 +469,7 @@ impl Project {
             logic,
             layout,
             panel,
+            panel_layout,
         }
         .migrated())
     }
@@ -536,7 +553,7 @@ impl Project {
 
     /// The text of the schema files as they are stored: the web page blocks go to
     /// `web.toml` (written only when there are any), the rest of the logic stays in
-    /// `logic.toml`. `with_layout` adds `layout.toml` and `panel.toml` (when the panel is not
+    /// `logic.toml`. `with_layout` adds `layout.toml`, `panel.toml` (when the panel is not
     /// empty) at the end: the files of the archive that do not count for the hash.
     fn files(&self, with_layout: bool) -> Result<Vec<(&'static str, String)>> {
         let inner = |name: &str| self.path.join(name);
@@ -566,6 +583,16 @@ impl Project {
             // Like the layout, the panel does not change the firmware: it stays out of the hash.
             if !self.panel.is_empty() {
                 files.push((PANEL_FILE, to_toml(&self.panel, &inner(PANEL_FILE))?));
+            }
+            // Written without the entries of devices the panel no longer has; a layout that is
+            // empty after that is not written at all.
+            let mut panel_layout = self.panel_layout.clone();
+            panel_layout.prune(&self.panel);
+            if !panel_layout.is_empty() {
+                files.push((
+                    PANEL_LAYOUT_FILE,
+                    to_toml(&panel_layout, &inner(PANEL_LAYOUT_FILE))?,
+                ));
             }
         }
         Ok(files)
@@ -822,6 +849,7 @@ fqbn = \"x:y:z\"
         config.run.period_ms = 2;
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -842,6 +870,7 @@ fqbn = \"x:y:z\"
             toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -856,13 +885,14 @@ fqbn = \"x:y:z\"
 
     #[test]
     fn panel_is_stored_in_the_archive_only_when_not_empty() {
-        use crate::panel::{Device, DeviceKind};
+        use crate::panel::{ContactForm, Device, DeviceKind};
         let dir = std::env::temp_dir().join(format!("crab-panel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config: ProjectConfig =
             toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
         let mut project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -884,6 +914,13 @@ fqbn = \"x:y:z\"
             part: String::new(),
             bind: "pump.out".into(),
             load: "M1".into(),
+            poles: None,
+            of: String::new(),
+            form: ContactForm::default(),
+            pins: String::new(),
+            from: String::new(),
+            free: false,
+            series: String::new(),
         });
         project.save().unwrap();
         assert!(has_panel(&project.path));
@@ -931,6 +968,7 @@ fqbn = \"x:y:z\"
         config.board.host = Some("192.168.1.50:4040".into());
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: dir.join("t.crab"),
             config,
             logic: Logic::default(),
@@ -957,6 +995,7 @@ fqbn = \"x:y:z\"
         .unwrap();
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: PathBuf::from("t.crab"),
             config,
             logic: Logic::default(),

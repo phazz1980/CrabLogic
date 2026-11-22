@@ -4,6 +4,7 @@
 //! numbered ([`nets`]), laid out on A3 (or A4) sheets ([`power`]) and written as Typst markup ([`doc`]),
 //! which `crab-pdf` turns into a PDF.
 
+mod bus;
 mod canvas;
 pub mod control;
 pub mod doc;
@@ -11,10 +12,14 @@ mod error;
 mod lang;
 pub mod nets;
 pub mod power;
+mod route;
+pub mod scene;
+mod sheet_names;
 mod symbols;
 pub mod tables;
 pub mod title;
 pub mod xref;
+pub use xref::find_ref;
 
 use crab_core::{Library, Project};
 
@@ -23,6 +28,8 @@ pub use doc::{Document, Format, Page, Sheet};
 pub use error::Error;
 pub use lang::Lang;
 pub use nets::{build_nets, BoardTerminal, Nets, Pin, Wire, WireClass, BOARD, EXTERNAL};
+pub use scene::{Dir, End, Item, ItemKind, Port};
+pub use sheet_names::sheet_designations;
 pub use tables::{device_kind_name, Table, Tables};
 pub use xref::{Xref, Xrefs};
 
@@ -51,10 +58,19 @@ pub fn build_document_in(
     // Two passes: the first one places the devices (the number of sheets and the zones do not
     // depend on the captions), the second one writes the references to the places of the other part.
     let none = Xrefs::new();
-    let (power, power_at) = power::power_sheets(panel, &nets, lang, 2, &none, &page)?;
+    let (power, power_at) =
+        power::power_sheets(panel, &project.panel_layout, &nets, lang, 2, &none, &page)?;
     let first_control = power.len() + 2;
     let (_, coil_at) = control::control_sheets(project, &nets, lang, first_control, &none, &page);
-    let (power, _) = power::power_sheets(panel, &nets, lang, 2, &coil_at, &page)?;
+    let (power, _) = power::power_sheets(
+        panel,
+        &project.panel_layout,
+        &nets,
+        lang,
+        2,
+        &coil_at,
+        &page,
+    )?;
     let (control, _) =
         control::control_sheets(project, &nets, lang, first_control, &power_at, &page);
     let mut sheets = power;

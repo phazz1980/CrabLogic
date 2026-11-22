@@ -2,17 +2,22 @@
 //! add, change and remove devices, bind them to the inputs and outputs of the project, build the
 //! documentation. The same commands serve the chat and the MCP server.
 
-use crab_core::{check_panel, panel_tags, Device, DeviceKind, Library, Project, Severity, Supply};
+use crab_core::{
+    check_panel, panel_tags, rebind_device, symbol_key, ContactForm, Device, DeviceKind, Library,
+    Project, Severity, Supply,
+};
 use crab_schematic::{build_document_in, Format, Lang};
 use serde_json::{json, Map, Value};
 
 use crate::{Context, Tool};
 
 /// Names of the panel commands.
-pub const NAMES: [&str; 6] = [
+pub const NAMES: [&str; 8] = [
     "get_panel",
     "add_panel_device",
     "set_panel_device",
+    "reconnect_panel_device",
+    "move_panel_symbol",
     "remove_panel_device",
     "set_panel_supply",
     "build_panel",
@@ -31,6 +36,7 @@ pub fn tools() -> Vec<Tool> {
         "terminal",
         "sensor",
         "button",
+        "aux",
     ];
     let text = |d: &str| json!({"type": "string", "description": d});
     let fields = json!({
@@ -38,6 +44,11 @@ pub fn tools() -> Vec<Tool> {
         "part": text("артикул, вводится вручную"),
         "bind": text("вход или выход проекта: имя тега или «блок.порт»; у контактора и реле — выход, у датчика и кнопки — вход"),
         "load": text("обозначение устройства, которое это коммутирует или питает (у контактора K1 — M1)"),
+        "of": text("для kind=aux: обозначение аппарата (автомат, УЗО, контактор, реле), которому принадлежит доп. контакт; для kind=sensor: обозначение двигателя, температуру которого датчик меряет (термистор)"),
+        "form": json!({"type": "string", "enum": ["no", "nc"], "description": "только для kind=aux: no — замыкающий (клеммы 13-14), nc — размыкающий (21-22)"}),
+        "series": text("только для kind=aux: обозначение контактора или реле, в цепи катушки которого контакт стоит последовательно; пусто — контакт идёт на вход платы (bind); тогда bind очищается"),
+        "from": text("обозначение источника, от которого питается ещё одно устройство, если источник уже питает другое по полю load (ветвление линии; точка соединения рисуется на листе сама); пусто — питается как обычно"),
+        "poles": json!({"type": ["integer", "null"], "description": "число полюсов автомата, УЗО, контактора или реле: 1 или 2 при 230 В, 3 или 4 при 400 В; null — все проводники питания"}),
     });
     let with = |extra: Value| {
         let mut props = fields.as_object().cloned().unwrap_or_default();
@@ -52,7 +63,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "add_panel_device",
-            description: "Добавить устройство в щит. Без id обозначение даётся само по виду (K1, Q1, M1…). Привязка bind — только для контактора, реле, датчика и кнопки; load — что коммутирует или питает устройство.",
+            description: "Добавить устройство в щит. Без id обозначение даётся само по виду (K1, Q1, M1…). Привязка bind — только для контактора, реле, датчика, кнопки и доп. контакта; load — что коммутирует или питает устройство. Доп. контакт (kind=aux) — обязательно of; без id обозначение вида Q1_1.",
             input_schema: json!({"type": "object", "properties": with(json!({
                 "kind": {"type": "string", "enum": kinds, "description": "вид устройства"},
                 "id": text("обозначение без тире: K1, Q1; буквы, цифры, _ и -"),
@@ -66,6 +77,27 @@ pub fn tools() -> Vec<Tool> {
                 "new_id": text("новое обозначение"),
                 "kind": {"type": "string", "enum": kinds},
             })), "required": ["id"]}),
+        },
+        Tool {
+            name: "reconnect_panel_device",
+            description: "Изменить настоящую связь устройства щита с проверкой (в отличие от set_panel_device, который записывает поля как есть): кто его питает (fed_by), ветка линии другого устройства (branch_of), вход или выход проекта, к которому оно привязано (bind). Пустая строка или null снимают связь. Все изменения одним шагом: при отказе не меняется ничего. Возвращается результат проверки щита.",
+            input_schema: json!({"type": "object", "properties": {
+                "id": text("обозначение устройства"),
+                "fed_by": {"type": ["string", "null"], "description": "обозначение аппарата, который питает устройство; null — снять питание от аппарата"},
+                "branch_of": {"type": ["string", "null"], "description": "обозначение устройства, линию которого устройство разветвляет; null — снять ветку"},
+                "bind": {"type": ["string", "null"], "description": "вход или выход проекта: имя тега или «блок.порт»; null — снять привязку"},
+            }, "required": ["id"]}),
+        },
+        Tool {
+            name: "move_panel_symbol",
+            description: "Сдвинуть условное изображение устройства на листах щита относительно его автоматического места; связи, зоны и перекрёстные ссылки следуют за ним. reset: true возвращает изображение на автоматическое место.",
+            input_schema: json!({"type": "object", "properties": {
+                "id": text("обозначение устройства"),
+                "view": {"type": "string", "enum": ["power", "control"], "description": "power — силовая часть, control — цепи управления; по умолчанию power"},
+                "dx_mm": {"type": "number", "description": "сдвиг вправо в мм (отрицательный — влево); задаётся абсолютно, а не прибавляется"},
+                "dy_mm": {"type": "number", "description": "сдвиг вниз в мм (отрицательный — вверх); задаётся абсолютно, а не прибавляется"},
+                "reset": {"type": "boolean", "description": "true — вернуть на автоматическое место, dx_mm и dy_mm не учитываются"},
+            }, "required": ["id"]}),
         },
         Tool {
             name: "remove_panel_device",
@@ -116,11 +148,20 @@ fn read(project: &Project, lib: &Library) -> Value {
         })
         .map(|t| json!({"name": t.name, "direction": if t.input { "input" } else { "output" }, "digital": t.digital}))
         .collect();
+    // Moved symbols; the bus and label offsets belong to the wires, not to the devices.
+    let layout: Vec<Value> = project
+        .panel_layout
+        .symbols
+        .iter()
+        .filter(|(key, _)| !key.starts_with("bus:") && !key.starts_with("label:"))
+        .map(|(key, s)| json!({"key": key, "dx_mm": s.dx / 4.0, "dy_mm": s.dy / 4.0}))
+        .collect();
     json!({
         "supply": panel.supply,
         "devices": panel.devices,
         "wire_numbers": panel.wire_numbers,
         "free_tags": free,
+        "layout": layout,
         "check": report(project, lib),
     })
 }
@@ -135,10 +176,43 @@ fn text(args: &Map<String, Value>, key: &str) -> Result<Option<String>, String> 
     }
 }
 
+/// A connection argument that may be cleared: `None` if absent, `Some(None)` for null or an
+/// empty string, `Some(Some(name))` otherwise.
+fn opt_text(args: &Map<String, Value>, key: &str) -> Result<Option<Option<String>>, String> {
+    Ok(text(args, key)?.map(|s| (!s.is_empty()).then_some(s)))
+}
+
+/// Largest offset of a symbol, in millimetres: more than the longest sheet (A3, 420 mm).
+const MAX_SHIFT_MM: f64 = 1000.0;
+
+/// A length in millimetres; absent or null counts as zero. Only numbers within
+/// `±MAX_SHIFT_MM` are accepted.
+fn millimetres(args: &Map<String, Value>, key: &str) -> Result<f32, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(0.0),
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.abs() <= MAX_SHIFT_MM)
+            .map(|x| x as f32)
+            .ok_or_else(|| {
+                format!("аргумент «{key}»: число миллиметров от −{MAX_SHIFT_MM} до {MAX_SHIFT_MM}")
+            }),
+    }
+}
+
+/// A flag argument; absent counts as `false`.
+fn flag(args: &Map<String, Value>, key: &str) -> Result<bool, String> {
+    match args.get(key) {
+        None => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err(format!("аргумент «{key}» должен быть true или false")),
+    }
+}
+
 fn kind(text: &str) -> Result<DeviceKind, String> {
     serde_json::from_value(json!(text)).map_err(|_| {
         format!(
-            "нет вида устройства «{text}»: feed, breaker, rcd, psu, contactor, relay, motor, load, terminal, sensor, button"
+            "нет вида устройства «{text}»: feed, breaker, rcd, fuse, switch, psu, contactor, relay, motor, load, terminal, sensor, button, aux"
         )
     })
 }
@@ -156,6 +230,38 @@ fn apply(device: &mut Device, args: &Map<String, Value>) -> Result<(), String> {
     }
     if let Some(v) = text(args, "load")? {
         device.load = v;
+    }
+    if let Some(v) = text(args, "of")? {
+        device.of = v;
+    }
+    if let Some(v) = text(args, "from")? {
+        device.from = v;
+    }
+    if let Some(v) = text(args, "form")? {
+        device.form = match v.as_str() {
+            "" | "no" => ContactForm::No,
+            "nc" => ContactForm::Nc,
+            _ => return Err("форма контакта: no (замыкающий) или nc (размыкающий)".to_owned()),
+        };
+    }
+    if let Some(v) = text(args, "series")? {
+        // The circuit is one thing: the coil or an input of the board.
+        if !v.is_empty() && text(args, "bind")?.is_none() {
+            device.bind.clear();
+        }
+        device.series = v;
+    }
+    match args.get("poles") {
+        None => {}
+        Some(Value::Null) => device.poles = None,
+        Some(v) => {
+            device.poles = Some(
+                v.as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .filter(|n| (1..=4).contains(n))
+                    .ok_or("аргумент «poles» — целое число от 1 до 4")?,
+            );
+        }
     }
     Ok(())
 }
@@ -178,13 +284,24 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
         "get_panel" => Ok(read(ctx.project(), &lib)),
         "add_panel_device" => {
             let kind = kind(&text(args, "kind")?.ok_or("нужен аргумент «kind»")?)?;
+            let of = text(args, "of")?.unwrap_or_default();
             let mut added = String::new();
             ctx.edit(&mut |p| {
                 let panel = &mut p.panel;
-                let new = id.clone().unwrap_or_else(|| panel.next_id(kind));
-                if !crab_core::ident::is_valid_ident(&new) {
+                if kind == DeviceKind::Aux && of.is_empty() {
+                    return Err(
+                        "у доп. контакта нужен аргумент «of» — аппарат, которому он принадлежит"
+                            .to_owned(),
+                    );
+                }
+                let new = match (&id, kind) {
+                    (Some(id), _) => id.clone(),
+                    (None, DeviceKind::Aux) => panel.next_aux_id(&of),
+                    (None, _) => panel.next_id(kind),
+                };
+                if !crab_core::panel::is_valid_designation(&new) {
                     return Err(format!(
-                        "недопустимое обозначение «{new}» (буквы, цифры, «_» и «-», без пробелов)"
+                        "недопустимое обозначение «{new}» (буквы, цифры, «_», «-» и «.», без пробелов)"
                     ));
                 }
                 if panel.device(&new).is_some() {
@@ -197,6 +314,13 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
                     part: String::new(),
                     bind: String::new(),
                     load: String::new(),
+                    poles: None,
+                    of: String::new(),
+                    form: ContactForm::default(),
+                    pins: String::new(),
+                    from: String::new(),
+                    free: false,
+                    series: String::new(),
                 };
                 apply(&mut device, args)?;
                 panel.devices.push(device);
@@ -220,12 +344,67 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
                     device.kind = k;
                 }
                 apply(device, args)?;
+                // The manual layout of the sheets follows the new designation.
                 if let Some(new) = &new_id {
-                    panel.rename(&id, new)?;
+                    crab_core::rename_device(p, &id, new)?;
                 }
                 Ok(())
             })?;
             Ok(json!({"ok": true, "check": report(ctx.project(), &lib)}))
+        }
+        "reconnect_panel_device" => {
+            let id = need_id()?;
+            let fed_by = opt_text(args, "fed_by")?;
+            let branch_of = opt_text(args, "branch_of")?;
+            let bind = opt_text(args, "bind")?;
+            if fed_by.is_none() && branch_of.is_none() && bind.is_none() {
+                return Err("укажите fed_by, branch_of или bind".to_owned());
+            }
+            // One edit: a refused step leaves the other links as they were.
+            ctx.edit(&mut |p| {
+                if p.panel.device(&id).is_none() {
+                    return Err(format!("в щите нет устройства «{id}»"));
+                }
+                if let Some(parent) = &fed_by {
+                    p.panel.reconnect_power(&id, parent.as_deref())?;
+                }
+                if let Some(source) = &branch_of {
+                    p.panel.branch_power(&id, source.as_deref())?;
+                }
+                if let Some(tag) = &bind {
+                    rebind_device(p, &lib, &id, tag.as_deref())?;
+                }
+                Ok(())
+            })?;
+            Ok(json!({"ok": true, "check": report(ctx.project(), &lib)}))
+        }
+        "move_panel_symbol" => {
+            let id = need_id()?;
+            let view = text(args, "view")?
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "power".to_owned());
+            if view != "power" && view != "control" {
+                return Err("вид: power или control".to_owned());
+            }
+            let reset = flag(args, "reset")?;
+            // Offsets are stored in units of 1/4 mm.
+            let dx = millimetres(args, "dx_mm")? * 4.0;
+            let dy = millimetres(args, "dy_mm")? * 4.0;
+            let key = symbol_key(&view, &id);
+            ctx.edit(&mut |p| {
+                if p.panel.device(&id).is_none() {
+                    return Err(format!("в щите нет устройства «{id}»"));
+                }
+                if reset {
+                    p.panel_layout.clear_symbol(&key);
+                } else {
+                    p.panel_layout.set_shift(&key, dx, dy);
+                }
+                Ok(())
+            })?;
+            // The offset as stored, after snapping to the grid.
+            let (sx, sy) = ctx.project().panel_layout.shift(&key);
+            Ok(json!({"id": id, "view": view, "dx_mm": sx / 4.0, "dy_mm": sy / 4.0}))
         }
         "remove_panel_device" => {
             let id = need_id()?;

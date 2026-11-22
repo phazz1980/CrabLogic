@@ -559,6 +559,7 @@ fn board_project(blocks: &str) -> Project {
         format!("[[expander]]\nid = \"relays\"\nchip = \"pcf8574\"\naddress = 0x24\n{blocks}");
     Project {
         panel: Default::default(),
+        panel_layout: Default::default(),
         path: Default::default(),
         config: toml::from_str(
             "[project]\nname = \"p\"\n[board]\nmodel = \"mine\"\nfqbn = \"esp32:esp32:esp32\"\n",

@@ -23,6 +23,12 @@ incremental = false
 
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
+
+# wasmi at opt-level 2 next to unoptimised workspace crates overflows the stack in the crab-sim
+# display tests (dev only; the release build is fine). Keep it unoptimised in dev builds.
+[profile.dev.package.wasmi]
+opt-level = 0
 
 [profile.release]
 strip = true

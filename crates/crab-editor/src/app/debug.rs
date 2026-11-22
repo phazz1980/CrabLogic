@@ -199,16 +199,19 @@ impl EditorApp {
     pub(super) fn poll_ai(&mut self, ctx: &egui::Context) {
         for request in self.ai.poll() {
             match request {
-                crate::ai::Request::Apply(logic, layout, panel) => {
+                crate::ai::Request::Apply(logic, layout, panel, panel_layout) => {
                     let lib = self.lib.clone();
                     if let Some(doc) = &mut self.doc {
                         let schema_same =
                             doc.project.logic == *logic && doc.project.layout == layout;
                         if schema_same {
                             // Only the panel changed: no rebuild of the firmware.
-                            if doc.project.panel != *panel {
-                                let _ = doc.edit_panel(None, |p| {
-                                    *p = *panel;
+                            if doc.project.panel != *panel
+                                || doc.project.panel_layout != *panel_layout
+                            {
+                                let _ = doc.edit_panel_project(None, |p| {
+                                    p.panel = *panel;
+                                    p.panel_layout = *panel_layout;
                                     Ok::<_, String>(())
                                 });
                             }
@@ -218,6 +221,7 @@ impl EditorApp {
                                 p.logic = *logic;
                                 p.layout = layout;
                                 p.panel = *panel;
+                                p.panel_layout = *panel_layout;
                                 Ok::<_, String>(())
                             });
                         }

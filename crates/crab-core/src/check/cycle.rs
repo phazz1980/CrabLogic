@@ -62,6 +62,7 @@ mod tests {
         }
         Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: Default::default(),
             config: toml::from_str(&src).unwrap(),
             logic: toml::from_str(&blocks).unwrap(),

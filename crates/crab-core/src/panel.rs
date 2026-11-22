@@ -30,6 +30,15 @@ impl Supply {
     fn is_default(&self) -> bool {
         *self == Self::default()
     }
+
+    /// The numbers of poles a switching device may have on this supply: from one-phase `1` or
+    /// `2` (with the neutral) to three-phase `3` or `4`.
+    pub fn pole_range(self) -> (u8, u8) {
+        match self {
+            Self::Dc24 | Self::Ac230 => (1, 2),
+            Self::Ac400 => (3, 4),
+        }
+    }
 }
 
 /// Kind of a panel device; the letter code of the designation follows IEC 81346.
@@ -42,6 +51,10 @@ pub enum DeviceKind {
     Breaker,
     /// Residual-current device (`-Q`).
     Rcd,
+    /// Fuses, one in each conductor (`-F`).
+    Fuse,
+    /// Disconnector: a switch for all conductors without protection (`-Q`).
+    Switch,
     /// Power supply unit (`-G`).
     Psu,
     /// Contactor (`-K`).
@@ -58,6 +71,26 @@ pub enum DeviceKind {
     Sensor,
     /// Push button or switch (`-S`).
     Button,
+    /// Auxiliary contact of a breaker, RCD, contactor or relay (`of`); drawn with the designation
+    /// of that device.
+    Aux,
+}
+
+/// Form of an auxiliary contact.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactForm {
+    /// Normally open: terminals `13-14`, `23-24`, ...
+    #[default]
+    No,
+    /// Normally closed: terminals `21-22`, `31-32`, ...
+    Nc,
+}
+
+impl ContactForm {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl DeviceKind {
@@ -80,13 +113,15 @@ impl DeviceKind {
     pub fn letter(self) -> char {
         match self {
             Self::Feed | Self::Terminal => 'X',
-            Self::Breaker | Self::Rcd => 'Q',
+            Self::Breaker | Self::Rcd | Self::Switch => 'Q',
+            Self::Fuse => 'F',
             Self::Psu => 'G',
             Self::Contactor | Self::Relay => 'K',
             Self::Motor => 'M',
             Self::Load => 'E',
             Self::Sensor => 'B',
             Self::Button => 'S',
+            Self::Aux => 'K',
         }
     }
 
@@ -96,6 +131,8 @@ impl DeviceKind {
             Self::Feed => "feed",
             Self::Breaker => "breaker",
             Self::Rcd => "rcd",
+            Self::Fuse => "fuse",
+            Self::Switch => "switch",
             Self::Psu => "psu",
             Self::Contactor => "contactor",
             Self::Relay => "relay",
@@ -104,6 +141,7 @@ impl DeviceKind {
             Self::Terminal => "terminal",
             Self::Sensor => "sensor",
             Self::Button => "button",
+            Self::Aux => "aux",
         }
     }
 }
@@ -127,6 +165,34 @@ pub struct Device {
     /// Designation of the device this one switches or feeds (`M1` for contactor `K1`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub load: String,
+    /// Number of conductors a breaker, RCD, contactor or relay switches (`1`, `2` on 230 V and
+    /// 24 V; `3`, `4` on 400 V); the devices under it get only these conductors. Empty: all
+    /// conductors of the supply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poles: Option<u8>,
+    /// For an auxiliary contact: the device it belongs to (`Q2`). For a sensor: the motor whose
+    /// temperature it measures (a thermistor in the winding).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub of: String,
+    /// For an auxiliary contact: normally open or normally closed.
+    #[serde(default, skip_serializing_if = "ContactForm::is_default")]
+    pub form: ContactForm,
+    /// For an auxiliary contact: its terminal numbers by hand (`21-22`). Empty: by the number of
+    /// the contact (`13-14`, `21-22`, ...).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pins: String,
+    /// The device that feeds this one when it already feeds another through its `load`: a source
+    /// of several devices names the first by `load` and the others by `from` (a branch of the line).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    /// A device just added, not connected yet: it stays off the sheets until something feeds it
+    /// (or it is connected straight to the feed). Devices of old projects are never free.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free: bool,
+    /// For an auxiliary contact: the contactor or relay whose coil circuit it stands in, in series
+    /// with the coil. Empty: the contact goes to an input of the board (`bind`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub series: String,
 }
 
 impl Device {
@@ -136,6 +202,26 @@ impl Device {
     }
 }
 
+/// A wire drawn by hand between two terminals: `device:terminal` at each end (`K1:A2`, `A1:IO5`
+/// for a terminal of the board). It replaces the automatic wire at those terminals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireLink {
+    pub from: String,
+    pub to: String,
+}
+
+impl WireLink {
+    /// The key of the wire the link makes (`from>to`), as `Wire::key` writes it.
+    pub fn key(&self) -> String {
+        format!("{}>{}", self.from, self.to)
+    }
+}
+
+/// The device of an end of a link (`K1:A2` → `K1`).
+pub fn link_device(end: &str) -> &str {
+    end.split_once(':').map_or(end, |(device, _)| device)
+}
+
 /// The panel of a project.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
@@ -143,11 +229,25 @@ pub struct Panel {
     pub supply: Supply,
     #[serde(default, rename = "device", skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<Device>,
+    /// Wires drawn by hand between terminals; they are written after the devices.
+    #[serde(default, rename = "link", skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<WireLink>,
     /// Numbers given to the wires, kept so that a wire keeps its number when the panel changes:
     /// the key is the ends of the wire (`K1:2>M1:L1`), the value its number. Written by the
     /// documentation generator, not typed by hand.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub wire_numbers: BTreeMap<String, u32>,
+}
+
+/// Whether `s` is a valid designation of a device: the characters of an identifier and dots
+/// (`K1`, `X1.1`); a dot stands between two other characters.
+pub fn is_valid_designation(s: &str) -> bool {
+    !s.starts_with('.')
+        && !s.ends_with('.')
+        && !s.contains("..")
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && !s.is_empty()
 }
 
 impl Panel {
@@ -159,6 +259,28 @@ impl Panel {
     /// The device with this designation (`K1`).
     pub fn device(&self, id: &str) -> Option<&Device> {
         self.devices.iter().find(|d| d.id == id)
+    }
+
+    /// The first free designation of an auxiliary contact of `of`: `Q2_1`, then `Q2_2`...
+    pub fn next_aux_id(&self, of: &str) -> String {
+        (1..)
+            .map(|n| format!("{of}_{n}"))
+            .find(|id| self.device(id).is_none())
+            .unwrap_or_default()
+    }
+
+    /// The auxiliary contacts of `device`, in the order of the panel.
+    pub fn aux_of<'a>(&'a self, device: &'a str) -> impl Iterator<Item = &'a Device> + 'a {
+        self.devices
+            .iter()
+            .filter(move |d| d.kind == DeviceKind::Aux && d.of == device)
+    }
+
+    /// The temperature sensors (thermistors) of the motor `device`: sensors whose `of` names it.
+    pub fn sensors_of<'a>(&'a self, device: &'a str) -> impl Iterator<Item = &'a Device> + 'a {
+        self.devices
+            .iter()
+            .filter(move |d| d.kind == DeviceKind::Sensor && d.of == device)
     }
 
     /// The first free designation for a device of `kind`: `K1`, then `K2`...
@@ -176,9 +298,9 @@ impl Panel {
         if old == new {
             return Ok(());
         }
-        if !crate::ident::is_valid_ident(new) {
+        if !is_valid_designation(new) {
             return Err(format!(
-                "«{new}»: недопустимое обозначение (буквы, цифры, «_» и «-», без пробелов)"
+                "«{new}»: недопустимое обозначение (буквы, цифры, «_», «-» и «.», без пробелов)"
             ));
         }
         if self.device(new).is_some() {
@@ -191,6 +313,25 @@ impl Panel {
         for d in &mut self.devices {
             if d.load == old {
                 d.load = new.to_owned();
+            }
+            // Auxiliary contacts follow the device they belong to and the coil they stand with.
+            if d.of == old {
+                d.of = new.to_owned();
+            }
+            if d.series == old {
+                d.series = new.to_owned();
+            }
+            if d.from == old {
+                d.from = new.to_owned();
+            }
+        }
+        for link in &mut self.links {
+            for end in [&mut link.from, &mut link.to] {
+                if let Some((device, terminal)) = end.split_once(':') {
+                    if device == old {
+                        *end = format!("{new}:{terminal}");
+                    }
+                }
             }
         }
         // The keys are `K1:2>M1:L1`: the device is the part before the colon of each end.
@@ -209,15 +350,63 @@ impl Panel {
         Ok(())
     }
 
+    /// Renames several devices at once (`old`, `new`), also when the new names are the old names
+    /// of others (swaps). The new names must be valid and different from each other and from the
+    /// devices left alone; nothing changes if one is wrong.
+    pub fn rename_all(&mut self, names: &[(String, String)]) -> Result<(), String> {
+        let names: Vec<&(String, String)> = names.iter().filter(|(o, n)| o != n).collect();
+        let mut taken: Vec<&str> = self
+            .devices
+            .iter()
+            .filter(|d| !names.iter().any(|(o, _)| *o == d.id))
+            .map(|d| d.id.as_str())
+            .collect();
+        for (old, new) in &names {
+            if self.device(old).is_none() {
+                return Err(format!("нет устройства «{old}»"));
+            }
+            if !is_valid_designation(new) {
+                return Err(format!("«{new}»: недопустимое обозначение"));
+            }
+            if taken.contains(&new.as_str()) {
+                return Err(format!("обозначение «{new}» уже занято"));
+            }
+            taken.push(new);
+        }
+        let mut done = self.clone();
+        for (i, (old, _)) in names.iter().enumerate() {
+            done.rename(old, &format!("tmp_rename_{i}"))?;
+        }
+        for (i, (_, new)) in names.iter().enumerate() {
+            done.rename(&format!("tmp_rename_{i}"), new)?;
+        }
+        *self = done;
+        Ok(())
+    }
+
     /// Removes the device; what it fed or switched is left without a feeder, and the stored
     /// numbers of its wires go with it.
     pub fn remove(&mut self, id: &str) {
-        self.devices.retain(|d| d.id != id);
+        // The auxiliary contacts of the device go with it.
+        let aux: Vec<String> = self.aux_of(id).map(|d| d.id.clone()).collect();
+        self.devices.retain(|d| d.id != id && !aux.contains(&d.id));
         for d in &mut self.devices {
             if d.load == id {
                 d.load.clear();
             }
+            if d.series == id {
+                d.series.clear();
+            }
+            if d.from == id {
+                d.from.clear();
+            }
+            // A sensor of a removed motor stays in the panel as a plain sensor.
+            if d.of == id && d.kind == DeviceKind::Sensor {
+                d.of.clear();
+            }
         }
+        self.links
+            .retain(|l| link_device(&l.from) != id && link_device(&l.to) != id);
         self.wire_numbers.retain(|key, _| {
             !key.split('>')
                 .any(|end| end.split_once(':').is_some_and(|(device, _)| device == id))
@@ -304,6 +493,13 @@ rating = "0,75 кВт"
                 part: String::new(),
                 bind: String::new(),
                 load: String::new(),
+                poles: None,
+                of: String::new(),
+                form: ContactForm::default(),
+                pins: String::new(),
+                from: String::new(),
+                free: false,
+                series: String::new(),
             });
         }
         assert_eq!(panel.next_id(DeviceKind::Contactor), "K3");
@@ -351,6 +547,54 @@ kind = "motor"
     }
 
     #[test]
+    fn branches_follow_renames_and_removals() {
+        let mut panel: Panel = toml::from_str(
+            r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K1"
+[[device]]
+id = "K1"
+kind = "contactor"
+[[device]]
+id = "K2"
+kind = "contactor"
+"#,
+        )
+        .unwrap();
+        // Q1 already feeds K1: K2 becomes a second device on it.
+        panel.branch_power("K2", Some("Q1")).unwrap();
+        assert!(panel.branch_power("Q1", Some("K2")).is_err());
+        assert_eq!(panel.device("K2").unwrap().from, "Q1");
+        assert_eq!(panel.device("Q1").unwrap().load, "K1");
+        panel.rename("Q1", "Q7").unwrap();
+        assert_eq!(panel.device("K2").unwrap().from, "Q7");
+        // Fed the usual way, the device lets its branch go.
+        panel.reconnect_power("K2", None).unwrap();
+        assert!(panel.device("K2").unwrap().from.is_empty());
+        panel.branch_power("K2", Some("Q7")).unwrap();
+        panel.remove("Q7");
+        assert!(panel.device("K2").unwrap().from.is_empty());
+    }
+
+    #[test]
+    fn rename_all_swaps_and_refuses_clashes() {
+        let mut panel = pair();
+        panel
+            .rename_all(&[("K1".into(), "K2".into()), ("Q1".into(), "K1".into())])
+            .unwrap();
+        assert_eq!(panel.device("K1").unwrap().kind, DeviceKind::Breaker);
+        assert_eq!(panel.device("K2").unwrap().kind, DeviceKind::Contactor);
+        let before = panel.clone();
+        assert!(panel.rename_all(&[("K2".into(), "M1".into())]).is_err());
+        assert!(panel
+            .rename_all(&[("K2".into(), "Z1".into()), ("K1".into(), "Z1".into())])
+            .is_err());
+        assert_eq!(panel, before);
+    }
+
+    #[test]
     fn rename_refuses_a_taken_or_bad_designation() {
         let mut panel = pair();
         assert!(panel.rename("K1", "Q1").is_err());
@@ -369,5 +613,45 @@ kind = "motor"
         assert_eq!(panel.device("Q1").unwrap().load, "");
         assert_eq!(panel.wire_numbers.len(), 1);
         assert!(panel.wire_numbers.contains_key("X1:L>Q1:1"));
+    }
+
+    #[test]
+    fn auxiliary_contacts_round_trip_and_old_files_read_unchanged() {
+        let text = r#"
+[[device]]
+id = "Q2"
+kind = "breaker"
+
+[[device]]
+id = "Q2_1"
+kind = "aux"
+of = "Q2"
+form = "nc"
+
+[[device]]
+id = "K2_1"
+kind = "aux"
+of = "K2"
+series = "K1"
+"#;
+        let panel: Panel = toml::from_str(text).unwrap();
+        let q = panel.device("Q2_1").unwrap();
+        assert_eq!(
+            (q.kind, q.of.as_str(), q.form),
+            (DeviceKind::Aux, "Q2", ContactForm::Nc)
+        );
+        let k = panel.device("K2_1").unwrap();
+        assert_eq!((k.form, k.series.as_str()), (ContactForm::No, "K1"));
+        assert_eq!(panel.device("Q2").unwrap().of, "");
+        assert_eq!(
+            toml::from_str::<Panel>(&toml::to_string(&panel).unwrap()).unwrap(),
+            panel
+        );
+        // The defaults are not written.
+        let out = toml::to_string(&panel).unwrap();
+        assert_eq!(out.matches("form").count(), 1, "{out}");
+        assert_eq!(panel.aux_of("Q2").count(), 1);
+        assert_eq!(panel.next_aux_id("Q2"), "Q2_2");
+        assert_eq!(panel.next_aux_id("Q9"), "Q9_1");
     }
 }

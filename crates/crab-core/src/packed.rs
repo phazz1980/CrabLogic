@@ -717,6 +717,7 @@ mod tests {
 
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -876,6 +877,7 @@ fqbn = \"x:y:z\"
         });
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -980,6 +982,7 @@ name = \"OUT1\"
 
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str(
                 "[project]
@@ -1066,6 +1069,7 @@ model = \"mine\"
         fs::create_dir_all(&root).unwrap();
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: root.join("p.crab"),
             config: toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap(),
             logic: Logic::default(),

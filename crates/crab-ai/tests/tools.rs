@@ -493,6 +493,31 @@ fn panel_commands_build_the_panel_step_by_step() {
     .unwrap();
     assert_eq!(c.project.panel.devices.len(), 3);
     assert_eq!(c.project.panel.device("K1").unwrap().bind, "led");
+    // The number of poles is a small integer; null means all the conductors.
+    let q = run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "breaker", "poles": 2}),
+    )
+    .unwrap();
+    assert_eq!(
+        c.project
+            .panel
+            .device(q["id"].as_str().unwrap())
+            .unwrap()
+            .poles,
+        Some(2)
+    );
+    assert!(run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "breaker", "poles": 9})
+    )
+    .is_err());
+    c.project
+        .panel
+        .devices
+        .retain(|d| d.kind != crab_core::DeviceKind::Breaker);
     // Mistakes are refused and change nothing.
     let edits = c.edits;
     assert!(run(
@@ -662,4 +687,239 @@ fn a_refused_insertion_changes_nothing() {
     assert_eq!(c.project, before);
     // Exactly one of `block` and `type`.
     assert!(run(&mut c, "insert_block_in_link", json!({"to": "led.in"})).is_err());
+}
+
+#[test]
+fn panel_commands_add_and_change_auxiliary_contacts() {
+    use crab_core::{ContactForm, DeviceKind};
+    let mut c = ctx("panel_aux");
+    run(&mut c, "add_panel_device", json!({"kind": "breaker"})).unwrap();
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "bind": "led"}),
+    )
+    .unwrap();
+    // A contact needs the device it belongs to; the designation follows from it.
+    assert!(run(&mut c, "add_panel_device", json!({"kind": "aux"})).is_err());
+    let a = run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "aux", "of": "Q1", "form": "nc"}),
+    )
+    .unwrap();
+    assert_eq!(a["id"], "Q1_1");
+    let b = run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "aux", "of": "Q1", "bind": "button"}),
+    )
+    .unwrap();
+    assert_eq!(b["id"], "Q1_2");
+    let first = c.project.panel.device("Q1_1").unwrap();
+    assert_eq!(
+        (first.kind, first.of.as_str(), first.form),
+        (DeviceKind::Aux, "Q1", ContactForm::Nc)
+    );
+    // Wrong forms are refused.
+    assert!(run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "Q1_1", "form": "open"})
+    )
+    .is_err());
+    // A coil in series takes the contact off the input of the board.
+    run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "Q1_2", "series": "K1"}),
+    )
+    .unwrap();
+    let second = c.project.panel.device("Q1_2").unwrap();
+    assert_eq!((second.series.as_str(), second.bind.as_str()), ("K1", ""));
+    // The check names a contact of a device that is not there.
+    let r = run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "aux", "of": "Z9"}),
+    )
+    .unwrap();
+    let errors = r["check"]["errors"].to_string();
+    assert!(errors.contains("нет аппарата"), "{errors}");
+    // The contacts go with their device.
+    run(&mut c, "remove_panel_device", json!({"id": "Q1"})).unwrap();
+    assert!(c.project.panel.device("Q1_1").is_none());
+    assert!(c.project.panel.device("Q1_2").is_none());
+    // A terminal block can stand in the chain: the designation may have a dot.
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "terminal", "id": "X1.1"}),
+    )
+    .unwrap();
+    assert!(c.project.panel.device("X1.1").is_some());
+}
+
+#[test]
+fn move_panel_symbol_stores_and_resets_the_offset() {
+    let mut c = ctx("panel_move");
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "id": "K1"}),
+    )
+    .unwrap();
+    // Millimetres in, quarter millimetres stored; the answer gives the stored offset back.
+    let r = run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "dx_mm": 10}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel_layout.shift("power:K1"), (40.0, 0.0));
+    assert_eq!(r["dx_mm"], json!(10.0));
+    assert_eq!(r["view"], "power");
+    let g = run(&mut c, "get_panel", json!({})).unwrap();
+    assert_eq!(
+        g["layout"],
+        json!([{"key": "power:K1", "dx_mm": 10.0, "dy_mm": 0.0}])
+    );
+    // The control view has its own offset; the value is absolute, not added.
+    run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "view": "control", "dy_mm": -2.5}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel_layout.shift("control:K1"), (0.0, -10.0));
+    run(&mut c, "move_panel_symbol", json!({"id": "K1", "dx_mm": 5})).unwrap();
+    assert_eq!(c.project.panel_layout.shift("power:K1"), (20.0, 0.0));
+    // Reset returns the symbol to its automatic place.
+    run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "reset": true}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel_layout.shift("power:K1"), (0.0, 0.0));
+    let g = run(&mut c, "get_panel", json!({})).unwrap();
+    assert_eq!(g["layout"].as_array().unwrap().len(), 1, "{g}");
+    // Refusals: no such device, another view, a number that is not one.
+    assert!(run(&mut c, "move_panel_symbol", json!({"id": "Z9", "dx_mm": 1})).is_err());
+    assert!(run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "view": "bus", "dx_mm": 1})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "dx_mm": "x"})
+    )
+    .is_err());
+}
+
+#[test]
+fn reconnect_panel_device_checks_and_is_atomic() {
+    let mut c = ctx("panel_reconnect");
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "breaker", "id": "Q1"}),
+    )
+    .unwrap();
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "id": "K1"}),
+    )
+    .unwrap();
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "motor", "id": "M1"}),
+    )
+    .unwrap();
+    // The breaker feeds the contactor: the breaker names it in its load.
+    let r = run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "K1", "fed_by": "Q1"}),
+    )
+    .unwrap();
+    assert_eq!(r["ok"], true);
+    assert_eq!(c.project.panel.device("Q1").unwrap().load, "K1");
+    // null takes the supply away again.
+    run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "K1", "fed_by": null}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.device("Q1").unwrap().load, "");
+    // A contactor is bound to an output of the board; an empty string clears it.
+    run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "K1", "bind": "led"}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.device("K1").unwrap().bind, "led");
+    // A contactor on an input is refused, and the feed given in the same call is not applied.
+    let err = run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "K1", "fed_by": "Q1", "bind": "button"}),
+    );
+    assert!(err.is_err());
+    assert_eq!(c.project.panel.device("Q1").unwrap().load, "");
+    assert_eq!(c.project.panel.device("K1").unwrap().bind, "led");
+    // Without any connection the call is refused; so is an unknown device.
+    assert!(run(&mut c, "reconnect_panel_device", json!({"id": "K1"})).is_err());
+    assert!(run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "Z9", "fed_by": null})
+    )
+    .is_err());
+    run(
+        &mut c,
+        "reconnect_panel_device",
+        json!({"id": "K1", "bind": ""}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.device("K1").unwrap().bind, "");
+}
+
+#[test]
+fn renaming_a_panel_device_keeps_its_place_on_the_sheet() {
+    let mut c = ctx("panel_rename_layout");
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "id": "K1"}),
+    )
+    .unwrap();
+    run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K1", "dx_mm": 10}),
+    )
+    .unwrap();
+    run(
+        &mut c,
+        "set_panel_device",
+        json!({"id": "K1", "new_id": "K5"}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel_layout.shift("power:K5"), (40.0, 0.0));
+    assert_eq!(c.project.panel_layout.shift("power:K1"), (0.0, 0.0));
+    // An offset beyond any sheet is refused.
+    assert!(run(
+        &mut c,
+        "move_panel_symbol",
+        json!({"id": "K5", "dx_mm": 1e38})
+    )
+    .is_err());
 }

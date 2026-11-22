@@ -174,7 +174,7 @@ fn many_terminals_go_to_several_control_sheets() {
     project.panel = toml::from_str::<Panel>(&panel).unwrap();
     let doc = document(&project);
     // The relays are on the power sheets too (nothing feeds them but the supply); the control
-    // sheets hold 11 columns each.
+    // sheets hold 13 columns each.
     let control: Vec<usize> = doc
         .sheets
         .iter()
@@ -185,14 +185,14 @@ fn many_terminals_go_to_several_control_sheets() {
     assert_eq!(
         control.len(),
         2,
-        "15 колонок: 11 на первом листе, 4 на втором"
+        "15 колонок: 13 на первом листе, 2 на втором"
     );
     assert_eq!(doc.sheets[control[0] - 1].title, "Цепи управления (1/2)");
     assert_eq!(doc.sheets[control[1] - 1].title, "Цепи управления (2/2)");
     for i in 1..=15 {
         let id = format!("K{i}");
         let at = &doc.coil_at[&id];
-        assert_eq!(at.sheet, control[usize::from(i > 11)], "{id}");
+        assert_eq!(at.sheet, control[usize::from(i > 13)], "{id}");
         let on_control = control
             .iter()
             .filter(|&&n| doc.sheets[n - 1].body.contains(&quoted(&format!("-{id}"))))
@@ -221,4 +221,89 @@ bind = "pump"
         .expect("лист управления");
     assert!(control.body.contains(&quoted("-S1")));
     assert!(control.body.contains("внешний источник"));
+}
+
+const CONTACTS_PANEL: &str = r#"
+supply = "ac230"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K1"
+[[device]]
+id = "Q1_1"
+kind = "aux"
+of = "Q1"
+form = "nc"
+bind = "sensor"
+[[device]]
+id = "K1"
+kind = "contactor"
+bind = "pump"
+load = "M1"
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+series = "K1"
+[[device]]
+id = "K1_2"
+kind = "aux"
+of = "Q1"
+series = "K1"
+[[device]]
+id = "M1"
+kind = "motor"
+"#;
+
+/// An auxiliary contact on an input stands under its terminal like a button, the contacts in
+/// series with a coil stand above the coil, and every wire between them is drawn.
+#[test]
+fn auxiliary_contacts_stand_on_the_control_sheet() {
+    use crab_schematic::scene::ItemKind;
+    let doc = document(&pump(CONTACTS_PANEL));
+    let sheet = doc
+        .sheets
+        .iter()
+        .find(|s| s.title.starts_with("Цепи управления"))
+        .unwrap();
+    // The designation of the device the contact belongs to and the terminals are written.
+    for text in ["-Q1", "-K1", "11", "12", "13", "14", "23", "24"] {
+        assert!(sheet.body.contains(&quoted(text)), "нет надписи {text}");
+    }
+    // The wires of the chain: board -> K1_1 -> K1_2 -> coil.
+    let wires: Vec<(String, String)> = sheet
+        .items
+        .iter()
+        .filter_map(|i| match &i.kind {
+            ItemKind::Wire { from, to, .. } => Some((from.device.clone(), to.device.clone())),
+            _ => None,
+        })
+        .collect();
+    for (from, to) in [("A1", "K1_1"), ("K1_1", "K1_2"), ("K1_2", "K1")] {
+        assert!(
+            wires
+                .iter()
+                .any(|w| (w.0.as_str(), w.1.as_str()) == (from, to)),
+            "нет провода {from} -> {to}: {wires:?}"
+        );
+    }
+    // The contact on the input is a symbol with a wire to the board.
+    assert!(wires.iter().any(|w| w.1 == "Q1_1" || w.0 == "Q1_1"));
+}
+
+/// The power sheet names where each auxiliary contact is used.
+#[test]
+fn the_power_sheet_names_the_place_of_the_auxiliary_contacts() {
+    let doc = document(&pump(CONTACTS_PANEL));
+    let power = &doc.sheets[1].body;
+    // Under the contacts of the breaker: the references to the control sheet.
+    let refs = power
+        .split('"')
+        .filter(|t| t.starts_with('/') || t.contains(" /"))
+        .count();
+    assert!(refs >= 2, "{refs} references only");
 }

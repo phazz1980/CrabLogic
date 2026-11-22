@@ -130,7 +130,7 @@ fn the_frame_is_operations_too_and_names_the_sheet() {
         .collect();
     assert!(texts.contains(&doc.sheets[1].title.as_str()));
     assert!(texts.contains(&format!("2 / {}", doc.sheets.len()).as_str()));
-    assert!(texts.contains(&"A3") && texts.contains(&"L"), "{texts:?}");
+    assert!(texts.contains(&"A3") && texts.contains(&"12"), "{texts:?}");
     // An index outside the document draws nothing.
     assert!(doc.frame_ops(99, Lang::Ru).is_empty());
     let (w, h) = doc.page_size();

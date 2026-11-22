@@ -9,7 +9,7 @@ use std::thread;
 
 use crab_ai::agent::{run_turn, Event};
 use crab_ai::Context;
-use crab_core::{Layout, Library, Logic, Panel, Project};
+use crab_core::{Layout, Library, Logic, Panel, PanelLayout, Project};
 use eframe::egui::{self, RichText, ScrollArea, Ui};
 use serde_json::Value;
 
@@ -32,7 +32,7 @@ pub enum Entry {
 
 enum Msg {
     Event(Event),
-    Edit(Box<(Logic, Layout, Panel)>),
+    Edit(Box<(Logic, Layout, Panel, PanelLayout)>),
     ReloadLibrary,
     UploadModules {
         port: Option<String>,
@@ -48,7 +48,8 @@ enum Msg {
 
 /// Requests from the worker that the editor carries out.
 pub enum Request {
-    Apply(Box<Logic>, Layout, Box<Panel>),
+    /// The edited schema, its layout, the panel and the manual layout of the panel sheets.
+    Apply(Box<Logic>, Layout, Box<Panel>, Box<PanelLayout>),
     ReloadLibrary,
     /// Upload the modules of the sheets (an editor job, its progress is in the log).
     UploadModules {
@@ -206,8 +207,13 @@ impl AiChat {
                 }
                 Msg::Session(id) => self.session = Some(id),
                 Msg::Edit(edit) => {
-                    let (logic, layout, panel) = *edit;
-                    requests.push(Request::Apply(Box::new(logic), layout, Box::new(panel)))
+                    let (logic, layout, panel, panel_layout) = *edit;
+                    requests.push(Request::Apply(
+                        Box::new(logic),
+                        layout,
+                        Box::new(panel),
+                        Box::new(panel_layout),
+                    ))
                 }
                 Msg::ReloadLibrary => requests.push(Request::ReloadLibrary),
                 Msg::UploadModules { port, debug } => {
@@ -266,6 +272,7 @@ impl Context for WorkerContext {
             changed.logic.clone(),
             changed.layout.clone(),
             changed.panel.clone(),
+            changed.panel_layout.clone(),
         ))));
         self.wake.request_repaint();
         self.project = changed;

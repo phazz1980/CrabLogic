@@ -43,6 +43,8 @@ pub fn device_kind_name(kind: DeviceKind, lang: Lang) -> &'static str {
         DeviceKind::Feed => lang.pick("Ввод питания", "Supply feed"),
         DeviceKind::Breaker => lang.pick("Автоматический выключатель", "Circuit breaker"),
         DeviceKind::Rcd => lang.pick("УЗО", "Residual-current device"),
+        DeviceKind::Fuse => lang.pick("Предохранитель", "Fuse"),
+        DeviceKind::Switch => lang.pick("Рубильник", "Disconnector"),
         DeviceKind::Psu => lang.pick("Блок питания", "Power supply"),
         DeviceKind::Contactor => lang.pick("Контактор", "Contactor"),
         DeviceKind::Relay => lang.pick("Реле", "Relay"),
@@ -51,6 +53,7 @@ pub fn device_kind_name(kind: DeviceKind, lang: Lang) -> &'static str {
         DeviceKind::Terminal => lang.pick("Клеммник", "Terminal block"),
         DeviceKind::Sensor => lang.pick("Датчик", "Sensor"),
         DeviceKind::Button => lang.pick("Кнопка", "Push button"),
+        DeviceKind::Aux => lang.pick("Дополнительный контакт", "Auxiliary contact"),
     }
 }
 

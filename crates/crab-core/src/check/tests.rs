@@ -404,6 +404,7 @@ type = \"{kind}\"
     }
     Project {
         panel: Default::default(),
+        panel_layout: Default::default(),
         path: Default::default(),
         config: toml::from_str(
             "[project]

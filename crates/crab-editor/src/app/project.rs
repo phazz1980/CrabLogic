@@ -232,6 +232,7 @@ impl EditorApp {
             .to_owned();
         let project = Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: path.to_owned(),
             config: ProjectConfig {
                 project: ProjectInfo {

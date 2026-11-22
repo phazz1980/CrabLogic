@@ -11,6 +11,7 @@ struct Snapshot {
     logic: Logic,
     layout: Layout,
     panel: Panel,
+    panel_layout: crab_core::PanelLayout,
 }
 
 pub struct Doc {
@@ -118,6 +119,29 @@ impl Doc {
         }
     }
 
+    /// Applies an edit of the manual layout of the panel sheets as one undo step (`key` merges
+    /// consecutive edits of one thing, as dragging a symbol). The firmware is not rebuilt.
+    pub fn edit_panel_layout<T>(
+        &mut self,
+        key: Option<String>,
+        f: impl FnOnce(&mut crab_core::PanelLayout) -> T,
+    ) -> T {
+        let before = self.snapshot();
+        let merge = key.is_some() && key == self.last_key;
+        let value = f(&mut self.project.panel_layout);
+        if !merge {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last_key = key;
+        self.dirty = true;
+        self.panel_revision += 1;
+        value
+    }
+
     /// Applies an edit of the electrical panel as one undo step (`key` merges consecutive edits
     /// of the same thing, as in [`Doc::edit`]). The panel does not change the firmware: nothing is
     /// rebuilt, the project only becomes unsaved. A panel can be edited while the schema is
@@ -127,9 +151,19 @@ impl Doc {
         key: Option<String>,
         f: impl FnOnce(&mut Panel) -> Result<T, E>,
     ) -> Result<T, E> {
+        self.edit_panel_project(key, |project| f(&mut project.panel))
+    }
+
+    /// Like [`Self::edit_panel`], but the edit sees the whole project: for panel edits that also
+    /// change the panel layout (a rename moves the layout keys), as one undo step.
+    pub fn edit_panel_project<T, E>(
+        &mut self,
+        key: Option<String>,
+        f: impl FnOnce(&mut Project) -> Result<T, E>,
+    ) -> Result<T, E> {
         let before = self.snapshot();
         let merge = key.is_some() && key == self.last_key;
-        match f(&mut self.project.panel) {
+        match f(&mut self.project) {
             Ok(value) => {
                 if !merge {
                     self.undo.push(before);
@@ -284,6 +318,7 @@ impl Doc {
             logic: self.project.logic.clone(),
             layout: self.project.layout.clone(),
             panel: self.project.panel.clone(),
+            panel_layout: self.project.panel_layout.clone(),
         }
     }
 
@@ -291,6 +326,7 @@ impl Doc {
         self.project.logic = s.logic;
         self.project.layout = s.layout;
         self.project.panel = s.panel;
+        self.project.panel_layout = s.panel_layout;
     }
 }
 
@@ -440,6 +476,31 @@ kind = \"breaker\"
         let (_, has_pdf) = names_in(&dir.join("pump.crab"));
         assert!(has_pdf || warning.is_some(), "no panel.pdf and no warning");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dragging_a_symbol_is_one_undo_step_that_brings_the_old_place_back() {
+        let (lib, _) =
+            Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library")).unwrap();
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump");
+        let mut doc = Doc::open(Path::new(path), &lib).unwrap();
+        let revision = doc.revision;
+        let before = doc.panel_revision;
+        for dx in [10.0, 20.0, 40.0] {
+            doc.edit_panel_layout(Some("shift:power:K1".into()), |l| {
+                l.set_shift("power:K1", dx, 0.0)
+            });
+        }
+        doc.end_edit();
+        assert_eq!(doc.project.panel_layout.shift("power:K1"), (40.0, 0.0));
+        assert!(doc.dirty);
+        // The sheets are made again, the firmware is not.
+        assert!(doc.panel_revision > before);
+        assert_eq!(doc.revision, revision);
+        doc.undo(&lib);
+        assert!(doc.project.panel_layout.is_empty());
+        doc.redo(&lib);
+        assert_eq!(doc.project.panel_layout.shift("power:K1"), (40.0, 0.0));
     }
 
     #[test]

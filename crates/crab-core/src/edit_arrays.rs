@@ -176,6 +176,7 @@ mod tests {
             toml::from_str("[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n").unwrap();
         Project {
             panel: Default::default(),
+            panel_layout: Default::default(),
             path: Default::default(),
             config,
             logic: Logic::default(),

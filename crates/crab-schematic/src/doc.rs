@@ -10,21 +10,19 @@
 
 use std::fmt::Write as _;
 
-use crate::canvas::{Align, Canvas, Op, EXTRA, INK, TEXT, TEXT_L, THICK, THIN, WEAK};
+use crate::canvas::{Align, Canvas, Op, EXTRA, INK, TEXT, TEXT_S, THICK, THIN, WEAK};
 use crate::lang::Lang;
 use crate::tables::Tables;
 use crate::xref::Xrefs;
 
 /// The module M of GOST IEC 61082-1 5.7.3.2 in units of a quarter of a millimetre: 2.5 mm.
 pub const M: f32 = 10.0;
-/// Step of the coordinate grid, 10M = 25 mm.
-const ZONE: f32 = 10.0 * M;
-/// Width of the ring with the zone marks between the outer and the inner line.
-const RING: f32 = 20.0;
-/// Letters of the rows: capital Latin letters without `I` and `O` (5.7.3.4).
-const ROW_LETTERS: &[u8; 11] = b"ABCDEFGHJKL";
+/// Margin between the edge of the paper and the frame: 2.5 mm.
+const MARGIN: f32 = 10.0;
+/// Height of the strip with the column numbers at the top of the frame.
+const RING: f32 = 14.0;
 /// The title block at the bottom of the inner line: 6M.
-const STAMP_H: f32 = 6.0 * M;
+const STAMP_H: f32 = 4.0 * M;
 
 /// Size of the sheets (ISO 5457; the standard allows no extended sizes, 5.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,8 +69,7 @@ pub struct Page {
     /// of its own.
     width: f32,
     height: f32,
-    zones_x: usize,
-    zones_y: usize,
+    columns: usize,
     inner: Rect,
 }
 
@@ -84,34 +81,28 @@ impl Default for Page {
 
 impl Page {
     pub fn new(format: Format) -> Self {
-        // The inner line stands 20 mm from the left edge (binding margin) and holds whole zones.
-        let (width, height, zones_x, zones_y) = match format {
-            Format::A3 => (1680.0, 1184.0, 15, 11),
-            Format::A4 => (1188.0, 838.0, 10, 7),
+        // The frame stands 5 mm from the edges and is divided into columns only: 8 on A4 (36 mm
+        // each), 12 on A3 (34 mm).
+        let (width, height, columns) = match format {
+            Format::A3 => (1680.0, 1184.0, 12),
+            Format::A4 => (1188.0, 838.0, 8),
         };
-        let (w, h) = (zones_x as f32 * ZONE, zones_y as f32 * ZONE);
         Self {
             format,
             width,
             height,
-            zones_x,
-            zones_y,
+            columns,
             inner: Rect {
-                x: 80.0,
-                y: ((height - h) / 2.0 / M).round() * M,
-                w,
-                h,
+                x: MARGIN,
+                y: MARGIN,
+                w: width - 2.0 * MARGIN,
+                h: height - 2.0 * MARGIN,
             },
         }
     }
 
-    fn outer(&self) -> Rect {
-        Rect {
-            x: self.inner.x - RING,
-            y: self.inner.y - RING,
-            w: self.inner.w + 2.0 * RING,
-            h: self.inner.h + 2.0 * RING,
-        }
+    fn column_width(&self) -> f32 {
+        self.inner.w / self.columns as f32
     }
 
     /// Free area of a sheet inside the inner line, above the title block: one module from the
@@ -125,41 +116,34 @@ impl Page {
     }
 
     pub fn y0(&self) -> f32 {
-        self.inner.y + M
+        self.inner.y + RING + M
     }
 
     pub fn y1(&self) -> f32 {
         self.inner.y + self.inner.h - STAMP_H - M
     }
 
-    /// Zone of a point of the sheet: `C5` is the third row from the top and the fifth column from
-    /// the left. Points outside the inner line are put in the nearest zone.
-    pub fn zone(&self, x: f32, y: f32) -> String {
-        let col = ((x - self.inner.x) / ZONE).floor();
-        let row = ((y - self.inner.y) / ZONE).floor();
-        let col = (col.max(0.0) as usize).min(self.zones_x - 1);
-        let row = (row.max(0.0) as usize).min(self.zones_y - 1);
-        format!("{}{}", ROW_LETTERS[row] as char, col + 1)
+    /// Zone of a point of the sheet: the number of its column from the left (`3`). Points outside
+    /// the frame are put in the nearest column.
+    pub fn zone(&self, x: f32, _y: f32) -> String {
+        let col = ((x - self.inner.x) / self.column_width()).floor();
+        let col = (col.max(0.0) as usize).min(self.columns - 1);
+        (col + 1).to_string()
     }
 
-    /// The rectangle `(x, y, w, h)` of a zone such as `C5`; `None` for a name the page does not
-    /// have.
+    /// The rectangle `(x, y, w, h)` of a column, over the whole height of the frame; `None` for a
+    /// name the page does not have.
     pub fn zone_rect(&self, zone: &str) -> Option<(f32, f32, f32, f32)> {
-        let mut chars = zone.chars();
-        let letter = chars.next()?.to_ascii_uppercase();
-        let row = ROW_LETTERS
-            .iter()
-            .take(self.zones_y)
-            .position(|&l| l as char == letter)?;
-        let col: usize = chars.as_str().parse().ok()?;
-        if col == 0 || col > self.zones_x {
+        let col: usize = zone.parse().ok()?;
+        if col == 0 || col > self.columns {
             return None;
         }
+        let w = self.column_width();
         Some((
-            self.inner.x + (col - 1) as f32 * ZONE,
-            self.inner.y + row as f32 * ZONE,
-            ZONE,
-            ZONE,
+            self.inner.x + (col - 1) as f32 * w,
+            self.inner.y,
+            w,
+            self.inner.h,
         ))
     }
 
@@ -178,13 +162,20 @@ pub struct Sheet {
     pub body: String,
     /// The same drawing as operations, for the editor.
     pub ops: Vec<Op>,
+    /// The symbols and the wires of the sheet and the operations they are drawn with.
+    pub items: Vec<crate::scene::Item>,
 }
 
 impl Sheet {
     /// A sheet with the drawing of `canvas`.
     pub fn new(title: String, canvas: Canvas) -> Self {
-        let (body, ops) = canvas.into_parts();
-        Self { title, body, ops }
+        let (body, ops, items) = canvas.into_scene();
+        Self {
+            title,
+            body,
+            ops,
+            items,
+        }
     }
 }
 
@@ -224,10 +215,48 @@ pub fn typst_source(doc: &Document, lang: Lang) -> String {
             out,
             "#box(width: {w} * u, height: {h} * u, {{\n{}{}}})\n",
             c.finish(),
-            sheet.body
+            link_refs(&sheet.body, page, (i + 1, total))
         );
     }
     out
+}
+
+/// The captions of the references (`/3.C4`) of a sheet become links to the zone of the sheet they
+/// name, so that a click in the PDF goes there. `current` is the number of the sheet and the
+/// number of sheets; a reference to a sheet that is not there stays plain text.
+fn link_refs(body: &str, page: &Page, (current, total): (usize, usize)) -> String {
+    let mut out = String::with_capacity(body.len());
+    for line in body.lines() {
+        out.push_str(&link_line(line, page, (current, total)).unwrap_or_else(|| line.to_owned()));
+        out.push('\n');
+    }
+    out
+}
+
+/// The line of a text call with its last argument, the caption, made a link; `None` if the line
+/// is not a text call with a reference.
+fn link_line(line: &str, page: &Page, (current, total): (usize, usize)) -> Option<String> {
+    if !(line.starts_with("T(") || line.starts_with("TB(") || line.starts_with("TV(")) {
+        return None;
+    }
+    let inner = line.strip_suffix(')')?;
+    let end = inner.strip_suffix('"')?.len();
+    // The opening quote of the caption: the last one that is not escaped.
+    let bytes = inner.as_bytes();
+    let start = (0..end)
+        .rev()
+        .find(|&i| bytes[i] == b'"' && (i == 0 || bytes[i - 1] != b'\\'))?;
+    let (sheet, zone) = crate::xref::find_ref(&inner[start + 1..end])?;
+    let target = sheet.unwrap_or(current);
+    if target == 0 || target > total {
+        return None;
+    }
+    let (x, y, _, _) = page.zone_rect(&zone)?;
+    Some(format!(
+        "{}link((page: {target}, x: {x:.1} * u, y: {y:.1} * u), {}))",
+        &inner[..start],
+        &inner[start..]
+    ))
 }
 
 impl Document {
@@ -260,33 +289,28 @@ fn frame(
     lang: Lang,
 ) {
     let page = &doc.page;
-    let (outer, inner) = (page.outer(), page.inner);
-    c.rect(outer.x, outer.y, outer.w, outer.h, THIN, INK);
+    let inner = page.inner;
     c.rect(inner.x, inner.y, inner.w, inner.h, THICK, INK);
 
-    // Zones: the numbers at the top and the bottom, the letters at the sides.
+    // Columns: the numbers in a strip at the top of the frame.
     let (right, bottom) = (inner.x + inner.w, inner.y + inner.h);
-    for i in 0..page.zones_x {
-        let x = inner.x + i as f32 * ZONE;
+    let strip = inner.y + RING;
+    c.line(&[(inner.x, strip), (right, strip)], THIN, INK);
+    let step = page.column_width();
+    for i in 0..page.columns {
+        let x = inner.x + i as f32 * step;
         if i > 0 {
-            c.line(&[(x, outer.y), (x, inner.y)], THIN, INK);
-            c.line(&[(x, bottom), (x, outer.y + outer.h)], THIN, INK);
+            c.line(&[(x, inner.y), (x, strip)], THIN, INK);
         }
         let label = (i + 1).to_string();
-        let mid = x + ZONE / 2.0;
-        c.text(mid, outer.y + RING / 2.0, &label, TEXT, Align::Center, INK);
-        c.text(mid, bottom + RING / 2.0, &label, TEXT, Align::Center, INK);
-    }
-    for (j, letter) in ROW_LETTERS.iter().take(page.zones_y).enumerate() {
-        let y = inner.y + j as f32 * ZONE;
-        if j > 0 {
-            c.line(&[(outer.x, y), (inner.x, y)], THIN, INK);
-            c.line(&[(right, y), (outer.x + outer.w, y)], THIN, INK);
-        }
-        let label = (*letter as char).to_string();
-        let mid = y + ZONE / 2.0;
-        c.text(outer.x + RING / 2.0, mid, &label, TEXT, Align::Center, INK);
-        c.text(right + RING / 2.0, mid, &label, TEXT, Align::Center, INK);
+        c.text(
+            x + step / 2.0,
+            inner.y + RING / 2.0,
+            &label,
+            TEXT_S,
+            Align::Center,
+            INK,
+        );
     }
 
     // The title block: project, caption, format and number of the sheet.
@@ -319,8 +343,8 @@ fn frame(
         ),
     ];
     for (x, caption, value) in &cells {
-        c.text(*x, top + 15.0, caption, TEXT, Align::Left, WEAK);
-        c.bold(*x, top + 40.0, value, TEXT_L, Align::Left, INK);
+        c.text(*x, top + 10.0, caption, TEXT_S, Align::Left, WEAK);
+        c.bold(*x, top + 26.0, value, TEXT, Align::Left, INK);
     }
 }
 
@@ -329,53 +353,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zones_are_numbered_across_and_lettered_down() {
-        let p = Page::new(Format::A3);
-        let i = p.inner;
-        assert_eq!(p.zone(i.x + 1.0, i.y + 1.0), "A1");
-        assert_eq!(p.zone(i.x + i.w - 1.0, i.y + i.h - 1.0), "L15");
-        assert_eq!(p.zone(i.x + i.w / 2.0 + 1.0, i.y + i.h / 2.0 + 1.0), "F8");
-        // Outside the inner line: the nearest zone.
-        assert_eq!(p.zone(0.0, 0.0), "A1");
-        assert_eq!(p.zone(5000.0, 5000.0), "L15");
-        assert_eq!(Page::new(Format::A4).zone(5000.0, 5000.0), "G10");
+    fn zones_are_numbered_by_column() {
+        for (format, last) in [(Format::A3, "12"), (Format::A4, "8")] {
+            let p = Page::new(format);
+            let i = p.inner;
+            assert_eq!(p.zone(i.x + 1.0, i.y + 1.0), "1");
+            assert_eq!(p.zone(i.x + i.w - 1.0, i.y + i.h - 1.0), last);
+            // Outside the frame: the nearest column; the row does not matter.
+            assert_eq!(p.zone(0.0, 0.0), "1");
+            assert_eq!(p.zone(5000.0, 5000.0), last);
+            assert_eq!(p.zone(i.x + 1.0, i.y + i.h - 1.0), "1");
+        }
     }
 
     #[test]
     fn a_zone_has_a_rectangle_that_contains_its_points() {
         for format in [Format::A3, Format::A4] {
             let p = Page::new(format);
-            for name in ["A1", "C5", "G10"] {
+            for name in ["1", "3", "8"] {
                 let (x, y, w, h) = p.zone_rect(name).unwrap();
                 assert_eq!(p.zone(x + 1.0, y + 1.0), name);
                 assert_eq!(p.zone(x + w - 1.0, y + h - 1.0), name);
             }
         }
         let p = Page::new(Format::A4);
-        assert!(p.zone_rect("L1").is_none() && p.zone_rect("I3").is_none());
-        assert!(p.zone_rect("A0").is_none() && p.zone_rect("A11").is_none());
-        assert!(p.zone_rect("").is_none() && p.zone_rect("5C").is_none());
+        assert!(p.zone_rect("9").is_none() && p.zone_rect("0").is_none());
+        assert!(p.zone_rect("").is_none() && p.zone_rect("C3").is_none());
+        assert!(Page::new(Format::A3).zone_rect("12").is_some());
     }
 
     #[test]
-    fn grid_follows_the_standard() {
-        // 5.7.3.4: the step of the coordinate grid is 10M, 16M or 20M; here 10M = 25 mm.
-        assert_eq!(ZONE, 10.0 * M);
-        assert_eq!(ZONE * 0.25, 25.0);
-        // The rows are lettered without I and O.
-        assert!(!ROW_LETTERS.contains(&b'I') && !ROW_LETTERS.contains(&b'O'));
-        for format in [Format::A3, Format::A4] {
+    fn frame_has_minimal_margins_and_columns_of_the_sample() {
+        for (format, columns, mm) in [(Format::A3, 12, 34.0), (Format::A4, 8, 36.0)] {
             let p = Page::new(format);
-            assert!(p.zones_y <= ROW_LETTERS.len());
-            // The zones tile the inner line exactly.
-            assert_eq!(p.inner.w, p.zones_x as f32 * ZONE);
-            assert_eq!(p.inner.h, p.zones_y as f32 * ZONE);
-            // The frame lies on the sheet, the inner line starts on the grid of the module.
-            let o = p.outer();
-            assert!(o.x >= 0.0 && o.y >= 0.0);
-            assert!(o.x + o.w < p.width && o.y + o.h < p.height);
-            assert_eq!(p.inner.x % M, 0.0);
-            assert_eq!(p.inner.y % M, 0.0);
+            assert_eq!(p.inner.x * 0.25, 2.5);
+            assert_eq!(p.inner.y * 0.25, 2.5);
+            assert_eq!(p.width - (p.inner.x + p.inner.w), MARGIN);
+            assert_eq!(p.height - (p.inner.y + p.inner.h), MARGIN);
+            assert_eq!(p.columns, columns);
+            assert!((p.column_width() * 0.25 - mm).abs() < 0.6);
         }
         // 5.7.3.2: M = 2.5 mm.
         assert_eq!(M * 0.25, 2.5);
