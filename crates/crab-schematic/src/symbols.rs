@@ -12,6 +12,7 @@ use crab_core::{part_key, ContactForm, Device, DeviceKind, Supply};
 use crate::canvas::{
     Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_L, TEXT_M, TEXT_S, THICK, THIN, WEAK,
 };
+use crate::control::ContactTable;
 use crate::lang::Lang;
 use crate::nets::BOARD;
 use crate::scene::{Dir, ItemKind, Port};
@@ -506,17 +507,29 @@ pub struct Field {
 /// Room a device of the control sheet takes to each side of its terminal: the column pitch.
 pub const FIELD_PITCH: f32 = 120.0;
 
-/// Height of a line of the contact table under a coil.
-pub(crate) const TABLE_LINE_H: f32 = 13.0;
+/// Pitch of the rows of the contact table under a coil.
+pub(crate) const TABLE_LINE_H: f32 = 14.0;
+/// Half the distance between the two terminals of a contact of the table (their dots).
+const TABLE_HALF_W: f32 = 16.0;
+/// Distance from a terminal dot of a contact of the table to the number of the terminal.
+const TABLE_NUM_DX: f32 = 4.0;
+/// The reference of a contact row (`/2.2`) is right-aligned this far left of the centre.
+const TABLE_REF_DX: f32 = 40.0;
+/// Height of a blade of the table: from the near terminal up to the tip.
+const TABLE_BLADE_H: f32 = 7.0;
+/// How far the tip of a blade stops short of the far terminal.
+const TABLE_TIP_GAP: f32 = 8.0;
+/// Length of the hook of a normally closed contact of the table, from the tip of the blade.
+const TABLE_HOOK_W: f32 = 6.0;
 
 /// Draws a coil, a sensor or a button on the control sheet, its top terminal at `(x, top)`.
-/// `contacts` is the table of the contacts of a coil, one line each (`control::contact_table`);
-/// it is drawn under the coil. Kinds without a place on the control sheet draw nothing.
+/// `contacts` is the table of the contacts of a coil (`control::contact_table`); it is drawn under
+/// the coil. Kinds without a place on the control sheet draw nothing.
 pub fn draw_field_device(
     c: &mut Canvas,
     device: &Device,
     (x, top): (f32, f32),
-    contacts: &[String],
+    contacts: &ContactTable,
 ) -> Option<Field> {
     let name = device.designation();
     let dot = |c: &mut Canvas, x: f32, y: f32| c.circle(x, y, DOT, THIN, INK);
@@ -660,15 +673,51 @@ pub(crate) fn draw_channel(
     ((x, py), dir)
 }
 
-/// The lines of a contact table, one under another from `(x, y)`, right of the wire at `x`.
-pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, lines: &[String]) {
-    for (i, line) in lines.iter().enumerate() {
+/// The contact table under a coil, one row per contact, centred on `x` from `y` down: each contact
+/// is a pair of terminal numbers with the contact between them. A normally open contact has its
+/// blade rising from the near terminal and stopping short of the far one; a normally closed one
+/// has the blade resting on a hook that runs to the far terminal. The dashed line through the
+/// blades links the rows (the poles of the device and its auxiliary contacts). The reference of
+/// a row (where the contact is drawn) stands at its left; `+N` ends the table when rows are left out.
+pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
+    let rows = &table.rows;
+    let centre = |i: usize| y + (i as f32 + 0.5) * TABLE_LINE_H;
+    if rows.len() >= 2 {
+        let last = centre(rows.len() - 1);
+        c.dashed(&[(x, centre(0)), (x, last)], THIN, INK);
+    }
+    let (near_x, far_x) = (x - TABLE_HALF_W, x + TABLE_HALF_W);
+    for (i, row) in rows.iter().enumerate() {
+        let cy = centre(i);
+        if let Some(at) = &row.at {
+            c.text(x - TABLE_REF_DX, cy, at, TEXT_S, Align::Right, INK);
+        }
         c.text(
-            x + 6.0,
-            y + i as f32 * TABLE_LINE_H,
-            line,
+            near_x - TABLE_NUM_DX,
+            cy,
+            &row.near,
             TEXT_S,
-            Align::Left,
+            Align::Right,
+            INK,
+        );
+        c.text(far_x + TABLE_NUM_DX, cy, &row.far, TEXT_S, Align::Left, INK);
+        c.circle(near_x, cy, DOT, THIN, INK);
+        c.circle(far_x, cy, DOT, THIN, INK);
+        let tip = (far_x - TABLE_TIP_GAP, cy - TABLE_BLADE_H);
+        c.line(&[(near_x, cy), tip], THIN, INK);
+        if row.closed {
+            let hook = (tip.0 + TABLE_HOOK_W, tip.1);
+            c.line(&[tip, hook, (far_x, cy)], THIN, INK);
+        }
+    }
+    if table.hidden > 0 {
+        let cy = centre(rows.len());
+        c.text(
+            x,
+            cy,
+            &format!("+{}", table.hidden),
+            TEXT_S,
+            Align::Center,
             INK,
         );
     }

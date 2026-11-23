@@ -116,10 +116,12 @@ fn the_other_sheet_names_the_place_of_the_coil_and_of_the_contacts() {
     assert!(doc.sheets[contacts.sheet - 1]
         .body
         .contains(&quoted(&coil.to_string())));
-    // Under the coil: the table of the contacts, the main ones (1-4 on a single phase) first.
+    // Under the coil: the table of the contacts, the main ones (poles 1-2 and 3-4 on a single
+    // phase) first, each with the place of the device on the power sheets.
     assert!(doc.sheets[coil.sheet - 1]
         .body
-        .contains(&quoted(&format!("1-4 {contacts}"))));
+        .contains(&quoted(&contacts.to_string())));
+    assert!(doc.sheets[coil.sheet - 1].body.contains(&quoted("4")));
 }
 
 /// The first `RO(x, y, w, h, ...)` call with this size: its middle, in sheet units.
@@ -469,10 +471,10 @@ fn the_contact_table_under_a_coil_names_the_contacts_and_their_places() {
     let before = document(&project);
     let coil_sheet = before.coil_at["K1"].sheet;
     let body = &before.sheets[coil_sheet - 1].body;
-    assert!(body.contains(&quoted(&format!("1-4 {}", before.power_at["K1"]))));
+    assert!(body.contains(&quoted(&before.power_at["K1"].to_string())));
     let aux = before.coil_at["K1_1"].clone();
-    assert!(body.contains(&quoted(&format!("13-14 {aux}"))));
-    // The auxiliary contact is moved along the sheet: its line in the table follows it.
+    assert!(body.contains(&quoted(&aux.to_string())));
+    // The auxiliary contact is moved along the sheet: its reference in the table follows it.
     project
         .panel_layout
         .set_shift(&crab_core::symbol_key("control", "K1_1"), 400.0, 0.0);
@@ -480,7 +482,7 @@ fn the_contact_table_under_a_coil_names_the_contacts_and_their_places() {
     assert_ne!(after.coil_at["K1_1"].zone, aux.zone);
     assert!(after.sheets[coil_sheet - 1]
         .body
-        .contains(&quoted(&format!("13-14 {}", after.coil_at["K1_1"]))));
+        .contains(&quoted(&after.coil_at["K1_1"].to_string())));
 }
 
 /// An auxiliary contact put on the control sheet by hand is named in the table under the coil
@@ -498,13 +500,13 @@ fn a_contact_put_by_hand_is_named_in_the_table_under_the_coil() {
     let coil_sheet = before.coil_at["K1"].sheet;
     assert!(before.sheets[coil_sheet - 1]
         .body
-        .contains(&quoted(&format!("13-14 {aux}"))));
+        .contains(&quoted(&aux.to_string())));
     project.panel_layout.place("K1_1", at, 900.0, 200.0);
     let after = document(&project);
     assert_ne!(after.coil_at["K1_1"].zone, aux.zone);
     assert!(after.sheets[coil_sheet - 1]
         .body
-        .contains(&quoted(&format!("13-14 {}", after.coil_at["K1_1"]))));
+        .contains(&quoted(&after.coil_at["K1_1"].to_string())));
 }
 
 /// A coil put by hand for a contactor that the generator draws on the control sheet gives way:
@@ -570,19 +572,46 @@ fn call_numbers(line: &str) -> Vec<f32> {
         .collect()
 }
 
-/// The heights of the lines of the contact table: the texts `1-4 ...`, `13-14 ...` on the sheet.
-fn table_ys(body: &str) -> Vec<f32> {
-    body.lines()
-        .filter(|l| l.starts_with("T("))
-        .filter_map(|l| {
-            let text = l
-                .rsplit_once(", \"")?
-                .1
-                .trim_end_matches(')')
-                .trim_end_matches('"');
-            let table_like = text.starts_with(|c: char| c.is_ascii_digit()) && text.contains('-');
-            table_like.then(|| call_numbers(l)[1])
+/// The texts of the control sheet of a document with their places (`x`, `y`).
+fn control_texts(doc: &Document) -> Vec<(f32, f32, String)> {
+    let sheet = doc
+        .sheets
+        .iter()
+        .find(|s| matches!(s.id, Some(SheetId::Control(_))))
+        .expect("лист управления");
+    sheet
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+            _ => None,
         })
+        .collect()
+}
+
+/// The texts of the contact table under the coil of `device`: the terminal numbers, the
+/// references (`/2.2`) and `+N`, below the `0V` rail and within the width of the table. The
+/// captions of the columns stand in the same place and are left out.
+fn table_texts(doc: &Document, device: &str) -> Vec<(f32, f32, String)> {
+    let (_, zero) = rails(control_body(doc));
+    let (x, _) = symbol_origin(doc, "control", device).expect("катушка");
+    control_texts(doc)
+        .into_iter()
+        .filter(|(tx, ty, text)| {
+            let table_text = text.starts_with('/')
+                || text.starts_with('+')
+                || (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()));
+            table_text && *ty > zero && (x - 70.0..=x + 40.0).contains(tx)
+        })
+        .collect()
+}
+
+/// The terminal numbers of a table (texts of digits only).
+fn numbers_of(texts: &[(f32, f32, String)]) -> Vec<&str> {
+    texts
+        .iter()
+        .map(|(_, _, t)| t.as_str())
+        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
         .collect()
 }
 
@@ -858,16 +887,18 @@ fn a_hand_wire_from_a_terminal_joins_its_channel() {
 }
 
 /// The contact table under a coil sits under the `0V` rail, above the captions of the columns.
-/// A coil with six auxiliary contacts has seven lines.
+/// A coil with six auxiliary contacts has eight rows: two poles and six contacts, two terminal
+/// numbers each.
 #[test]
 fn a_contact_table_sits_under_the_zero_rail_above_the_captions() {
     let doc = document(&pump(&coil_panel(6)));
     let body = control_body(&doc);
     let (_, zero) = rails(body);
-    let lines = table_ys(body);
-    assert_eq!(lines.len(), 7, "строки таблицы: {lines:?}");
-    let first = lines.iter().copied().fold(f32::MAX, f32::min);
-    let last = lines.iter().copied().fold(f32::MIN, f32::max);
+    let texts = table_texts(&doc, "K1");
+    assert_eq!(numbers_of(&texts).len(), 16, "таблица: {texts:?}");
+    let ys: Vec<f32> = texts.iter().map(|(_, y, _)| *y).collect();
+    let first = ys.iter().copied().fold(f32::MAX, f32::min);
+    let last = ys.iter().copied().fold(f32::MIN, f32::max);
     assert!(first > zero, "таблица на {first}, над 0V {zero}");
     // The captions stand 30 above the bottom of the body, 12 high.
     assert!(
@@ -1033,15 +1064,75 @@ fn series_contacts_fit_between_the_channel_and_the_coil() {
 #[test]
 fn a_long_contact_table_ends_with_the_number_of_lines_not_shown() {
     let doc = document(&pump(&coil_panel(9)));
-    let body = control_body(&doc);
-    // The pole line and nine contacts: ten lines, seven shown and `+3`.
-    assert_eq!(
-        table_ys(body).len(),
-        7,
-        "строки таблицы: {:?}",
-        table_ys(body)
+    // Two pole rows and nine contacts: eleven rows, seven shown and `+4`.
+    let texts = table_texts(&doc, "K1");
+    assert_eq!(numbers_of(&texts).len(), 14, "таблица: {texts:?}");
+    assert!(
+        texts.iter().any(|(_, _, t)| t == "+4"),
+        "нет строки «+4»: {texts:?}"
     );
-    assert!(body.contains(&quoted("+3")), "нет строки «+3»");
+}
+
+/// Each contact of the table under a coil is drawn: the two main poles (`1`-`2`, `3`-`4`) with
+/// the place of the device, the normally open `13`-`14` and the normally closed `21`-`22` with
+/// its place, one blade each and a hook for the closed one, and the dashed line that links the
+/// rows through the blades.
+#[test]
+fn a_contact_table_draws_each_contact() {
+    let panel = format!(
+        "{PUMP_PANEL}\n[[device]]\nid = \"K1_1\"\nkind = \"aux\"\nof = \"K1\"\nseries = \"K1\"\n\
+         [[device]]\nid = \"K1_2\"\nkind = \"aux\"\nof = \"K1\"\nseries = \"K1\"\nform = \"nc\"\n"
+    );
+    let doc = document(&pump(&panel));
+    let texts = table_texts(&doc, "K1");
+    let has = |t: &str| texts.iter().any(|(_, _, s)| s == t);
+    for number in ["1", "2", "3", "4", "13", "14", "21", "22"] {
+        assert!(has(number), "нет номера «{number}»: {texts:?}");
+    }
+    assert!(has(&doc.power_at["K1"].to_string()), "нет места полюсов");
+    assert!(has(&doc.coil_at["K1_1"].to_string()), "нет места K1_1");
+    assert!(has(&doc.coil_at["K1_2"].to_string()), "нет места K1_2");
+
+    // The lines of the table: a blade per row (two lines), the hook of the closed contact (a
+    // polyline of three points), and one dashed line through the blades at the middle of the table.
+    let (x, _) = symbol_origin(&doc, "control", "K1").expect("катушка");
+    let (_, zero) = rails(control_body(&doc));
+    let sheet = doc
+        .sheets
+        .iter()
+        .find(|s| matches!(s.id, Some(SheetId::Control(_))))
+        .expect("лист управления");
+    let mut blades = 0;
+    let mut hooks = 0;
+    let mut dashed = Vec::new();
+    for op in &sheet.ops {
+        if let Op::Line {
+            points,
+            dashed: is_dashed,
+            ..
+        } = op
+        {
+            let below = points
+                .iter()
+                .all(|(px, py)| *py > zero && (x - 70.0..=x + 40.0).contains(px));
+            if !below {
+                continue;
+            }
+            match (is_dashed, points.len()) {
+                (true, _) => dashed.push(points.clone()),
+                (false, 2) => blades += 1,
+                (false, 3) => hooks += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(blades, 4, "лезвия: {blades}");
+    assert_eq!(hooks, 1, "крючки замкнутых контактов: {hooks}");
+    assert_eq!(dashed.len(), 1, "пунктирная связь: {dashed:?}");
+    assert!(
+        dashed[0].iter().all(|(px, _)| (px - x).abs() < 0.01),
+        "связь не по оси катушки: {dashed:?}"
+    );
 }
 
 /// The note under the `0V` rail is not over the table of the first column: its text range and the
@@ -1076,7 +1167,9 @@ fn the_supply_note_does_not_cover_the_first_table() {
         {
             if text.starts_with("Питание") || text.starts_with("-G1") {
                 note.push(boxed(*x, text, *size, *align));
-            } else if text.starts_with(|c: char| c.is_ascii_digit()) && text.contains('-') {
+            } else if (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()))
+                || text.starts_with('/')
+            {
                 table.push(boxed(*x, text, *size, *align));
             }
         }

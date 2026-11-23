@@ -9,10 +9,11 @@
 
 use std::collections::HashMap;
 
+use crab_core::panel_layout::label_key;
 use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, SheetId};
 
 use crate::bus::{self, Elsewhere};
-use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, THICK, WEAK};
+use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_S, THICK, WEAK};
 use crate::control::{draw_hand, Hand, Pins, Refs};
 use crate::doc::{Page, Sheet};
 use crate::error::Error;
@@ -46,6 +47,15 @@ const INPUT_PITCH: f32 = 100.0;
 const INPUT_GAP: f32 = 30.0;
 /// Contact height of the devices across the lines (`symbols::CONTACT_H`).
 const INPUT_H: f32 = 50.0;
+/// The last line of a column caption stands this far above the bottom of the body (as on the
+/// control sheets).
+const CAPTION_DY: f32 = 30.0;
+/// Pitch of the lines of a column caption.
+const CAPTION_LINE_H: f32 = 14.0;
+/// Longest text of a column caption on one line; a longer one is wrapped to two lines.
+const CAPTION_CHARS: usize = 14;
+/// The most lines a column caption takes.
+const CAPTION_MAX_LINES: usize = 3;
 
 /// Name of the bus of the conductor `k`: after the standard (7.4.5) the mains are `L1`, `L2`, `L3`,
 /// `N` and the direct-current ones `L+`, `M`.
@@ -819,6 +829,9 @@ pub fn power_sheets(
             c.end();
         }
 
+        // The captions under the columns that end in a load.
+        draw_captions(&mut c, &placed, &geos, &next_of, page);
+
         // The devices put on the sheet by hand, and the wires drawn by hand between them.
         let mut pins = Pins::new();
         let view = Hand {
@@ -853,6 +866,89 @@ pub fn power_sheets(
         sheets.push(Sheet::new(Some(id), caption, c));
     }
     Ok((sheets, places, hand))
+}
+
+/// The captions under the columns of a sheet that end in a load (motor, load, power supply): the
+/// designation of the load and its rating, centred under the column. A column without a load
+/// (a branch ending in a terminal, or a chain cut to the next sheet) has none.
+fn draw_captions(
+    c: &mut Canvas,
+    placed: &[(&Device, Slot)],
+    geos: &HashMap<&str, Geometry>,
+    next_of: &HashMap<&str, &Device>,
+    page: &Page,
+) {
+    let last = page.y1() - CAPTION_DY;
+    for &(d, s) in placed {
+        let is_load = matches!(
+            d.kind,
+            DeviceKind::Motor | DeviceKind::Load | DeviceKind::Psu
+        );
+        // The load must end its column: the lowest device there, with nothing fed from it.
+        let lowest = placed
+            .iter()
+            .all(|(_, o)| o.input || o.page != s.page || o.col != s.col || o.row <= s.row);
+        if s.input || !is_load || !lowest || next_of.contains_key(d.id.as_str()) {
+            continue;
+        }
+        let Some(geo) = geos.get(d.id.as_str()) else {
+            continue;
+        };
+        let (Some(&first), Some(&end)) = (geo.poles.first(), geo.poles.last()) else {
+            continue;
+        };
+        let centre = (first + end) / 2.0;
+        let mut lines = caption_lines(&d.designation());
+        let rating = d.rating.trim();
+        if !rating.is_empty() {
+            lines.extend(caption_lines(rating));
+        }
+        // At most three lines keep the caption clear of the drawing above it.
+        if lines.len() > CAPTION_MAX_LINES {
+            lines.truncate(CAPTION_MAX_LINES);
+            if let Some(tail) = lines.last_mut() {
+                tail.push('…');
+            }
+        }
+        c.begin_label(&label_key(&d.id, "column"));
+        let n = lines.len();
+        for (i, line) in lines.iter().enumerate() {
+            let y = last - n.saturating_sub(1).saturating_sub(i) as f32 * CAPTION_LINE_H;
+            c.text(centre, y, line, TEXT_S, Align::Center, INK);
+        }
+        c.end_label();
+    }
+}
+
+/// The lines of a caption: the text, wrapped at the last space that fits when it is longer than
+/// `CAPTION_CHARS`; a second line that is still too long ends with an ellipsis.
+fn caption_lines(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= CAPTION_CHARS {
+        return vec![text.to_owned()];
+    }
+    let cut = chars
+        .iter()
+        .take(CAPTION_CHARS + 1)
+        .rposition(|c| *c == ' ')
+        .filter(|&i| i > 0)
+        .unwrap_or(CAPTION_CHARS);
+    let first: String = chars
+        .iter()
+        .take(cut)
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    let mut second: String = chars
+        .iter()
+        .skip(cut)
+        .collect::<String>()
+        .trim_start()
+        .to_owned();
+    if second.chars().count() > CAPTION_CHARS {
+        second = second.chars().take(CAPTION_CHARS - 1).collect::<String>() + "…";
+    }
+    vec![first, second]
 }
 
 /// The chain that starts with `first`: each device feeds the next one.

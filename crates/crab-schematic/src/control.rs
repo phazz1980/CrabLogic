@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 
 use crab_core::panel_layout::label_key;
 use crab_core::{
-    part_key, split_part, symbol_key, Device, DeviceKind, Panel, PanelLayout, Project, SheetId,
-    COIL, MAX_SHEETS,
+    part_key, split_part, symbol_key, ContactForm, Device, DeviceKind, Panel, PanelLayout, Project,
+    SheetId, COIL, MAX_SHEETS,
 };
 
 use crate::bus::{self, Elsewhere, TAIL};
@@ -44,7 +44,7 @@ const PLUS_RAIL_DY: f32 = 60.0;
 const RAIL_DX: f32 = 50.0;
 /// The `0V` rail stands this far above the bottom of the body: room under it for the contact
 /// tables and for the captions of the columns.
-const ZERO_RAIL_DY: f32 = 170.0;
+const ZERO_RAIL_DY: f32 = 180.0;
 /// The top of an output channel stands this far under the `+24V` rail; it is not joined to it.
 const OUT_CHANNEL_DY: f32 = 30.0;
 /// The top of an input channel stands this far above the `0V` rail; it is not joined to it.
@@ -57,6 +57,9 @@ const COIL_H: f32 = 50.0;
 const COIL_FOOT: f32 = 20.0;
 /// The contact table under a coil starts this far under the `0V` rail.
 const TABLE_DY: f32 = 16.0;
+/// The table of a coil reaches this far left of the coil: the references of its rows (`/12.3`)
+/// stand left of the contacts.
+const TABLE_LEFT_ROOM: f32 = 84.0;
 /// Distance between the contacts that stand in series with a coil, above it (at most; fewer
 /// contacts take less room, more of them are packed closer, see `series_step`).
 const SERIES_STEP: f32 = 80.0;
@@ -76,7 +79,8 @@ const HAND_LEFT: f32 = 10.0;
 const HAND_TOP: f32 = 30.0;
 const HAND_RIGHT_ROOM: f32 = 80.0;
 const HAND_BOTTOM_ROOM: f32 = 60.0;
-/// The most lines of a contact table under a coil; the last one is `+N` when there are more.
+/// The most rows of a contact table under a coil; the last line is `+N` when there are more (the
+/// rows shown are one less).
 const MAX_TABLE_LINES: usize = 8;
 /// The note under the `0V` rail stands this far under the rail, its lines this far apart.
 const NOTE_DY: f32 = 18.0;
@@ -359,49 +363,75 @@ pub(crate) fn draw_links(c: &mut Canvas, panel: &Panel, nets: &Nets, pins: &Pins
     }
 }
 
-/// The table of the contacts under the coil of `device`, one line each, in the order of the panel:
-/// the main contacts with their terminals (`1-4 /2.3`, where the device stands on the power
-/// sheets), then every auxiliary contact with its terminals (`13-14 /3.1`, where it is drawn).
-/// A reference is left out where the contact is not drawn. Empty for a device without a coil.
+/// One contact of the table under a coil: its two terminals, whether it is normally closed, and
+/// the reference of the sheet where it is drawn (`/2.2`), if it is drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContactRow {
+    pub near: String,
+    pub far: String,
+    pub closed: bool,
+    pub at: Option<String>,
+}
+
+/// The table of the contacts under a coil: the rows, and how many contacts are not shown.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ContactTable {
+    pub rows: Vec<ContactRow>,
+    pub hidden: usize,
+}
+
+/// The table of the contacts under the coil of `device`, one row per contact, in the order of the
+/// panel: the main contacts, one row per pole (`1`-`2`, `3`-`4`), where the device stands on the
+/// power sheets, then every auxiliary contact with its terminals (`13`-`14`, `21`-`22` closed),
+/// where it is drawn. A reference is left out where the contact is not drawn. Empty for a device
+/// without a coil.
 pub(crate) fn contact_table(
     panel: &Panel,
     device: &Device,
     power: &Xrefs,
     coils: &Xrefs,
-) -> Vec<String> {
+) -> ContactTable {
     if !matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay) {
-        return Vec::new();
+        return ContactTable::default();
     }
-    let mut lines = Vec::new();
     let poles: Vec<String> = terminals_of(panel, device)
         .into_iter()
         .filter(|t| t != "A1" && t != "A2")
         .collect();
-    if let (Some(first), Some(last)) = (poles.first(), poles.last()) {
-        let at = power
-            .get(&device.id)
-            .map_or_else(String::new, |at| format!(" {at}"));
-        lines.push(format!("{first}-{last}{at}"));
-    }
+    let pole_at = power.get(&device.id).map(|at| at.to_string());
+    let mut rows: Vec<ContactRow> = poles
+        .chunks(2)
+        .filter_map(|pair| match pair {
+            [near, far] => Some(ContactRow {
+                near: near.clone(),
+                far: far.clone(),
+                closed: false,
+                at: pole_at.clone(),
+            }),
+            _ => None,
+        })
+        .collect();
     for aux in panel.aux_of(&device.id) {
         let (near, far) = aux_terminals(panel, aux);
-        let at = coils
-            .get(&aux.id)
-            .map_or_else(String::new, |at| format!(" {at}"));
-        lines.push(format!("{near}-{far}{at}"));
+        rows.push(ContactRow {
+            near,
+            far,
+            closed: aux.form == ContactForm::Nc,
+            at: coils.get(&aux.id).map(|at| at.to_string()),
+        });
     }
-    limit_table(lines)
+    limit_table(rows)
 }
 
-/// The lines of a contact table, at most `MAX_TABLE_LINES`: when there are more, the last line is
-/// `+N`, the number of the lines not shown.
-fn limit_table(mut lines: Vec<String>) -> Vec<String> {
-    if lines.len() > MAX_TABLE_LINES {
-        let hidden = lines.len() - (MAX_TABLE_LINES - 1);
-        lines.truncate(MAX_TABLE_LINES - 1);
-        lines.push(format!("+{hidden}"));
+/// Keeps the table within `MAX_TABLE_LINES` lines: when there are more rows, the first
+/// `MAX_TABLE_LINES - 1` are kept and `hidden` counts the rest (drawn as the `+N` line).
+fn limit_table(mut rows: Vec<ContactRow>) -> ContactTable {
+    let mut hidden = 0;
+    if rows.len() > MAX_TABLE_LINES {
+        hidden = rows.len() - (MAX_TABLE_LINES - 1);
+        rows.truncate(MAX_TABLE_LINES - 1);
     }
-    lines
+    ContactTable { rows, hidden }
 }
 
 /// The place of a hand-placed part that the other sheets refer to, with the name it is kept under:
@@ -434,7 +464,7 @@ pub(crate) fn draw_coil(
     device: &Device,
     key: &str,
     (x, top): (f32, f32),
-    table: &[String],
+    table: &ContactTable,
     pins: &mut Pins,
 ) {
     let item = c.begin(ItemKind::Symbol {
@@ -722,7 +752,7 @@ fn supply_line(
 }
 
 /// Where the note under the `0V` rail stands and how it is aligned: at the left of the body when
-/// its text ends before `first_x` (the coil of the first column, whose table stands under it),
+/// its text ends before `first_x` (the left edge of the table of the first column, under it),
 /// else right-aligned at the right end of the rail.
 fn note_place(page: &Page, lines: &[String], first_x: Option<f32>) -> (f32, Align) {
     let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
@@ -767,7 +797,7 @@ fn draw_output(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, p
         origin: (sx, sy),
         ports: Vec::new(),
     });
-    let field = draw_field_device(c, device, (sx, sy), &[]);
+    let field = draw_field_device(c, device, (sx, sy), &ContactTable::default());
     draw_table(c, sx, l.zero + TABLE_DY, &table);
     c.end();
     let Some(field) = field else {
@@ -912,7 +942,7 @@ fn draw_input(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, pl
                 minus: None,
             })
         }
-        _ => draw_field_device(c, device, (sx, sy), &[]),
+        _ => draw_field_device(c, device, (sx, sy), &ContactTable::default()),
     };
     c.end();
     let Some(field) = field else {
@@ -1117,10 +1147,10 @@ pub fn control_sheets(
             bus::draw(&mut c, page, y, (from, to), name, &style, prev, next);
         }
         // The note stands under the `0V` rail at the left, unless the table of the first column is
-        // there; then at the right end of the rail.
+        // there (from its left edge); then at the right end of the rail.
         let first_x = chunk
             .first()
-            .map(|row| placed(&ladder, row.device, column_x0 + PITCH / 2.0).0);
+            .map(|row| placed(&ladder, row.device, column_x0 + PITCH / 2.0).0 - TABLE_LEFT_ROOM);
         let note_at = note_place(page, &note_lines, first_x);
         for (k, line) in note_lines.iter().enumerate() {
             c.text(
@@ -1168,10 +1198,19 @@ mod tests {
 
     #[test]
     fn a_contact_table_keeps_eight_lines_and_counts_the_rest() {
-        let lines: Vec<String> = (0..10).map(|i| format!("{i}")).collect();
-        let shown = limit_table(lines.clone());
-        assert_eq!(shown.len(), MAX_TABLE_LINES);
-        assert_eq!(shown[MAX_TABLE_LINES - 1], "+3");
-        assert_eq!(limit_table(lines[..8].to_vec()).len(), 8);
+        let row = |i: usize| ContactRow {
+            near: format!("{i}1"),
+            far: format!("{i}2"),
+            closed: false,
+            at: None,
+        };
+        let rows: Vec<ContactRow> = (0..10).map(row).collect();
+        // Seven rows and the line `+3` make the eighth line.
+        let shown = limit_table(rows.clone());
+        assert_eq!(shown.rows.len(), MAX_TABLE_LINES - 1);
+        assert_eq!(shown.hidden, 3);
+        assert_eq!(shown.rows.last(), Some(&row(6)));
+        let full = limit_table(rows[..MAX_TABLE_LINES].to_vec());
+        assert_eq!((full.rows.len(), full.hidden), (MAX_TABLE_LINES, 0));
     }
 }

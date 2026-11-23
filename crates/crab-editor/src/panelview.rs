@@ -537,7 +537,15 @@ fn coil_row(
     };
     ui.horizontal(|ui| {
         ui.add_space(14.0);
-        let resp = ui.selectable_label(selected, row_label(ui, caption, None, None));
+        // The coil can be dragged onto a sheet on its own, apart from its contactor or relay.
+        let key = crab_core::part_key(&device.id, crab_core::COIL);
+        let resp = ui
+            .dnd_drag_source(
+                ui.make_persistent_id(("panel_coil", &device.id)),
+                DevicePayload(key),
+                |ui| ui.selectable_label(selected, row_label(ui, caption, None, None)),
+            )
+            .inner;
         if resp.clicked() || resp.double_clicked() {
             *action.borrow_mut() = Some(Action::SelectCoil(device.id.clone()));
         }
@@ -1692,6 +1700,33 @@ fn port_at(
     })
 }
 
+/// Why a device (or a part of one, `K1/coil`) dragged from the tree cannot be put on a sheet: the
+/// generator already draws its coil there (the device is bound to an output of the board), unless
+/// the coil was put on a sheet by hand and is drawn as a symbol of its own. `None`: it can.
+fn drop_refusal(
+    sheets: &[Sheet],
+    coil_at: &crab_schematic::Xrefs,
+    key: &str,
+) -> Option<&'static str> {
+    let (owner, part) = crab_core::split_part(key);
+    let hand_coil = crab_core::part_key(owner, crab_core::COIL);
+    let coil_by_hand = sheets.iter().any(|s| {
+        s.items
+            .iter()
+            .any(|i| i.device() == Some(hand_coil.as_str()))
+    });
+    if !coil_at.contains_key(owner) || coil_by_hand {
+        return None;
+    }
+    match part {
+        Some(crab_core::COIL) => {
+            Some("Катушка уже нарисована на листе управления: устройство привязано к выходу платы")
+        }
+        None => Some("Это устройство уже нарисовано на листе управления"),
+        Some(_) => None,
+    }
+}
+
 /// The wire drawn by hand under a point of the page: its key.
 fn link_at(sheet: &Sheet, panel: &crab_core::Panel, p: Pos2, tolerance: f32) -> Option<String> {
     sheet.items.iter().find_map(|item| {
@@ -2204,9 +2239,8 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             let at = page_at(pos);
             let id = payload.0.clone();
-            if document.coil_at.contains_key(&id) {
-                view_state.problem =
-                    Some(tr("Это устройство уже нарисовано на листе управления").to_owned());
+            if let Some(why) = drop_refusal(&document.sheets, &document.coil_at, &id) {
+                view_state.problem = Some(tr(why).to_owned());
             } else if let Some(target) = sheet.id {
                 put = Some((id, target, at.x, at.y));
             } else {
@@ -2786,6 +2820,27 @@ bind = "sensor.out"
         let (device, terminal, _) =
             port_at(&coil, &panel, Pos2::new(10.0, 10.0), 2.0).expect("a port");
         assert_eq!((device.as_str(), terminal.as_str()), ("K1", "A1"));
+    }
+
+    #[test]
+    fn a_coil_drawn_by_the_generator_cannot_be_dropped_but_a_hand_coil_moves() {
+        let mut coil_at = crab_schematic::Xrefs::new();
+        coil_at.insert(
+            "K1".to_owned(),
+            crab_schematic::Xref {
+                sheet: 3,
+                zone: "2".to_owned(),
+            },
+        );
+        // The generator draws the coil of K1: neither the coil nor the device can be dropped.
+        assert!(drop_refusal(&[], &coil_at, "K1/coil").is_some());
+        assert!(drop_refusal(&[], &coil_at, "K1").is_some());
+        // A coil already put by hand is drawn as its own symbol: it can be moved to another sheet.
+        let hand = sheet_of(Vec::new(), vec![symbol("control", "K1/coil", Vec::new())]);
+        assert!(drop_refusal(&[hand], &coil_at, "K1/coil").is_none());
+        // A device whose coil nobody draws can be dropped, and so can its coil.
+        assert!(drop_refusal(&[], &coil_at, "K2/coil").is_none());
+        assert!(drop_refusal(&[], &coil_at, "K2").is_none());
     }
 
     #[test]

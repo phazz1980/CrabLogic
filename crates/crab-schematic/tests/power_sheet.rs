@@ -1073,3 +1073,141 @@ fn a_coil_put_by_hand_on_the_power_sheet_is_the_place_of_its_contactor() {
         .title
         .starts_with("Силовая часть"));
 }
+
+/// The texts of a caption: x, y and the text of each.
+type Caption = Vec<(f32, f32, String)>;
+
+/// The caption under the column of the load `id`: its sheet (index in `doc.sheets`) and its
+/// texts with their coordinates.
+fn caption_of(doc: &crab_schematic::Document, id: &str) -> Option<(usize, Caption)> {
+    use crab_schematic::{ItemKind, Op};
+    let key = format!("label:{id}:column");
+    doc.sheets.iter().enumerate().find_map(|(i, sheet)| {
+        sheet.items.iter().find_map(|item| match &item.kind {
+            ItemKind::Label { key: k } if *k == key => {
+                let texts = item
+                    .ops
+                    .iter()
+                    .filter_map(|&o| match &sheet.ops[o] {
+                        Op::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                Some((i, texts))
+            }
+            _ => None,
+        })
+    })
+}
+
+/// X of the earth wire that leaves the device `id` on the sheet `sheet`: the middle of its column.
+fn earth_x(sheet: &crab_schematic::Sheet, id: &str) -> Option<f32> {
+    use crab_schematic::{ItemKind, Op};
+    sheet.items.iter().find_map(|item| match &item.kind {
+        ItemKind::Wire { from, to, .. } if from.device == id && to.device == "PE" => {
+            item.ops.iter().find_map(|&o| match &sheet.ops[o] {
+                Op::Line { points, .. } => points.first().map(|p| p.0),
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn power_columns_have_captions_with_the_load() {
+    let (doc, _) = build_document(&pump(PUMP_PANEL), &library(), Lang::Ru).unwrap();
+    let (index, texts) = caption_of(&doc, "M1").expect("подпись колонки -M1");
+    let sheet = &doc.sheets[index];
+    let x = earth_x(sheet, "M1").expect("земля двигателя");
+    // The designation is centred under the column of the motor.
+    let (cx, _, _) = texts
+        .iter()
+        .find(|(_, _, t)| t == "-M1")
+        .expect("нет «-M1» в подписи");
+    assert!((cx - x).abs() <= 5.0, "подпись в {cx}, колонка в {x}");
+    // The rating of the load is the second line.
+    assert!(texts.iter().any(|(_, _, t)| t == "0,75 кВт"), "{texts:?}");
+    // The feed of the sheet has no caption of its own; the psu of the second column does.
+    assert!(caption_of(&doc, "G1").is_some(), "подпись -G1");
+    assert!(caption_of(&doc, "X1").is_none());
+}
+
+/// Half the height of a caption text (`TEXT_S` is 12).
+const TEXT_HALF: f32 = 6.0;
+
+#[test]
+fn a_caption_stays_below_the_drawing() {
+    use crab_schematic::{ItemKind, Op};
+    let (doc, _) = build_document(&pump(PUMP_PANEL), &library(), Lang::Ru).unwrap();
+    let (index, caption) = caption_of(&doc, "M1").expect("подпись колонки -M1");
+    let sheet = &doc.sheets[index];
+    // The lowest point of the symbols and the wires of the sheet (the caption is not one of them).
+    let lowest = sheet
+        .items
+        .iter()
+        .filter(|item| matches!(item.kind, ItemKind::Symbol { .. } | ItemKind::Wire { .. }))
+        .flat_map(|item| item.ops.iter())
+        .flat_map(|&o| match &sheet.ops[o] {
+            Op::Line { points, .. } => points.iter().map(|p| p.1).collect::<Vec<f32>>(),
+            Op::Text { y, size, .. } => vec![*y + size / 2.0],
+            Op::Dot { y, r, .. } | Op::Circle { y, r, .. } => vec![*y + r],
+            Op::Rect { y, h, .. } => vec![*y + h],
+        })
+        .fold(f32::MIN, f32::max);
+    // The top of the caption: its first line, with half of its height.
+    let top = caption
+        .iter()
+        .map(|(_, y, _)| *y - TEXT_HALF)
+        .fold(f32::MAX, f32::min);
+    assert!(
+        top > lowest,
+        "подпись с {top}, а ниже нарисовано до {lowest}"
+    );
+    assert!(
+        caption
+            .iter()
+            .all(|(_, y, _)| *y + TEXT_HALF <= doc.page.y1()),
+        "подпись ниже рамки листа"
+    );
+}
+
+#[test]
+fn a_long_caption_takes_three_lines_at_most() {
+    let panel = PUMP_PANEL.replace(
+        r#"rating = "0,75 кВт""#,
+        r#"rating = "0,75 кВт 1500 об/мин IP55 насос подачи воды""#,
+    );
+    let (doc, _) = build_document(&pump(&panel), &library(), Lang::Ru).unwrap();
+    let (_, caption) = caption_of(&doc, "M1").expect("подпись колонки -M1");
+    assert_eq!(caption.len(), 3, "{caption:?}");
+    assert!(caption[2].2.ends_with('…'), "{caption:?}");
+}
+
+#[test]
+fn columns_without_a_load_have_no_caption() {
+    let panel = r#"
+supply = "ac230"
+[[device]]
+id = "X1"
+kind = "feed"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "X2"
+[[device]]
+id = "X2"
+kind = "terminal"
+[[device]]
+id = "Q2"
+kind = "breaker"
+"#;
+    let (doc, _) = build_document(&pump(panel), &library(), Lang::Ru).unwrap();
+    for id in ["Q1", "X2", "Q2"] {
+        assert!(caption_of(&doc, id).is_none(), "подпись у {id}");
+    }
+    let any = doc.sheets.iter().flat_map(|s| s.items.iter()).any(
+        |i| matches!(&i.kind, crab_schematic::ItemKind::Label { key } if key.ends_with(":column")),
+    );
+    assert!(!any);
+}
