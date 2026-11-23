@@ -154,3 +154,94 @@ kind = "motor"
     let mut q = panel(BASE);
     assert!(q.reconnect_power("Q1_1", Some("Q1")).is_err());
 }
+
+/// A relay whose contacts switch loads of their own (`specs/panel-relay-contacts`, task 3).
+const RELAY: &str = r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K2_1"
+
+[[device]]
+id = "K2"
+kind = "relay"
+
+[[device]]
+id = "K2_1"
+kind = "aux"
+of = "K2"
+load = "E1"
+
+[[device]]
+id = "K2_2"
+kind = "aux"
+of = "K2"
+form = "changeover"
+from = "Q1"
+load = "E2"
+
+[[device]]
+id = "E1"
+kind = "load"
+
+[[device]]
+id = "E2"
+kind = "load"
+
+[[device]]
+id = "E3"
+kind = "load"
+from = "K2_1"
+"#;
+
+#[test]
+fn a_relay_contact_switches_a_load_of_its_own() {
+    assert_eq!(errors(&panel(RELAY)), Vec::<String>::new());
+}
+
+#[test]
+fn only_a_relay_contact_has_a_load_and_not_together_with_a_circuit() {
+    // A contact of a breaker or a contactor does not switch a load of its own.
+    let mut p = panel(BASE);
+    p.devices.iter_mut().find(|d| d.id == "Q1_1").unwrap().load = "M1".into();
+    assert!(errors(&p)
+        .iter()
+        .any(|m| m.contains("свою нагрузку коммутирует только контакт реле")));
+
+    // A relay contact either switches a load or stands in a control circuit.
+    let mut p = panel(RELAY);
+    p.devices
+        .iter_mut()
+        .find(|d| d.id == "K2_1")
+        .unwrap()
+        .series = "K2".into();
+    assert!(errors(&p)
+        .iter()
+        .any(|m| m.contains("K2_1") && m.contains("нужно что-то одно")));
+
+    // An old relay that switches the same load by its poles.
+    let mut p = panel(RELAY);
+    p.devices.iter_mut().find(|d| d.id == "K2").unwrap().load = "E1".into();
+    assert!(errors(&p)
+        .iter()
+        .any(|m| m.contains("уже коммутирует само реле -K2")));
+}
+
+#[test]
+fn a_relay_contact_is_fed_and_feeds_a_load_but_a_breaker_contact_does_not() {
+    let mut p = panel(RELAY);
+    // «Питается от» of the load names the contact: the contact gets the load.
+    p.reconnect_power("E2", Some("K2_1")).unwrap();
+    assert_eq!(p.device("K2_1").unwrap().load, "E2");
+    // The contact itself is fed by the breaker.
+    p.reconnect_power("K2_1", Some("Q1")).unwrap();
+    assert_eq!(p.device("Q1").unwrap().load, "K2_1");
+    // A branch from the contact.
+    p.branch_power("E3", Some("K2_1")).unwrap();
+    assert_eq!(p.device("E3").unwrap().from, "K2_1");
+
+    // A contact of a breaker stays out of the chain.
+    let mut q = panel(BASE);
+    assert!(q.reconnect_power("Q1_1", Some("Q1")).is_err());
+    assert!(q.reconnect_power("M1", Some("Q1_1")).is_err());
+}

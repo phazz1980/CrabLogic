@@ -364,3 +364,39 @@ fn an_empty_layout_draws_no_free_sheet() {
         .iter()
         .any(|s| matches!(s.id, Some(SheetId::Free(_)))));
 }
+
+#[test]
+fn a_breaker_put_by_hand_is_drawn_like_on_the_power_sheet() {
+    let mut project = pump(PANEL);
+    project
+        .panel_layout
+        .place("Q8", SheetId::Free(0), 300.0, 300.0);
+    let doc = document(&project);
+    let here = sheet(&doc, first_free(&doc));
+    let ports = here
+        .items
+        .iter()
+        .find_map(|i| match &i.kind {
+            ItemKind::Symbol {
+                view,
+                device,
+                ports,
+                ..
+            } if *view == "control" && device == "Q8" => Some(ports.clone()),
+            _ => None,
+        })
+        .expect("the breaker is drawn");
+    let y = |name: &str| {
+        ports
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("terminal {name}"))
+            .y
+    };
+    // The supply side terminals at the top, each pole with its load side terminal under it.
+    assert!(y("1") < y("2"));
+    assert!(y("3") < y("4"));
+    assert_eq!(y("1"), y("3"));
+    let x = |name: &str| ports.iter().find(|p| p.name == name).unwrap().x;
+    assert_eq!(x("1"), x("2"));
+}

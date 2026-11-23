@@ -245,19 +245,21 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     // Devices on a branch of another device (`from`): the source must exist and feed others.
     for device in panel.devices.iter().filter(|d| !d.from.is_empty()) {
         let fine = panel.device(&device.from).is_some_and(|s| {
+            let relay_contact = panel.is_relay_contact(s);
             s.id != device.id
-                && matches!(
-                    s.kind,
-                    DeviceKind::Feed
-                        | DeviceKind::Breaker
-                        | DeviceKind::Rcd
-                        | DeviceKind::Fuse
-                        | DeviceKind::Switch
-                        | DeviceKind::Psu
-                        | DeviceKind::Contactor
-                        | DeviceKind::Relay
-                        | DeviceKind::Terminal
-                )
+                && (relay_contact
+                    || matches!(
+                        s.kind,
+                        DeviceKind::Feed
+                            | DeviceKind::Breaker
+                            | DeviceKind::Rcd
+                            | DeviceKind::Fuse
+                            | DeviceKind::Switch
+                            | DeviceKind::Psu
+                            | DeviceKind::Contactor
+                            | DeviceKind::Relay
+                            | DeviceKind::Terminal
+                    ))
         });
         if !fine {
             error(format!(
@@ -291,6 +293,33 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
                 ));
             }
             Some(_) => {}
+        }
+        // Only a contact of a relay switches a load of its own: the main contacts of a contactor
+        // and the contacts of a breaker stand in the chain of their device.
+        let parent = panel.device(&device.of);
+        let of_relay = parent.is_some_and(|p| p.kind == DeviceKind::Relay);
+        let powered = !device.load.is_empty() || !device.from.is_empty();
+        if powered && parent.is_some() && !of_relay {
+            error(format!(
+                "{name}: свою нагрузку коммутирует только контакт реле, у {} нагрузку задают у самого аппарата",
+                parent.map(Device::designation).unwrap_or_default()
+            ));
+        }
+        if powered && of_relay {
+            if !device.series.is_empty() || !device.bind.is_empty() {
+                error(format!(
+                    "{name}: контакт коммутирует нагрузку и стоит в цепи управления, нужно что-то одно"
+                ));
+            }
+            // An old relay that switches the same load by its poles: two feeders of one device.
+            if let Some(relay) = parent.filter(|r| !device.load.is_empty() && r.load == device.load)
+            {
+                error(format!(
+                    "{name}: нагрузку «{}» уже коммутирует само реле {}",
+                    device.load,
+                    relay.designation()
+                ));
+            }
         }
         if !device.series.is_empty() {
             if !device.bind.is_empty() {

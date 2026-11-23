@@ -151,32 +151,84 @@ fn has_poles(kind: DeviceKind) -> bool {
     )
 }
 
-/// Terminal of `device` for the conductor number `i` (`name`) on its supply side.
-/// Terminals of the auxiliary contact `contact`: the contact is the `k`-th of its device, so a
-/// normally open one is `k3`-`k4` and a normally closed one `k1`-`k2` (`13-14`, `21-22`).
+/// Whether `d` is a contact of a relay (`of` names a relay). Such a contact with a `load` is a
+/// one-pole switching device of the power chain; the contacts of contactors, breakers and
+/// residual-current devices never are.
+pub fn is_relay_contact(panel: &Panel, d: &Device) -> bool {
+    panel.is_relay_contact(d)
+}
+
+/// Devices that take part in the power graph: the switching devices and the contacts of relays.
+fn is_powered_device(panel: &Panel, d: &Device) -> bool {
+    is_powered(d.kind) || is_relay_contact(panel, d)
+}
+
+/// Terminals of the auxiliary contact `contact` used in a circuit: the contact is the `k`-th of its
+/// device, so a normally open one is `k3`-`k4` and a normally closed one `k1`-`k2` (`13-14`,
+/// `21-22`). A changeover uses its common and normally open terminals (`k1`-`k4`).
 pub fn aux_terminals(panel: &Panel, contact: &Device) -> (String, String) {
+    let all = aux_all_terminals(panel, contact);
+    match contact.form {
+        ContactForm::Changeover => (all[0].clone(), all[2].clone()),
+        _ => (all[0].clone(), all[1].clone()),
+    }
+}
+
+/// Every terminal of the auxiliary contact `contact`: two for a normally open or normally closed
+/// one, three for a changeover (common, normally closed, normally open). Manual `pins` (`21-22`,
+/// or `11-12-14` for a changeover) override the numbers by the contact, when their count fits the
+/// form.
+pub fn aux_all_terminals(panel: &Panel, contact: &Device) -> Vec<String> {
     let k = panel
         .aux_of(&contact.of)
         .position(|d| d.id == contact.id)
         .map_or(1, |i| i + 1);
-    if let Some((a, b)) = contact.pins.split_once('-') {
-        let (a, b) = (a.trim(), b.trim());
-        if !a.is_empty() && !b.is_empty() {
-            return (a.to_owned(), b.to_owned());
-        }
+    let manual: Vec<&str> = contact
+        .pins
+        .split('-')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    if manual.len() == contact_all_terminals(k, contact.form).len() {
+        return manual.into_iter().map(str::to_owned).collect();
     }
-    contact_terminals(k, contact.form)
+    contact_all_terminals(k, contact.form)
 }
 
-/// Terminals of the `k`-th (from 1) auxiliary contact of a device.
+/// The normally closed terminal of a changeover contact (`k2`, the middle one of its terminals), or
+/// `None` for a normally open or normally closed contact.
+pub fn changeover_nc(panel: &Panel, contact: &Device) -> Option<String> {
+    (contact.form == ContactForm::Changeover).then(|| aux_all_terminals(panel, contact)[1].clone())
+}
+
+/// Terminals of the `k`-th (from 1) auxiliary contact of a device used in a circuit: the two of a
+/// normally open or normally closed contact, the common and normally open ones of a changeover.
 pub fn contact_terminals(k: usize, form: ContactForm) -> (String, String) {
     match form {
         ContactForm::No => (format!("{k}3"), format!("{k}4")),
         ContactForm::Nc => (format!("{k}1"), format!("{k}2")),
+        ContactForm::Changeover => (format!("{k}1"), format!("{k}4")),
     }
 }
 
-fn in_pin(device: &Device, i: usize, name: &str) -> Pin {
+/// Every terminal of the `k`-th (from 1) auxiliary contact of a device: `k3`, `k4` for a normally
+/// open contact, `k1`, `k2` for a normally closed one, `k1` (common), `k2` (normally closed) and
+/// `k4` (normally open) for a changeover.
+pub fn contact_all_terminals(k: usize, form: ContactForm) -> Vec<String> {
+    let terminals: &[usize] = match form {
+        ContactForm::No => &[3, 4],
+        ContactForm::Nc => &[1, 2],
+        ContactForm::Changeover => &[1, 2, 4],
+    };
+    terminals.iter().map(|t| format!("{k}{t}")).collect()
+}
+
+/// Terminal of `device` for the conductor number `i` (`name`) on its supply side. A relay contact
+/// has one pole: its supply terminal.
+fn in_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
+    if is_relay_contact(panel, device) {
+        return Pin::new(&device.id, aux_terminals(panel, device).0);
+    }
     if has_poles(device.kind) {
         Pin::new(&device.id, (2 * i + 1).to_string())
     } else {
@@ -184,8 +236,12 @@ fn in_pin(device: &Device, i: usize, name: &str) -> Pin {
     }
 }
 
-/// Terminal of `device` for the conductor number `i` (`name`) on its load side.
-fn out_pin(device: &Device, i: usize, name: &str) -> Pin {
+/// Terminal of `device` for the conductor number `i` (`name`) on its load side. A relay contact
+/// has one pole: its load terminal.
+fn out_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
+    if is_relay_contact(panel, device) {
+        return Pin::new(&device.id, aux_terminals(panel, device).1);
+    }
     if has_poles(device.kind) {
         Pin::new(&device.id, (2 * i + 2).to_string())
     } else {
@@ -242,10 +298,7 @@ pub fn terminals_of(panel: &Panel, device: &Device) -> Vec<String> {
         DeviceKind::Breaker | DeviceKind::Rcd | DeviceKind::Fuse | DeviceKind::Switch => {
             poles().collect()
         }
-        DeviceKind::Aux => {
-            let (near, far) = aux_terminals(panel, device);
-            vec![near, far]
-        }
+        DeviceKind::Aux => aux_all_terminals(panel, device),
         DeviceKind::Sensor => vec!["+".to_owned(), "-".to_owned(), "S".to_owned()],
         DeviceKind::Button => vec!["1".to_owned(), "2".to_owned()],
         DeviceKind::Motor | DeviceKind::Load | DeviceKind::Terminal | DeviceKind::Feed => {
@@ -317,7 +370,7 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
     // Who feeds whom: `load` of the feeding device names the one it feeds.
     let mut feeder: HashMap<&str, &Device> = HashMap::new();
     for d in devices {
-        let can_feed = is_powered(d.kind) || d.kind == DeviceKind::Feed;
+        let can_feed = is_powered_device(panel, d) || d.kind == DeviceKind::Feed;
         if can_feed && d.load != d.id && ids.contains(d.load.as_str()) {
             feeder.entry(d.load.as_str()).or_insert(d);
         }
@@ -344,6 +397,10 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
     // Power circuits.
     // A terminal block that stands in no chain draws no wires.
     let in_chain = |d: &&Device| {
+        // A relay contact stands in a chain only when it is fed or has a load that exists.
+        if is_relay_contact(panel, d) {
+            return feeder.contains_key(d.id.as_str()) || ids.contains(d.load.as_str());
+        }
         // A device just added and not connected to anything draws no wires.
         if d.free && !feeder.contains_key(d.id.as_str()) {
             return false;
@@ -354,7 +411,7 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
     };
     for t in devices
         .iter()
-        .filter(|d| is_powered(d.kind))
+        .filter(|d| is_powered_device(panel, d))
         .filter(in_chain)
     {
         let up = feeder.get(t.id.as_str()).copied();
@@ -368,31 +425,37 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         // under it (up to the next power supply) gets just those.
         let mut lines = names.len();
         let mut walk = Some(t);
+        let (lo, hi) = if control {
+            Supply::Dc24.pole_range()
+        } else {
+            panel.supply.pole_range()
+        };
         for _ in 0..=devices.len() {
             let Some(d) = walk else { break };
-            if has_poles(d.kind) && control_domain(d) == control {
-                if let Some(p) = d.poles {
-                    let (lo, hi) = if control {
-                        Supply::Dc24.pole_range()
-                    } else {
-                        panel.supply.pole_range()
-                    };
-                    lines = lines.min(usize::from(p.clamp(lo, hi)));
-                }
+            // A relay contact has one pole and is not clamped to the poles of the supply.
+            let poles = if is_relay_contact(panel, d) {
+                Some(1)
+            } else if has_poles(d.kind) {
+                d.poles.map(|p| usize::from(p.clamp(lo, hi)))
+            } else {
+                None
+            };
+            if let Some(p) = poles.filter(|_| control_domain(d) == control) {
+                lines = lines.min(p);
             }
             walk = feeder.get(d.id.as_str()).copied();
         }
         for (i, name) in names.iter().enumerate().take(lines) {
             let from = match (up, feed) {
-                (Some(up), _) => out_pin(up, i, name),
-                (None, Some(feed)) => out_pin(feed, i, name),
+                (Some(up), _) => out_pin(panel, up, i, name),
+                (None, Some(feed)) => out_pin(panel, feed, i, name),
                 (None, None) => Pin::new(EXTERNAL, *name),
             };
             // A device behind a power supply sees its 24 V as the conductors `+24V`, `0V`.
             drafts.push(Draft {
                 class,
                 from,
-                to: in_pin(t, i, name),
+                to: in_pin(panel, t, i, name),
             });
         }
     }
@@ -429,8 +492,8 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
     let psu = devices.iter().find(|d| d.kind == DeviceKind::Psu);
     let source = |name: &str, i: usize| -> Pin {
         match (psu, feed) {
-            (Some(psu), _) => out_pin(psu, i, name),
-            (None, Some(feed)) if panel.supply == Supply::Dc24 => out_pin(feed, i, name),
+            (Some(psu), _) => out_pin(panel, psu, i, name),
+            (None, Some(feed)) if panel.supply == Supply::Dc24 => out_pin(panel, feed, i, name),
             _ => Pin::new(EXTERNAL, name),
         }
     };
@@ -621,5 +684,115 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         manual: manual_keys,
         wires,
         board_terminals,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn panel(text: &str) -> Panel {
+        toml::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn terminals_of_each_form() {
+        for (form, first, second) in [
+            (ContactForm::No, ["13", "14"], ["23", "24"]),
+            (ContactForm::Nc, ["11", "12"], ["21", "22"]),
+            (ContactForm::Changeover, ["11", "14"], ["21", "24"]),
+        ] {
+            let form_text = match form {
+                ContactForm::No => "no",
+                ContactForm::Nc => "nc",
+                ContactForm::Changeover => "changeover",
+            };
+            let p = panel(&format!(
+                r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+[[device]]
+id = "Q1_1"
+kind = "aux"
+of = "Q1"
+form = "{form_text}"
+[[device]]
+id = "Q1_2"
+kind = "aux"
+of = "Q1"
+form = "{form_text}"
+"#
+            ));
+            let first_dev = p.device("Q1_1").unwrap();
+            let second_dev = p.device("Q1_2").unwrap();
+            // The terminals in a circuit: the first contact is `k=1`, the second `k=2`.
+            let pair = |s: [&str; 2]| (s[0].to_owned(), s[1].to_owned());
+            assert_eq!(aux_terminals(&p, first_dev), pair(first), "{form:?}");
+            assert_eq!(aux_terminals(&p, second_dev), pair(second), "{form:?}");
+            assert_eq!(
+                terminals_of(&p, first_dev).len(),
+                if form == ContactForm::Changeover {
+                    3
+                } else {
+                    2
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn changeover_terminals_by_contact_number() {
+        assert_eq!(
+            contact_all_terminals(2, ContactForm::Changeover),
+            ["21", "22", "24"]
+        );
+        assert_eq!(contact_all_terminals(1, ContactForm::No), ["13", "14"]);
+        assert_eq!(contact_all_terminals(1, ContactForm::Nc), ["11", "12"]);
+        assert_eq!(
+            contact_terminals(1, ContactForm::Changeover),
+            ("11".to_owned(), "14".to_owned())
+        );
+    }
+
+    #[test]
+    fn pins_override_numbers() {
+        let p = panel(
+            r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+[[device]]
+id = "Q1_1"
+kind = "aux"
+of = "Q1"
+form = "changeover"
+pins = "11-12-14"
+[[device]]
+id = "Q1_2"
+kind = "aux"
+of = "Q1"
+form = "nc"
+pins = "21-22"
+[[device]]
+id = "Q1_3"
+kind = "aux"
+of = "Q1"
+form = "changeover"
+pins = "31-32"
+"#,
+        );
+        let co = p.device("Q1_1").unwrap();
+        assert_eq!(aux_all_terminals(&p, co), ["11", "12", "14"]);
+        assert_eq!(aux_terminals(&p, co), ("11".to_owned(), "14".to_owned()));
+        assert_eq!(
+            aux_all_terminals(&p, p.device("Q1_2").unwrap()),
+            ["21", "22"]
+        );
+        // Two pins do not fit a changeover: the numbers by the contact are used.
+        assert_eq!(
+            aux_all_terminals(&p, p.device("Q1_3").unwrap()),
+            ["31", "32", "34"]
+        );
     }
 }

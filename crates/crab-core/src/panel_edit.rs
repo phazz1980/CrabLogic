@@ -56,34 +56,37 @@ fn kind_name(kind: DeviceKind) -> &'static str {
 }
 
 impl Panel {
+    /// Kind of `device` and whether it is a contact of a relay, which switches a load of its own
+    /// and so is fed and feeds like a one-pole switching device.
+    fn feed_kind(&self, device: &str) -> Result<(DeviceKind, bool), String> {
+        let d = self
+            .device(device)
+            .ok_or_else(|| format!("нет устройства «{device}»"))?;
+        Ok((d.kind, self.is_relay_contact(d)))
+    }
+
     /// Puts `device` on a branch of the line of `source` (`from`): the source keeps what it feeds
     /// and feeds this device as well; the sheet draws the junction by itself. `None` takes the
     /// device off the branch. Nothing may feed itself through the branches.
     pub fn branch_power(&mut self, device: &str, source: Option<&str>) -> Result<(), String> {
-        let kind = self
-            .device(device)
-            .ok_or_else(|| format!("нет устройства «{device}»"))?
-            .kind;
+        let (kind, relay_contact) = self.feed_kind(device)?;
         let Some(source) = source else {
             if let Some(d) = self.devices.iter_mut().find(|d| d.id == device) {
                 d.from.clear();
             }
             return Ok(());
         };
-        let source_kind = self
-            .device(source)
-            .ok_or_else(|| format!("нет устройства «{source}»"))?
-            .kind;
+        let (source_kind, source_relay_contact) = self.feed_kind(source)?;
         if source == device {
             return Err(format!("-{device}: устройство не может питать само себя"));
         }
-        if never_fed(kind) {
+        if never_fed(kind) && !relay_contact {
             return Err(format!(
                 "-{device}: {} не питается от другого устройства",
                 kind_name(kind)
             ));
         }
-        if !can_feed(source_kind) {
+        if !can_feed(source_kind) && !source_relay_contact {
             return Err(format!(
                 "-{source}: {} не может питать другие устройства",
                 kind_name(source_kind)
@@ -130,32 +133,26 @@ impl Panel {
     /// fed `device` before is released; a load that `parent` fed before is replaced (to feed
     /// several devices from one source, see [`Self::branch_power`]).
     pub fn reconnect_power(&mut self, device: &str, parent: Option<&str>) -> Result<(), String> {
-        let kind = self
-            .device(device)
-            .ok_or_else(|| format!("нет устройства «{device}»"))?
-            .kind;
+        let (kind, relay_contact) = self.feed_kind(device)?;
         let feeder = match parent {
             None => None,
             Some(id) if id == device => {
                 return Err(format!("-{device}: устройство не может питать само себя"));
             }
             Some(id) => {
-                let parent_kind = self
-                    .device(id)
-                    .ok_or_else(|| format!("нет устройства «{id}»"))?
-                    .kind;
+                let parent = self.feed_kind(id)?;
                 // A feed as the parent means the device is fed straight from the feed.
-                (parent_kind != DeviceKind::Feed).then_some((id, parent_kind))
+                (parent.0 != DeviceKind::Feed).then_some((id, parent))
             }
         };
-        if let Some((id, parent_kind)) = feeder {
-            if never_fed(kind) {
+        if let Some((id, (parent_kind, parent_relay_contact))) = feeder {
+            if never_fed(kind) && !relay_contact {
                 return Err(format!(
                     "-{device}: {} не питается от другого устройства",
                     kind_name(kind)
                 ));
             }
-            if !can_feed(parent_kind) {
+            if !can_feed(parent_kind) && !parent_relay_contact {
                 return Err(format!(
                     "-{id}: {} не может питать другие устройства",
                     kind_name(parent_kind)

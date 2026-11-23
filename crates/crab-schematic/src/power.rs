@@ -18,11 +18,12 @@ use crate::control::{draw_hand, Hand, Pins, Refs};
 use crate::doc::{Page, Sheet};
 use crate::error::Error;
 use crate::lang::Lang;
-use crate::nets::{mains, Nets, Wire, WireClass, EXTERNAL};
+use crate::nets::{changeover_nc, is_relay_contact, mains, Nets, Wire, WireClass, EXTERNAL};
 use crate::route;
 use crate::scene::{Dir, End, ItemKind, Port};
 use crate::symbols::{
-    column_width, contacts_x, draw_device, draw_earth, draw_earth_up, Geometry, Notes, HEIGHT,
+    column_width, contacts_x, draw_device, draw_earth, draw_earth_up, AuxNote, Geometry, Notes,
+    HEIGHT,
 };
 use crate::xref::{Xref, Xrefs};
 
@@ -452,14 +453,31 @@ pub fn power_sheets(
         // Devices.
         let mut geos: HashMap<&str, Geometry> = HashMap::new();
         for &(d, s) in &placed {
-            let coil_at = coils.get(&d.id).map(ToString::to_string);
-            let aux_at: Vec<(crab_core::ContactForm, Option<String>, (String, String))> = panel
+            // A contact of a relay is named and referenced by its relay: the coil is the relay's.
+            let relay_contact = is_relay_contact(panel, d);
+            let coil_at = coils
+                .get(if relay_contact {
+                    d.of.as_str()
+                } else {
+                    d.id.as_str()
+                })
+                .map(ToString::to_string);
+            let (terminals, nc) = if relay_contact {
+                (
+                    Some(crate::nets::aux_terminals(panel, d)),
+                    changeover_nc(panel, d),
+                )
+            } else {
+                (None, None)
+            };
+            let aux_at: Vec<AuxNote> = panel
                 .aux_of(&d.id)
                 .map(|a| {
                     (
                         a.form,
                         coils.get(&a.id).map(ToString::to_string),
                         crate::nets::aux_terminals(panel, a),
+                        changeover_nc(panel, a),
                     )
                 })
                 .collect();
@@ -473,6 +491,8 @@ pub fn power_sheets(
                 sensors: &sensors,
                 sheet: first_sheet + index,
                 pe_top: earth_terminal(d).is_some(),
+                terminals,
+                nc,
             };
             let pos = grid.place(s, shift_of(&d.id));
             let item = c.begin(ItemKind::Symbol {
@@ -843,6 +863,7 @@ pub fn power_sheets(
                 power: &places,
                 coils,
             },
+            lang,
             generated: &generated,
         };
         draw_hand(

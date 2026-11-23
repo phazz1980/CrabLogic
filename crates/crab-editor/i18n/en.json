@@ -1357,6 +1357,7 @@
  "Тип контакта": "Contact type",
  "Замыкающий": "Normally open",
  "Размыкающий": "Normally closed",
+ "Переключающий": "Changeover",
  "Цепь контакта": "Contact circuit",
  "вход платы": "board input",
  "последовательно с катушкой": "in series with coil",

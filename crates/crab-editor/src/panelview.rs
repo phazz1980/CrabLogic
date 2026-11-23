@@ -322,6 +322,7 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
         return;
     };
     let panel = &doc.project.panel;
+    let layout = &doc.project.panel_layout;
     let report = app.panel_view.cache.as_ref().map(|c| &c.report);
     let selected = app.panel_view.selected.clone();
     let coil_selected = app.panel_view.coil;
@@ -472,7 +473,7 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
                     );
                 }
                 for contact in panel.aux_of(&device.id) {
-                    aux_row(ui, panel, contact, &selected, report, &action);
+                    aux_row(ui, panel, layout, contact, &selected, report, &action);
                 }
             }
         };
@@ -500,7 +501,7 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
             |_| {},
             |ui| {
                 for contact in &orphans {
-                    aux_row(ui, panel, contact, &selected, report, &action);
+                    aux_row(ui, panel, layout, contact, &selected, report, &action);
                 }
             },
         );
@@ -688,6 +689,7 @@ fn form_title(form: ContactForm) -> String {
     match form {
         ContactForm::No => tr("Замыкающий"),
         ContactForm::Nc => tr("Размыкающий"),
+        ContactForm::Changeover => tr("Переключающий"),
     }
     .to_owned()
 }
@@ -697,6 +699,7 @@ fn form_title(form: ContactForm) -> String {
 fn aux_row(
     ui: &mut Ui,
     panel: &crab_core::Panel,
+    layout: &crab_core::PanelLayout,
     contact: &Device,
     selected: &Option<String>,
     report: Option<&Report>,
@@ -707,13 +710,31 @@ fn aux_row(
         .position(|d| d.id == contact.id)
         .map_or(1, |i| i + 1);
     let (near, far) = crab_schematic::nets::aux_terminals(panel, contact);
+    let switched: Vec<&str> = panel
+        .devices
+        .iter()
+        .filter(|d| d.from == contact.id)
+        .map(|d| d.id.as_str())
+        .chain((!contact.load.is_empty()).then_some(contact.load.as_str()))
+        .collect();
     let circuit = if !contact.series.is_empty() {
         format!("→ -{}", contact.series)
     } else if !contact.bind.is_empty() {
         format!("→ {}", contact.bind)
+    } else if !switched.is_empty() {
+        format!("→ -{}", switched.join(", -"))
     } else {
         String::new()
     };
+    // A contact of a relay is put on a sheet by itself (`specs/panel-relay-contacts`): dragged from
+    // its row; the orange cross says it is on no sheet yet. The generator draws it where it stands
+    // in a circuit: in the chain of a load, or in series with a coil, or on an input of the board.
+    let relay_contact = panel.is_relay_contact(contact);
+    let fed = !contact.from.is_empty() || panel.devices.iter().any(|d| d.load == contact.id);
+    let in_circuit =
+        !switched.is_empty() || fed || !contact.series.is_empty() || !contact.bind.is_empty();
+    let off_sheet = relay_contact && !in_circuit && !layout.placed.contains_key(&contact.id);
+    let cross = off_sheet.then(|| ui.visuals().warn_fg_color);
     let caption = format!(
         "-{}:{number}  {near}-{far}  {} {circuit}",
         contact.of,
@@ -727,10 +748,17 @@ fn aux_row(
     let warn = problem.then(|| ui.visuals().warn_fg_color);
     ui.horizontal(|ui| {
         ui.add_space(14.0);
-        let resp = ui.selectable_label(
-            selected.as_deref() == Some(contact.id.as_str()),
-            row_label(ui, caption, warn, None),
-        );
+        let chosen = selected.as_deref() == Some(contact.id.as_str());
+        let resp = if relay_contact {
+            ui.dnd_drag_source(
+                ui.make_persistent_id(("panel_contact", &contact.id)),
+                DevicePayload(contact.id.clone()),
+                |ui| ui.selectable_label(chosen, row_label(ui, caption, warn, cross)),
+            )
+            .inner
+        } else {
+            ui.selectable_label(chosen, row_label(ui, caption, warn, None))
+        };
         if resp.clicked() || resp.double_clicked() {
             *action.borrow_mut() = Some(Action::Select(contact.id.clone()));
         }
@@ -1047,6 +1075,25 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
 
     let mut edit = Edit::default();
     let is_aux = device.kind == DeviceKind::Aux;
+    // A contact of a relay switches a load of its own: it is fed like a one-pole device.
+    let relay_contact = doc.project.panel.is_relay_contact(&device);
+    // A contact either switches a load (it is fed) or stands in a control circuit: only the fields
+    // of the one it does are shown (the check forbids both).
+    let powered_contact = relay_contact
+        && (!device.from.is_empty()
+            || !device.load.is_empty()
+            || doc
+                .project
+                .panel
+                .devices
+                .iter()
+                .any(|d| d.load == id || d.from == id));
+    let controlled_contact = is_aux && (!device.series.is_empty() || !device.bind.is_empty());
+    // A new relay is a coil with contacts; the poles and the load of the relay itself stay only on
+    // relays of old projects that have them (`specs/panel-relay-contacts`).
+    let old_relay = device.kind == DeviceKind::Relay;
+    let relay_poles = !old_relay || device.poles.is_some();
+    let relay_load = !old_relay || !device.load.is_empty();
     egui::Grid::new("panel_props")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -1090,7 +1137,8 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     | DeviceKind::Switch
                     | DeviceKind::Contactor
                     | DeviceKind::Relay
-            ) {
+            ) && relay_poles
+            {
                 // 1 or 2 poles on 230 V, 3 or 4 on 400 V; the most is the default.
                 let (lo, hi) = doc.project.panel.supply.pole_range();
                 ui.label(tr("Полюсов"));
@@ -1127,7 +1175,7 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                 egui::ComboBox::from_id_salt("panel_form")
                     .selected_text(form_title(form))
                     .show_ui(ui, |ui| {
-                        for f in [ContactForm::No, ContactForm::Nc] {
+                        for f in [ContactForm::No, ContactForm::Nc, ContactForm::Changeover] {
                             ui.selectable_value(&mut form, f, form_title(f));
                         }
                     });
@@ -1139,10 +1187,10 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                 // Terminal numbers: by the number of the contact, or by hand (`21-22`).
                 ui.label(tr("Выводы"));
                 let mut pins = device.pins.clone();
-                let (near, far) = crab_schematic::nets::aux_terminals(&doc.project.panel, &device);
+                let all = crab_schematic::nets::aux_all_terminals(&doc.project.panel, &device);
                 ui.add(
                     egui::TextEdit::singleline(&mut pins)
-                        .hint_text(format!("{near}-{far}"))
+                        .hint_text(all.join("-"))
                         .desired_width(80.0),
                 )
                 .on_hover_text(tr(
@@ -1152,7 +1200,8 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     edit.pins = Some(pins);
                 }
                 ui.end_row();
-
+            }
+            if is_aux && !powered_contact {
                 // The circuit: an input of the board, or in series with a coil.
                 ui.label(tr("Цепь контакта"));
                 let mut series = device.series.clone();
@@ -1187,6 +1236,7 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
             if panel_binding(device.kind).is_some()
                 && !is_coil
                 && !(is_aux && !device.series.is_empty())
+                && !powered_contact
             {
                 ui.label(tr("Привязка"));
                 let mut bind = device.bind.clone();
@@ -1214,7 +1264,7 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
             }
 
             // The device this one hangs under: the one whose load it is.
-            if !is_aux {
+            if !is_aux || (relay_contact && !controlled_contact) {
                 let feeder = doc
                     .project
                     .panel
@@ -1222,6 +1272,8 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     .iter()
                     .find(|d| d.load == id)
                     .map(|d| d.id.clone())
+                    // A contact has no «Ответвление от»: its branch shows here.
+                    .or_else(|| relay_contact.then(|| device.from.clone()))
                     .unwrap_or_default();
                 // A device just added is connected to nothing until a place is chosen.
                 let unplugged = device.free && feeder.is_empty() && device.from.is_empty();
@@ -1251,17 +1303,19 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                         ui.selectable_value(&mut chosen, String::new(), tr("напрямую от ввода"));
                         for d in doc.project.panel.devices.iter().filter(|d| {
                             d.id != id
-                                && matches!(
-                                    d.kind,
-                                    DeviceKind::Breaker
-                                        | DeviceKind::Rcd
-                                        | DeviceKind::Fuse
-                                        | DeviceKind::Switch
-                                        | DeviceKind::Psu
-                                        | DeviceKind::Contactor
-                                        | DeviceKind::Relay
-                                        | DeviceKind::Terminal
-                                )
+                                && d.id != device.of
+                                && (doc.project.panel.is_relay_contact(d)
+                                    || matches!(
+                                        d.kind,
+                                        DeviceKind::Breaker
+                                            | DeviceKind::Rcd
+                                            | DeviceKind::Fuse
+                                            | DeviceKind::Switch
+                                            | DeviceKind::Psu
+                                            | DeviceKind::Contactor
+                                            | DeviceKind::Relay
+                                            | DeviceKind::Terminal
+                                    ))
                         }) {
                             ui.selectable_value(&mut chosen, d.id.clone(), format!("-{}", d.id));
                         }
@@ -1270,7 +1324,10 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     edit.feeder = Some(chosen);
                 }
                 ui.end_row();
+            }
 
+            // A contact of a relay is only fed: what it switches names it in «Питается от».
+            if !is_aux {
                 // A second source: the device hangs on a branch of another device's line, which
                 // keeps what it feeds; the junction is drawn on the sheet by itself.
                 ui.label(tr("Ответвление от"));
@@ -1285,17 +1342,18 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                         ui.selectable_value(&mut branch, String::new(), tr("нет"));
                         for d in doc.project.panel.devices.iter().filter(|d| {
                             d.id != id
-                                && matches!(
-                                    d.kind,
-                                    DeviceKind::Breaker
-                                        | DeviceKind::Rcd
-                                        | DeviceKind::Fuse
-                                        | DeviceKind::Switch
-                                        | DeviceKind::Psu
-                                        | DeviceKind::Contactor
-                                        | DeviceKind::Relay
-                                        | DeviceKind::Terminal
-                                )
+                                && (doc.project.panel.is_relay_contact(d)
+                                    || matches!(
+                                        d.kind,
+                                        DeviceKind::Breaker
+                                            | DeviceKind::Rcd
+                                            | DeviceKind::Fuse
+                                            | DeviceKind::Switch
+                                            | DeviceKind::Psu
+                                            | DeviceKind::Contactor
+                                            | DeviceKind::Relay
+                                            | DeviceKind::Terminal
+                                    ))
                         }) {
                             ui.selectable_value(&mut branch, d.id.clone(), format!("-{}", d.id));
                         }
@@ -1306,7 +1364,7 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                 ui.end_row();
 
                 // A motor and a load other than a device have nothing behind them.
-                if !matches!(device.kind, DeviceKind::Motor | DeviceKind::Load) {
+                if !matches!(device.kind, DeviceKind::Motor | DeviceKind::Load) && relay_load {
                     ui.label(tr("Нагрузка (питает или коммутирует)"));
                     let mut load = device.load.clone();
                     egui::ComboBox::from_id_salt("panel_load")
@@ -2242,6 +2300,8 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     let mut rewire: Option<(String, crab_core::WireEnd, String)> = None;
     let mut remove_link: Option<String> = None;
     let mut unplace: Option<String> = None;
+    // A contact asked for in the menu of a device on the sheet.
+    let mut add_aux: Option<String> = None;
     let mut select = None;
     if let Some(drag) = view_state.drag.clone() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -2345,9 +2405,18 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         if let (Some(p), Some(doc)) = (click, app.doc.as_ref()) {
             view_state.link_menu = link_at(sheet, &doc.project.panel, p, tolerance);
             if view_state.link_menu.is_none() {
+                // Any device on the sheet has a menu: a hand-placed one can be taken off the
+                // sheet, a switching device gets auxiliary contacts.
                 view_state.unplace_menu = symbol_at(sheet, p)
                     .and_then(|i| i.device())
-                    .filter(|d| doc.project.panel_layout.placed.contains_key(*d))
+                    .filter(|d| {
+                        doc.project.panel_layout.placed.contains_key(*d)
+                            || doc
+                                .project
+                                .panel
+                                .device(crab_core::split_part(d).0)
+                                .is_some_and(|dev| can_have_contacts(dev.kind))
+                    })
                     .map(str::to_owned);
             }
         }
@@ -2403,8 +2472,26 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 }
             });
         } else if let Some(id) = view_state.unplace_menu.clone() {
+            let (placed, of) = app.doc.as_ref().map_or((false, None), |doc| {
+                let owner = crab_core::split_part(&id).0;
+                (
+                    doc.project.panel_layout.placed.contains_key(&id),
+                    doc.project
+                        .panel
+                        .device(owner)
+                        .filter(|d| can_have_contacts(d.kind))
+                        .map(|d| d.id.clone()),
+                )
+            });
             resp.context_menu(|ui| {
-                if ui.button(tr("Убрать с листа")).clicked() {
+                if let Some(of) = &of {
+                    if ui.button(tr("Добавить доп. контакт")).clicked() {
+                        add_aux = Some(of.clone());
+                        view_state.unplace_menu = None;
+                        ui.close();
+                    }
+                }
+                if placed && ui.button(tr("Убрать с листа")).clicked() {
                     unplace = Some(id.clone());
                     view_state.unplace_menu = None;
                     ui.close();
@@ -2574,6 +2661,9 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             app.panel_view.selected = Some(id);
             app.panel_view.coil = false;
         }
+    }
+    if let Some(of) = add_aux {
+        apply(app, Some(Action::AddAux(of)));
     }
 }
 

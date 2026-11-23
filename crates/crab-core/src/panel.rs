@@ -85,6 +85,8 @@ pub enum ContactForm {
     No,
     /// Normally closed: terminals `21-22`, `31-32`, ...
     Nc,
+    /// Changeover: common `k1`, normally closed `k2`, normally open `k4`, e.g. `11-12-14`.
+    Changeover,
 }
 
 impl ContactForm {
@@ -274,6 +276,15 @@ impl Panel {
         self.devices
             .iter()
             .filter(move |d| d.kind == DeviceKind::Aux && d.of == device)
+    }
+
+    /// Whether `d` is a contact of a relay: such a contact switches a load of its own, as a
+    /// one-pole device of the power chain (`specs/panel-relay-contacts`).
+    pub fn is_relay_contact(&self, d: &Device) -> bool {
+        d.kind == DeviceKind::Aux
+            && self
+                .device(&d.of)
+                .is_some_and(|r| r.kind == DeviceKind::Relay)
     }
 
     /// The temperature sensors (thermistors) of the motor `device`: sensors whose `of` names it.
@@ -653,5 +664,22 @@ series = "K1"
         assert_eq!(panel.aux_of("Q2").count(), 1);
         assert_eq!(panel.next_aux_id("Q2"), "Q2_2");
         assert_eq!(panel.next_aux_id("Q9"), "Q9_1");
+    }
+
+    #[test]
+    fn changeover_contact_round_trips() {
+        let text = r#"
+[[device]]
+id = "Q3_1"
+kind = "aux"
+of = "Q3"
+form = "changeover"
+"#;
+        let panel: Panel = toml::from_str(text).unwrap();
+        let q = panel.device("Q3_1").unwrap();
+        assert_eq!(q.form, ContactForm::Changeover);
+        let out = toml::to_string(&panel).unwrap();
+        assert!(out.contains("form = \"changeover\""), "{out}");
+        assert_eq!(toml::from_str::<Panel>(&out).unwrap(), panel);
     }
 }

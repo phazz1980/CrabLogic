@@ -64,6 +64,7 @@ pub(crate) fn free_sheets(
             power: contacts,
             coils,
         },
+        lang,
         generated: &generated,
     };
     let mut sheets = Vec::new();

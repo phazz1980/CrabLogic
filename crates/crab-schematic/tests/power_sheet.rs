@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crab_core::{Library, Panel, Project, SheetId};
-use crab_schematic::{build_document, render_pdf, source, Error, Lang};
+use crab_schematic::{build_document, build_nets, render_pdf, source, Error, Lang};
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1210,4 +1210,223 @@ kind = "breaker"
         |i| matches!(&i.kind, crab_schematic::ItemKind::Label { key } if key.ends_with(":column")),
     );
     assert!(!any);
+}
+
+/// Contacts of relay `K2` with their own loads: `K2_1` normally open (`13`-`14`) and `K2_2`
+/// normally closed (`21`-`22`) are fed by the breaker `Q1`; `K2_3` has neither a feeder nor a load.
+const RELAY_PANEL: &str = r#"
+supply = "ac230"
+[[device]]
+id = "X0"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+[[device]]
+id = "K2"
+kind = "relay"
+[[device]]
+id = "K2_1"
+kind = "aux"
+of = "K2"
+form = "no"
+from = "Q1"
+load = "E1"
+[[device]]
+id = "K2_2"
+kind = "aux"
+of = "K2"
+form = "nc"
+from = "Q1"
+load = "E2"
+[[device]]
+id = "K2_3"
+kind = "aux"
+of = "K2"
+form = "no"
+[[device]]
+id = "E1"
+kind = "load"
+[[device]]
+id = "E2"
+kind = "load"
+"#;
+
+fn wire_keys(panel: &str) -> Vec<String> {
+    let project = pump(panel);
+    build_nets(&project, &library())
+        .wires
+        .iter()
+        .map(|w| w.key())
+        .collect()
+}
+
+/// A relay contact with a load is a one-pole device of the power chain: it passes on one
+/// conductor, from its supply terminal to its load terminal (`specs/panel-relay-contacts`, task 2).
+#[test]
+fn a_relay_contact_with_a_load_is_one_pole_in_the_power_chain() {
+    let keys = wire_keys(RELAY_PANEL);
+    for want in [
+        "Q1:2>K2_1:13",
+        "K2_1:14>E1:L",
+        "Q1:2>K2_2:21",
+        "K2_2:22>E2:L",
+    ] {
+        assert!(
+            keys.iter().any(|k| k == want),
+            "нет провода {want}: {keys:?}"
+        );
+    }
+    // Only the live conductor passes the contact: no neutral wire behind it.
+    assert!(
+        keys.iter()
+            .all(|k| !k.ends_with(">E1:N") && !k.ends_with(">E2:N")),
+        "{keys:?}"
+    );
+    // A contact with neither a feeder nor a load draws no power wires.
+    assert!(keys.iter().all(|k| !k.contains("K2_3:")), "{keys:?}");
+}
+
+/// A changeover contact with a load is wired from its common terminal `11` to its normally open one
+/// `14`.
+#[test]
+fn a_changeover_relay_contact_is_wired_to_its_normally_open_terminal() {
+    let panel = r#"
+supply = "ac230"
+[[device]]
+id = "X0"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+[[device]]
+id = "K3"
+kind = "relay"
+[[device]]
+id = "K3_1"
+kind = "aux"
+of = "K3"
+form = "changeover"
+from = "Q1"
+load = "E1"
+[[device]]
+id = "E1"
+kind = "load"
+"#;
+    let keys = wire_keys(panel);
+    assert!(keys.iter().any(|k| k == "Q1:2>K3_1:11"), "{keys:?}");
+    assert!(keys.iter().any(|k| k == "K3_1:14>E1:L"), "{keys:?}");
+}
+
+/// The contacts of a contactor, a breaker or a residual-current device never take part in the power
+/// graph, even with a load set.
+#[test]
+fn a_contact_of_a_contactor_with_a_load_draws_no_power_wires() {
+    let panel = r#"
+supply = "ac230"
+[[device]]
+id = "X0"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+load = "K1"
+[[device]]
+id = "K1"
+kind = "contactor"
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+form = "no"
+from = "Q1"
+load = "E1"
+[[device]]
+id = "E1"
+kind = "load"
+"#;
+    let keys = wire_keys(panel);
+    assert!(keys.iter().all(|k| !k.contains("K1_1:")), "{keys:?}");
+}
+
+/// The relay contacts with a load are drawn on the power sheet, named by their relay; the one
+/// without a feeder or a load is not drawn there.
+#[test]
+fn a_relay_contact_with_a_load_is_drawn_on_the_power_sheet() {
+    let (doc, _) = build_document(&pump(RELAY_PANEL), &library(), Lang::Ru).unwrap();
+    assert!(doc.power_at.contains_key("K2_1"));
+    assert!(doc.power_at.contains_key("K2_2"));
+    assert!(!doc.power_at.contains_key("K2_3"));
+    let body = &doc.sheets[1].body;
+    assert!(body.contains("-K2"), "реле назван по катушке");
+    for terminal in ["13", "14", "21", "22"] {
+        assert!(body.contains(&quoted(terminal)), "нет клеммы {terminal}");
+    }
+}
+
+/// `RELAY_PANEL` with the coil of the relay `K2` on an output of the board.
+fn bound_relay_panel() -> String {
+    RELAY_PANEL.replace(
+        "id = \"K2\"\nkind = \"relay\"\n",
+        "id = \"K2\"\nkind = \"relay\"\nbind = \"pump\"\n",
+    )
+}
+
+/// Under the designation of a relay contact on the power sheet stands the place of the relay coil.
+#[test]
+fn a_relay_contact_on_the_power_sheet_refers_to_the_coil() {
+    let (doc, _) = build_document(&pump(&bound_relay_panel()), &library(), Lang::Ru).unwrap();
+    let coil = doc
+        .coil_at
+        .get("K2")
+        .expect("катушка K2 на листе")
+        .to_string();
+    let power = doc
+        .sheets
+        .iter()
+        .find(|s| s.title == "Силовая часть")
+        .unwrap();
+    let key = |id: &str| format!("label:{id}:ref");
+    for id in ["K2_1", "K2_2"] {
+        let label = power
+            .items
+            .iter()
+            .find(
+                |i| matches!(&i.kind, crab_schematic::ItemKind::Label { key: k } if *k == key(id)),
+            )
+            .unwrap_or_else(|| panic!("нет ссылки у {id}"));
+        let found = label.ops.iter().any(
+            |&o| matches!(&power.ops[o], crab_schematic::Op::Text { text, .. } if *text == coil),
+        );
+        assert!(found, "{id}: нет ссылки {coil}");
+    }
+}
+
+/// A relay contact with a load is not drawn on the control sheet; it stays in the contact table under
+/// the coil, with the place where it stands on the power sheet.
+#[test]
+fn a_relay_contact_with_a_load_stays_in_the_contact_table() {
+    let (doc, _) = build_document(&pump(&bound_relay_panel()), &library(), Lang::Ru).unwrap();
+    assert!(doc.coil_at.contains_key("K2"));
+    for id in ["K2_1", "K2_2"] {
+        assert!(
+            !doc.coil_at.contains_key(id),
+            "{id} нарисован на листе цепей"
+        );
+    }
+    let control = doc
+        .sheets
+        .iter()
+        .find(|s| s.title == "Цепи управления")
+        .unwrap();
+    for id in ["K2_1", "K2_2"] {
+        let at = doc.power_at.get(id).expect("контакт на силовом листе");
+        assert!(
+            control.body.contains(&quoted(&at.to_string())),
+            "в таблице нет ссылки {at} на {id}"
+        );
+    }
 }

@@ -82,6 +82,16 @@ fn circle_edge(cx: f32, cy: f32, r: f32, x: f32) -> f32 {
     cy - (r * r - (x - cx) * (x - cx)).max(0.0).sqrt()
 }
 
+/// An auxiliary contact of a device as drawn on the power sheet: its form, where it is used in the
+/// circuit (the control sheet), its circuit terminals (`near`, `far`) and, for a changeover, its
+/// normally closed terminal.
+pub type AuxNote = (
+    ContactForm,
+    Option<String>,
+    (String, String),
+    Option<String>,
+);
+
 /// Captions that depend on the rest of the document.
 #[derive(Default)]
 pub struct Notes<'a> {
@@ -89,7 +99,7 @@ pub struct Notes<'a> {
     pub coil_at: Option<&'a str>,
     /// The auxiliary contacts of the device, in order: the form and where the contact is used
     /// in the circuit (the control sheet).
-    pub aux: &'a [(ContactForm, Option<String>, (String, String))],
+    pub aux: &'a [AuxNote],
     /// The temperature sensors of a motor: designation and where the sensor is drawn on the
     /// control sheet.
     pub sensors: &'a [(String, Option<String>)],
@@ -98,6 +108,10 @@ pub struct Notes<'a> {
     /// The earth of the device comes from the terminal block right above it: its earth terminal
     /// is drawn at the top, next to the poles, instead of an earth sign below.
     pub pe_top: bool,
+    /// The terminals of a contact of a relay in the power chain: the supply side, the load side.
+    pub terminals: Option<(String, String)>,
+    /// The normally closed terminal of a changeover contact of a relay (labelled, not wired).
+    pub nc: Option<String>,
 }
 
 /// Draws `device` with its column starting at `left` and its top terminals at `top`.
@@ -116,20 +130,20 @@ pub fn draw_device(
     let centre = (first + last) / 2.0;
 
     let text_x = first - 8.0;
+    // A contact of a relay is named by its relay (`-K2`), the coil of which is drawn under it.
+    let name = match device.kind {
+        DeviceKind::Aux => format!("-{}", device.of),
+        _ => device.designation(),
+    };
     // The designation is left of the symbol, the technical data under it (7.1.6.1, 7.1.2.4).
     c.begin_label(&label_key(&device.id, "name"));
-    c.bold(
-        text_x,
-        top + TEXT_Y,
-        &device.designation(),
-        TEXT,
-        Align::Right,
-        INK,
-    );
+    c.bold(text_x, top + TEXT_Y, &name, TEXT, Align::Right, INK);
     c.end_label();
     // Under the designation of a contactor or a relay: where its coil is drawn (`/17.2`).
-    let coil_line =
-        matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay) && notes.coil_at.is_some();
+    let coil_line = matches!(
+        device.kind,
+        DeviceKind::Contactor | DeviceKind::Relay | DeviceKind::Aux
+    ) && notes.coil_at.is_some();
     if let (true, Some(at)) = (coil_line, notes.coil_at) {
         c.begin_label(&label_key(&device.id, "ref"));
         c.text(text_x, top + TEXT_Y + LINE_H, at, TEXT_M, Align::Right, INK);
@@ -396,9 +410,23 @@ pub fn draw_device(
                 EARTH,
             );
         }
+        // A contact of a relay on the power sheet, when it is in a chain.
+        DeviceKind::Aux => {
+            if let Some((inn, out)) = &notes.terminals {
+                geo.out_y = top + CONTACT_H;
+                draw_relay_contact(
+                    c,
+                    device.form,
+                    poles[0],
+                    top,
+                    (inn, out),
+                    notes.nc.as_deref(),
+                );
+            }
+        }
         // Not drawn on the power sheet: the feed is the bus of the sheet, the rest belongs to
         // the control circuits.
-        DeviceKind::Feed | DeviceKind::Sensor | DeviceKind::Button | DeviceKind::Aux => {}
+        DeviceKind::Feed | DeviceKind::Sensor | DeviceKind::Button => {}
     }
     if notes.pe_top
         && matches!(
@@ -433,14 +461,46 @@ pub fn draw_earth_up(c: &mut Canvas, (x, y): (f32, f32), number: u32) {
     );
 }
 
+/// One pole of a contact of a relay in the power chain: the blade of its form, the supply terminal
+/// at the top (`inn`) and the load terminal at the bottom (`out`). A normally closed contact has the
+/// hook under its blade; a changeover has the hook to its normally closed terminal `nc`, which is
+/// only labelled.
+fn draw_relay_contact(
+    c: &mut Canvas,
+    form: ContactForm,
+    x: f32,
+    top: f32,
+    (inn, out): (&str, &str),
+    nc: Option<&str>,
+) {
+    let bottom = top + CONTACT_H;
+    let (upper, lower) = (top + CONTACT_H * 0.3, top + CONTACT_H * 0.7);
+    c.circle(x, top, DOT, THIN, INK);
+    c.circle(x, bottom, DOT, THIN, INK);
+    c.line(&[(x, top + DOT), (x, upper)], THIN, INK);
+    c.line(&[(x, lower), (x, bottom - DOT)], THIN, INK);
+    // Open: the blade moves to the right to close (7.4.4.4).
+    c.line(&[(x, upper), (x - 5.0, lower)], THIN, INK);
+    match form {
+        ContactForm::No => {}
+        // Normally closed: the blade rests on the hook of the fixed contact below it.
+        ContactForm::Nc => c.line(&[(x - 5.0, lower), (x, lower)], THIN, INK),
+        ContactForm::Changeover => {
+            c.line(&[(x - 5.0, lower), (x - 10.0, lower)], THIN, INK);
+            c.line(&[(x - 10.0, lower), (x - 10.0, bottom - DOT)], THIN, INK);
+            c.circle(x - 10.0, bottom, DOT, THIN, INK);
+            if let Some(nc) = nc {
+                c.text(x - 16.0, bottom + 4.0, nc, TEXT, Align::Right, INK);
+            }
+        }
+    }
+    c.text(x + 8.0, top + 9.0, inn, TEXT_S, Align::Left, INK);
+    c.text(x + 8.0, bottom - 9.0, out, TEXT_S, Align::Left, INK);
+}
+
 /// The auxiliary contacts of a breaker or a residual-current device right of its poles, joined to it
 /// by the mechanical link, with the terminals and where each one is used.
-fn draw_aux(
-    c: &mut Canvas,
-    kind: DeviceKind,
-    (last, top): (f32, f32),
-    aux: &[(ContactForm, Option<String>, (String, String))],
-) {
+fn draw_aux(c: &mut Canvas, kind: DeviceKind, (last, top): (f32, f32), aux: &[AuxNote]) {
     if aux.is_empty() {
         return;
     }
@@ -456,7 +516,7 @@ fn draw_aux(
     let end = first + (aux.len() - 1) as f32 * AUX_PITCH;
     let (upper, lower) = (top + CONTACT_H * 0.3, top + CONTACT_H * 0.7);
     c.dashed(&[(from, mid), (end - 5.0, mid)], THIN, INK);
-    for (j, (form, _, (near, far))) in aux.iter().enumerate() {
+    for (j, (form, _, (near, far), nc)) in aux.iter().enumerate() {
         let x = first + j as f32 * AUX_PITCH;
         c.circle(x, top, DOT, THIN, INK);
         c.circle(x, top + CONTACT_H, DOT, THIN, INK);
@@ -470,13 +530,28 @@ fn draw_aux(
                 c.line(&[(x, upper), (x - 5.0, lower)], THIN, INK);
                 c.line(&[(x - 5.0, lower), (x, lower)], THIN, INK);
             }
+            // Changeover: the open blade, and a hook on the left at its lower end down to the
+            // normally closed terminal.
+            ContactForm::Changeover => {
+                c.line(&[(x, upper), (x - 5.0, lower)], THIN, INK);
+                c.line(&[(x - 5.0, lower), (x - 10.0, lower)], THIN, INK);
+                c.line(
+                    &[(x - 10.0, lower), (x - 10.0, top + CONTACT_H - DOT)],
+                    THIN,
+                    INK,
+                );
+                c.circle(x - 10.0, top + CONTACT_H, DOT, THIN, INK);
+                if let Some(nc) = nc {
+                    c.text(x - 16.0, top + CONTACT_H + 4.0, nc, TEXT, Align::Right, INK);
+                }
+            }
         }
         c.text(x + 6.0, top + 10.0, near, TEXT, Align::Left, INK);
         c.text(x + 6.0, top + CONTACT_H - 10.0, far, TEXT, Align::Left, INK);
     }
     // Where each contact is used, one line per contact under the group.
-    let named = aux.iter().filter(|(_, at, _)| at.is_some()).count();
-    for (j, (_, at, (near, _))) in aux.iter().enumerate() {
+    let named = aux.iter().filter(|(_, at, _, _)| at.is_some()).count();
+    for (j, (_, at, (near, _), _)) in aux.iter().enumerate() {
         let Some(at) = at else { continue };
         let text = if named > 1 {
             format!("{near} {at}")
@@ -705,7 +780,8 @@ pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
         c.circle(far_x, cy, DOT, THIN, INK);
         let tip = (far_x - TABLE_TIP_GAP, cy - TABLE_BLADE_H);
         c.line(&[(near_x, cy), tip], THIN, INK);
-        if row.closed {
+        // Normally closed, and a changeover (open blade plus the hook of its other side).
+        if matches!(row.form, ContactForm::Nc | ContactForm::Changeover) {
             let hook = (tip.0 + TABLE_HOOK_W, tip.1);
             c.line(&[tip, hook, (far_x, cy)], THIN, INK);
         }
@@ -725,7 +801,8 @@ pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
 
 /// An auxiliary contact on the control sheet, drawn upright with the designation of its device
 /// left of it (`-Q2`), the terminal numbers right of the ends and `at`, where the device stands on
-/// the power sheet, under the designation. The signal side is the top end.
+/// the power sheet, under the designation. The signal side is the top end. A changeover has its
+/// normally closed terminal `nc` on the left, under the designation, with its number below it.
 pub fn draw_aux_field(
     c: &mut Canvas,
     of: &str,
@@ -733,6 +810,7 @@ pub fn draw_aux_field(
     (x, top): (f32, f32),
     (top_label, bottom_label): (&str, &str),
     at: Option<&str>,
+    nc: Option<&str>,
 ) -> Field {
     c.circle(x, top, DOT, THIN, INK);
     c.circle(x, top + AUX_H, DOT, THIN, INK);
@@ -746,6 +824,21 @@ pub fn draw_aux_field(
             c.line(&[(x, top + 10.0), (x - 8.0, top + 40.0)], THIN, INK);
             c.line(&[(x - 8.0, top + 40.0), (x, top + 40.0)], THIN, INK);
         }
+        // Changeover: the open blade, and a hook on the left at its lower end down to the
+        // normally closed terminal.
+        ContactForm::Changeover => {
+            c.line(&[(x, top + 10.0), (x - 8.0, top + 40.0)], THIN, INK);
+            c.line(&[(x - 8.0, top + 40.0), (x - 14.0, top + 40.0)], THIN, INK);
+            c.line(
+                &[(x - 14.0, top + 40.0), (x - 14.0, top + AUX_H - DOT)],
+                THIN,
+                INK,
+            );
+            c.circle(x - 14.0, top + AUX_H, DOT, THIN, INK);
+            if let Some(nc) = nc {
+                c.text(x - 14.0, top + AUX_H + 12.0, nc, TEXT, Align::Center, INK);
+            }
+        }
     }
     c.bold(
         x - 14.0,
@@ -756,7 +849,13 @@ pub fn draw_aux_field(
         INK,
     );
     if let Some(at) = at {
-        c.text(x - 14.0, top + 43.0, at, TEXT, Align::Right, INK);
+        // A changeover moves the device reference left, clear of its hook.
+        let at_x = if form == ContactForm::Changeover {
+            x - 18.0
+        } else {
+            x - 14.0
+        };
+        c.text(at_x, top + 43.0, at, TEXT, Align::Right, INK);
     }
     c.text(x + 8.0, top + 8.0, top_label, TEXT, Align::Left, WEAK);
     c.text(
