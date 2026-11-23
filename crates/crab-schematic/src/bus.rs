@@ -20,6 +20,16 @@ pub struct Elsewhere {
     pub sheet: usize,
 }
 
+/// The x of the end of a bus that ends at `end`: at the right frame when it goes on to another
+/// sheet (`goes_on`), else at `end`.
+pub fn stop(page: &Page, end: f32, goes_on: bool) -> f32 {
+    if goes_on {
+        end.max(page.x1() - TAIL)
+    } else {
+        end
+    }
+}
+
 /// The way a bus is drawn.
 pub struct Style {
     pub width: f32,
@@ -44,11 +54,7 @@ pub fn draw(
     prev: Option<Elsewhere>,
     next: Option<Elsewhere>,
 ) {
-    let stop = if next.is_some() {
-        end.max(page.x1() - TAIL)
-    } else {
-        end
-    };
+    let stop = stop(page, end, next.is_some());
     match style.riser {
         Some(from) => c.line(
             &[(start, from), (start, y), (stop, y)],

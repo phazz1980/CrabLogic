@@ -7,7 +7,7 @@ use crab_core::{DeviceKind, Project};
 use crate::canvas::{Align, Canvas, CHAR_W, INK, TEXT as FONT, TEXT_L, THICK, THIN, WEAK};
 use crate::doc::{Page, Sheet};
 use crate::lang::Lang;
-use crate::nets::{Nets, WireClass};
+use crate::nets::{end_name, Nets, WireClass};
 
 const ROW_H: f32 = 20.0;
 const HEAD_H: f32 = 30.0;
@@ -129,8 +129,8 @@ pub fn wires_table(nets: &Nets, lang: Lang) -> Table {
             vec![
                 w.number.to_string(),
                 class_name(w.class, lang).to_owned(),
-                w.from.to_string(),
-                w.to.to_string(),
+                end_name(&w.from),
+                end_name(&w.to),
             ]
         })
         .collect::<Vec<_>>();

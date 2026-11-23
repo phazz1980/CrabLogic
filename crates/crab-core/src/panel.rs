@@ -39,6 +39,16 @@ impl Supply {
             Self::Ac400 => (3, 4),
         }
     }
+
+    /// The conductors of the supply, in the order of the poles: the names a `bus:<name>` link end
+    /// can give (`L1`, `N`); a 24 V supply has its `+24V` and `0V`.
+    pub fn lines(self) -> &'static [&'static str] {
+        match self {
+            Self::Dc24 => &["+24V", "0V"],
+            Self::Ac230 => &["L", "N"],
+            Self::Ac400 => &["L1", "L2", "L3", "N"],
+        }
+    }
 }
 
 /// Kind of a panel device; the letter code of the designation follows IEC 81346.
@@ -222,6 +232,12 @@ impl WireLink {
 /// The device of an end of a link (`K1:A2` → `K1`).
 pub fn link_device(end: &str) -> &str {
     end.split_once(':').map_or(end, |(device, _)| device)
+}
+
+/// The supply line of a link end that is a bus (`bus:0V` → `0V`, `bus:L1` → `L1`); `None` for a
+/// terminal of a device. Whether the line exists is checked where the wires are worked out.
+pub fn link_bus(end: &str) -> Option<&str> {
+    end.strip_prefix("bus:").filter(|name| !name.is_empty())
 }
 
 /// The panel of a project.

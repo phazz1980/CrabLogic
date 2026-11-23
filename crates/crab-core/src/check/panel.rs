@@ -170,7 +170,37 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
                 device.id
             ));
         }
+        // `bus:<name>` in a link is a supply line, so the name is not a device's.
+        if device.id.eq_ignore_ascii_case("bus") {
+            error(format!(
+                "-{}: обозначение занято под шины, выберите другое",
+                device.id
+            ));
+        }
         *seen.entry(device.id.as_str()).or_default() += 1;
+    }
+    // A wire to a supply line names one of the lines of this panel: the 24 V rails and the
+    // conductors of the supply.
+    let mut lines: Vec<&str> = vec!["+24V", "0V"];
+    for line in panel.supply.lines() {
+        if !lines.contains(line) {
+            lines.push(line);
+        }
+    }
+    for link in &panel.links {
+        for end in [&link.from, &link.to] {
+            if let Some(name) = crate::link_bus(end) {
+                if !lines.contains(&name) {
+                    error(format!(
+                        "провод -{} — {}: такой шины нет (есть: {})",
+                        link.from,
+                        link.to,
+                        lines.join(", ")
+                    ));
+                    break;
+                }
+            }
+        }
     }
     for (i, device) in panel.devices.iter().enumerate() {
         // Say it once, at the first of the equal ones.
@@ -188,8 +218,13 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     for device in &panel.devices {
         let want = need(device.kind);
         if device.bind.is_empty() {
-            // An auxiliary contact may stay unbound: it is then only drawn on the power sheet.
-            if want.is_some() && device.kind != DeviceKind::Aux {
+            // An auxiliary contact may stay unbound: it is then only drawn on the power sheet. A
+            // device wired by hand (a coil with a hand wire to `A1`, a sensor with one to its
+            // signal) is driven by that wire instead of a binding.
+            let wired = panel.links.iter().any(|l| {
+                crate::link_device(&l.from) == device.id || crate::link_device(&l.to) == device.id
+            });
+            if want.is_some() && device.kind != DeviceKind::Aux && !wired {
                 error(format!(
                     "{} не привязано к входу или выходу проекта",
                     device.designation()

@@ -60,7 +60,8 @@ pub use local::LocalValues;
 pub use logic::{Block, Link, Logic, PortRef, PortRefError};
 pub use logic::{SheetExecution, SheetSpeed};
 pub use panel::{
-    link_device, ContactForm, Device, DeviceKind, Panel, Supply, WireLink, PANEL_FILE, PANEL_PDF,
+    link_bus, link_device, ContactForm, Device, DeviceKind, Panel, Supply, WireLink, PANEL_FILE,
+    PANEL_PDF,
 };
 pub use panel_edit::{rebind_device, rename_device, rename_devices, rewire, WireEnd};
 pub use panel_layout::{

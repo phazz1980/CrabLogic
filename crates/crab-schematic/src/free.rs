@@ -5,11 +5,11 @@
 use crab_core::{split_part, Project, SheetId, MAX_SHEETS};
 
 use crate::canvas::Canvas;
-use crate::control::{draw_hand, generated_on_control, Hand, Pins, Refs};
+use crate::control::{draw_hand, generated_on_control, note_terminals, Hand, Pins, Rails, Refs};
 use crate::doc::{Page, Sheet};
 use crate::lang::Lang;
 use crate::nets::Nets;
-use crate::xref::Xrefs;
+use crate::xref::{TerminalXrefs, Xrefs};
 
 /// How many free sheets the layout asks for: up to the last one that has a caption or a device
 /// put on it by hand. Free sheets are numbered `free:0`, `free:1`, … with no gap.
@@ -51,8 +51,9 @@ pub(crate) fn free_sheets(
     count: usize,
     contacts: &Xrefs,
     coils: &Xrefs,
+    terminals: &TerminalXrefs,
     page: &Page,
-) -> (Vec<Sheet>, Xrefs) {
+) -> (Vec<Sheet>, Xrefs, TerminalXrefs) {
     let mut generated = generated_on_control(&project.panel, nets);
     generated.extend(contacts.keys().cloned());
     let hand = Hand {
@@ -63,12 +64,15 @@ pub(crate) fn free_sheets(
         refs: Refs {
             power: contacts,
             coils,
+            terminals,
         },
+        rails: &Rails::new(),
         lang,
         generated: &generated,
     };
     let mut sheets = Vec::new();
     let mut places = Xrefs::new();
+    let mut drawn = TerminalXrefs::new();
     for index in 0..count {
         let id = SheetId::Free(index);
         let mut c = Canvas::new();
@@ -84,6 +88,7 @@ pub(crate) fn free_sheets(
             &mut pins,
             &mut places,
         );
+        note_terminals(&mut drawn, page, first + index, &pins);
         // The default caption tells the sheets apart in the contents: `Схема 1`, `Схема 2`, …
         let default = format!("{} {}", lang.pick("Схема", "Diagram"), index + 1);
         let title = project
@@ -92,5 +97,5 @@ pub(crate) fn free_sheets(
             .map_or(default, str::to_owned);
         sheets.push(Sheet::new(Some(id), title, c));
     }
-    (sheets, places)
+    (sheets, places, drawn)
 }

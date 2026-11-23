@@ -32,7 +32,7 @@ pub use nets::{build_nets, BoardTerminal, Nets, Pin, Wire, WireClass, BOARD, EXT
 pub use scene::{Dir, End, Item, ItemKind, Port};
 pub use sheet_names::sheet_designations;
 pub use tables::{device_kind_name, Table, Tables};
-pub use xref::{Xref, Xrefs};
+pub use xref::{TerminalXrefs, Xref, Xrefs};
 
 /// Document number of the first drawing sheet: the title sheet is number 1.
 const FIRST_DRAWING_SHEET: usize = 2;
@@ -67,44 +67,73 @@ pub fn build_document_in(
     // depend on the captions or on the coils), the second one writes the references to the places
     // of the other part.
     let none = Xrefs::new();
-    let (power, power_at, hand_power) = power::power_sheets(
+    let no_terminals = TerminalXrefs::new();
+    let (power, power_at, hand_power, power_terminals) = power::power_sheets(
         panel,
         layout,
         &nets,
         lang,
         FIRST_DRAWING_SHEET,
         &none,
+        &no_terminals,
         &page,
     )?;
     let first_control = FIRST_DRAWING_SHEET + power.len();
-    let (control, control_coils) =
-        control::control_sheets(project, &nets, lang, first_control, &power_at, &none, &page);
+    let (control, control_coils, control_terminals) = control::control_sheets(
+        project,
+        &nets,
+        lang,
+        first_control,
+        &power_at,
+        &none,
+        &no_terminals,
+        &page,
+    );
     let first_free = first_control + control.len();
     let free_count = free::count(project);
-    let (_, hand_free) = free::free_sheets(
-        project, &nets, lang, first_free, free_count, &power_at, &none, &page,
+    let (_, hand_free, free_terminals) = free::free_sheets(
+        project,
+        &nets,
+        lang,
+        first_free,
+        free_count,
+        &power_at,
+        &none,
+        &no_terminals,
+        &page,
     );
     let coil_at = merge_coils(control_coils, [hand_power, hand_free]);
-    let (power, _, _) = power::power_sheets(
+    let terminal_at = merge_terminals([power_terminals, control_terminals, free_terminals]);
+    let (power, _, _, _) = power::power_sheets(
         panel,
         layout,
         &nets,
         lang,
         FIRST_DRAWING_SHEET,
         &coil_at,
+        &terminal_at,
         &page,
     )?;
-    let (control, _) = control::control_sheets(
+    let (control, _, _) = control::control_sheets(
         project,
         &nets,
         lang,
         first_control,
         &power_at,
         &coil_at,
+        &terminal_at,
         &page,
     );
-    let (free, _) = free::free_sheets(
-        project, &nets, lang, first_free, free_count, &power_at, &coil_at, &page,
+    let (free, _, _) = free::free_sheets(
+        project,
+        &nets,
+        lang,
+        first_free,
+        free_count,
+        &power_at,
+        &coil_at,
+        &terminal_at,
+        &page,
     );
     let mut sheets = power;
     sheets.extend(control);
@@ -127,9 +156,22 @@ pub fn build_document_in(
         sheets,
         power_at,
         coil_at,
+        terminal_at,
         tables,
     };
     Ok((doc, nets))
+}
+
+/// The places of the terminals of all the sheets: the first sheet that draws a terminal keeps it,
+/// the sheets are given in the order of the document.
+fn merge_terminals(maps: [TerminalXrefs; 3]) -> TerminalXrefs {
+    let mut all = TerminalXrefs::new();
+    for map in maps {
+        for (terminal, at) in map {
+            all.entry(terminal).or_insert(at);
+        }
+    }
+    all
 }
 
 /// The places of the coils and auxiliary contacts: the ones drawn on the control sheets, then the

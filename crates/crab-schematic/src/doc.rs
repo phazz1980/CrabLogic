@@ -15,7 +15,7 @@ use crab_core::SheetId;
 use crate::canvas::{Align, Canvas, Op, EXTRA, INK, TEXT, TEXT_S, THICK, THIN, WEAK};
 use crate::lang::Lang;
 use crate::tables::Tables;
-use crate::xref::Xrefs;
+use crate::xref::{TerminalXrefs, Xrefs};
 
 /// The module M of GOST IEC 61082-1 5.7.3.2 in units of a quarter of a millimetre: 2.5 mm.
 pub const M: f32 = 10.0;
@@ -194,6 +194,8 @@ pub struct Document {
     pub power_at: Xrefs,
     /// Where each device of the control sheets is drawn (a coil, a sensor, a button).
     pub coil_at: Xrefs,
+    /// Where each terminal drawn on the sheets is (the other ends of the hand wires).
+    pub terminal_at: TerminalXrefs,
     /// The tables on the last sheets; also written as CSV (`crablogic panel --csv`).
     pub tables: Tables,
 }

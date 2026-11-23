@@ -16,7 +16,32 @@ pub const BOARD: &str = "A1";
 /// Designation of a source outside the panel (a feed or a 24 V supply nobody listed).
 pub const EXTERNAL: &str = "EXT";
 
+/// Device of a wire end that is a supply line (`bus:0V` in a link): the line is named by its end,
+/// not by a terminal. A wire joins the line as its own node, not the one the generator draws.
+pub const BUS: &str = "bus";
+
 const CONTROL: [&str; 2] = ["+24V", "0V"];
+
+/// What a supply line carries: a 24 V rail, or a conductor of the mains. `None` for a name that is
+/// no line of the supply.
+fn bus_class(supply: Supply, name: &str) -> Option<WireClass> {
+    if CONTROL.contains(&name) {
+        Some(WireClass::Control)
+    } else if mains(supply).contains(&name) {
+        Some(WireClass::Power)
+    } else {
+        None
+    }
+}
+
+/// An end of a wire as the list writes it: `K1:A2`, and the name of the line for a bus (`0V`).
+pub fn end_name(pin: &Pin) -> String {
+    if pin.device == BUS {
+        pin.terminal.clone()
+    } else {
+        pin.to_string()
+    }
+}
 
 /// A terminal of a device: `K1:2`, `A1:IO26`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -116,8 +141,7 @@ impl Nets {
 pub fn mains(supply: Supply) -> &'static [&'static str] {
     match supply {
         Supply::Dc24 => &CONTROL,
-        Supply::Ac230 => &["L", "N"],
-        Supply::Ac400 => &["L1", "L2", "L3", "N"],
+        _ => supply.lines(),
     }
 }
 
@@ -225,7 +249,7 @@ pub fn contact_all_terminals(k: usize, form: ContactForm) -> Vec<String> {
 
 /// Terminal of `device` for the conductor number `i` (`name`) on its supply side. A relay contact
 /// has one pole: its supply terminal.
-fn in_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
+pub(crate) fn in_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
     if is_relay_contact(panel, device) {
         return Pin::new(&device.id, aux_terminals(panel, device).0);
     }
@@ -238,7 +262,7 @@ fn in_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
 
 /// Terminal of `device` for the conductor number `i` (`name`) on its load side. A relay contact
 /// has one pole: its load terminal.
-fn out_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
+pub(crate) fn out_pin(panel: &Panel, device: &Device, i: usize, name: &str) -> Pin {
     if is_relay_contact(panel, device) {
         return Pin::new(&device.id, aux_terminals(panel, device).1);
     }
@@ -310,7 +334,11 @@ pub fn terminals_of(panel: &Panel, device: &Device) -> Vec<String> {
 
 /// The wires that make one conductor: those that share a terminal (not through a terminal block). Returns the groups of the
 /// indices of `wires`, in the order of their first wire.
-fn join_wires(wires: &[Wire], terminals: &HashSet<&str>) -> Vec<Vec<usize>> {
+fn join_wires(
+    wires: &[Wire],
+    terminals: &HashSet<&str>,
+    lines: &HashMap<String, String>,
+) -> Vec<Vec<usize>> {
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut parent: Vec<usize> = Vec::new();
     fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -326,7 +354,13 @@ fn join_wires(wires: &[Wire], terminals: &HashSet<&str>) -> Vec<Vec<usize>> {
         // comes in and the side it goes on.
         let mut id = |pin: &Pin, side: &str| {
             let next = parent.len();
-            let name = if terminals.contains(pin.device.as_str()) {
+            let name = if pin.device == BUS {
+                // A wire to a supply line is the conductor the generator draws under its name.
+                lines
+                    .get(&pin.terminal)
+                    .cloned()
+                    .unwrap_or_else(|| pin.to_string())
+            } else if terminals.contains(pin.device.as_str()) {
                 format!("{pin}/{side}")
             } else {
                 pin.to_string()
@@ -589,26 +623,40 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         .iter()
         .filter_map(|link| {
             let (from, to) = (pin_of(&link.from)?, pin_of(&link.to)?);
-            let known = |p: &Pin| {
-                p.device == BOARD || p.device == EXTERNAL || ids.contains(p.device.as_str())
+            let known = |p: &Pin| match p.device.as_str() {
+                BUS => bus_class(panel.supply, &p.terminal).is_some(),
+                device => device == BOARD || device == EXTERNAL || ids.contains(device),
             };
-            (known(&from) && known(&to) && from != to).then(|| Draft {
+            let buses = from.device == BUS && to.device == BUS;
+            if !(known(&from) && known(&to) && from != to && !buses) {
+                return None;
+            }
+            let bus = [&from, &to]
+                .into_iter()
+                .find(|p| p.device == BUS)
+                .and_then(|p| bus_class(panel.supply, &p.terminal));
+            Some(Draft {
                 class: if from.device == BOARD || to.device == BOARD {
                     WireClass::Signal
                 } else {
-                    WireClass::Control
+                    bus.unwrap_or(WireClass::Control)
                 },
                 from,
                 to,
             })
         })
         .collect();
+    // A wire to a supply line adds to the potential of the terminal, it does not replace the
+    // automatic wire there: only the wires between two terminals of the panel do.
     drafts.retain(|d| {
-        !manual.iter().any(|m| {
-            [&m.from, &m.to]
-                .iter()
-                .any(|p| **p == d.from || **p == d.to)
-        })
+        !manual
+            .iter()
+            .filter(|m| m.from.device != BUS && m.to.device != BUS)
+            .any(|m| {
+                [&m.from, &m.to]
+                    .iter()
+                    .any(|p| **p == d.from || **p == d.to)
+            })
     });
     let manual_keys: Vec<String> = manual
         .iter()
@@ -638,7 +686,20 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         .filter(|d| d.kind == DeviceKind::Terminal)
         .map(|d| d.id.as_str())
         .collect();
-    let nets = join_wires(&wires, &terminals);
+    // The conductor of each supply line, by its name: the 24 V source, or the feed (or the
+    // outside) for the mains. A wire to `bus:<name>` joins it.
+    let mut lines: HashMap<String, String> = HashMap::new();
+    for (i, name) in CONTROL.into_iter().enumerate() {
+        lines.insert(name.to_owned(), source(name, i).to_string());
+    }
+    for (i, name) in mains(panel.supply).iter().enumerate() {
+        let pin = match feed {
+            Some(feed) => out_pin(panel, feed, i, name),
+            None => Pin::new(EXTERNAL, *name),
+        };
+        lines.entry((*name).to_owned()).or_insert(pin.to_string());
+    }
+    let nets = join_wires(&wires, &terminals, &lines);
     for (net, members) in nets.iter().enumerate() {
         members.iter().for_each(|&i| wires[i].net = net);
     }

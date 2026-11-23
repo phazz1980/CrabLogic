@@ -14,8 +14,8 @@ use std::collections::{HashMap, HashSet};
 
 use crab_core::panel_layout::label_key;
 use crab_core::{
-    part_key, split_part, symbol_key, ContactForm, Device, DeviceKind, Panel, PanelLayout, Project,
-    SheetId, COIL, MAX_SHEETS,
+    link_bus, part_key, split_part, symbol_key, ContactForm, Device, DeviceKind, Panel,
+    PanelLayout, Project, SheetId, COIL, MAX_SHEETS,
 };
 
 use crate::bus::{self, Elsewhere, TAIL};
@@ -31,7 +31,7 @@ use crate::symbols::{
     draw_aux_field, draw_channel, draw_device, draw_field_device, draw_table, Field, Notes, AUX_H,
     CHANNEL_H, FIELD_PITCH, SENSOR_SIGNAL_DX,
 };
-use crate::xref::{Xref, Xrefs};
+use crate::xref::{TerminalXrefs, Xref, Xrefs};
 
 /// Distance between the columns: the room of the widest device of a column.
 const PITCH: f32 = FIELD_PITCH;
@@ -226,6 +226,30 @@ pub(crate) struct Refs<'a> {
     pub power: &'a Xrefs,
     /// Where the coils and the auxiliary contacts are drawn.
     pub coils: &'a Xrefs,
+    /// Where every terminal drawn on the sheets is (the other ends of the hand wires).
+    pub terminals: &'a TerminalXrefs,
+}
+
+/// A bus line drawn on a sheet, for a hand wire to join: its height and the span it runs over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Rail {
+    pub y: f32,
+    pub from: f32,
+    pub to: f32,
+}
+
+/// The bus lines drawn on a sheet, by the name a link end gives them (`+24V`, `L1`).
+pub(crate) type Rails = HashMap<String, Rail>;
+
+/// Notes where the terminals of the sheet `sheet` are drawn, for the hand wires that end on another
+/// sheet. The first sheet that has a terminal keeps its place.
+pub(crate) fn note_terminals(into: &mut TerminalXrefs, page: &Page, sheet: usize, pins: &Pins) {
+    for (key, (at, _)) in pins {
+        into.entry(key.clone()).or_insert_with(|| Xref {
+            sheet,
+            zone: page.zone(at.0, at.1),
+        });
+    }
 }
 
 /// The keys of the devices and of their parts that the generator draws on the control sheets: the
@@ -260,6 +284,8 @@ pub(crate) struct Hand<'a> {
     pub nets: &'a Nets,
     pub page: &'a Page,
     pub refs: Refs<'a>,
+    /// The bus lines this sheet draws.
+    pub rails: &'a Rails,
     /// Language of the texts of the symbols.
     pub lang: Lang,
     /// Keys (`K1`, `K1/coil`) of the devices and parts the generator draws on some sheet: a hand
@@ -333,38 +359,118 @@ pub(crate) fn draw_hand(
             found.insert(name, xref);
         }
     }
-    draw_links(c, panel, hand.nets, pins);
+    draw_links(c, hand, sheet, pins);
 }
 
-/// Draws the wires drawn by hand between terminals (`panel.links`) whose two ends are in `pins`,
-/// each with its number.
-pub(crate) fn draw_links(c: &mut Canvas, panel: &Panel, nets: &Nets, pins: &Pins) {
-    for (lane, link) in panel.links.iter().enumerate() {
-        let end = |s: &str| {
-            let (device, terminal) = s.split_once(':')?;
-            pins.get(&(device.to_owned(), terminal.to_owned())).copied()
-        };
-        let (Some(a), Some(b)) = (end(&link.from), end(&link.to)) else {
+/// Length of the stub a hand wire leaves its terminal with, up to the break mark, when its other
+/// end is on another sheet or on a supply line this sheet does not draw.
+const BREAK_STUB: f32 = 20.0;
+/// The table under a coil put by hand starts this far under the break of its `A2` wire.
+const HAND_TABLE_GAP: f32 = 24.0;
+
+/// Draws the wires drawn by hand between terminals (`panel.links`), each with its number, on the
+/// sheet `sheet`. A wire with both ends in `pins` is drawn to its end. A wire with one end here
+/// (`pins`) is drawn to a break mark: a supply line this sheet draws is reached by a vertical wire,
+/// any other ends in a stub that is named with the place of the other end (`/2.3`) or with the name
+/// of the line. A link the nets do not know (an unknown line) is not drawn.
+pub(crate) fn draw_links(c: &mut Canvas, hand: &Hand, sheet: usize, pins: &Pins) {
+    for (lane, link) in hand.panel.links.iter().enumerate() {
+        let Some(wire) = hand.nets.wires.iter().find(|w| w.key() == link.key()) else {
             continue;
         };
-        let wire = nets.wires.iter().find(|w| w.key() == link.key());
+        let at = |end: &str| {
+            let (device, terminal) = end.split_once(':')?;
+            pins.get(&(device.to_owned(), terminal.to_owned())).copied()
+        };
         let (from_device, from_terminal) = link.from.split_once(':').unwrap_or((&link.from, ""));
         let (to_device, to_terminal) = link.to.split_once(':').unwrap_or((&link.to, ""));
-        c.begin(ItemKind::Wire {
+        let kind = || ItemKind::Wire {
             key: link.key(),
             from: End::new(from_device, from_terminal),
             to: End::new(to_device, to_terminal),
-        });
-        let points = link_route(a, b, (lane % 5) as f32 * 5.0);
-        c.line(&points, THIN, INK);
-        c.dot(a.0 .0, a.0 .1, DOT, INK);
-        c.dot(b.0 .0, b.0 .1, DOT, INK);
-        if let Some(w) = wire {
-            let mid = ((points[1].0 + points[2].0) / 2.0, points[1].1);
-            c.wire_number(&w.label_key(), mid, &w.number.to_string(), INK);
+        };
+        match (at(&link.from), at(&link.to)) {
+            (Some(a), Some(b)) => {
+                c.begin(kind());
+                let points = link_route(a, b, (lane % 5) as f32 * 5.0);
+                c.line(&points, THIN, INK);
+                c.dot(a.0 .0, a.0 .1, DOT, INK);
+                c.dot(b.0 .0, b.0 .1, DOT, INK);
+                let mid = ((points[1].0 + points[2].0) / 2.0, points[1].1);
+                c.wire_number(&wire.label_key(), mid, &wire.number.to_string(), INK);
+                c.end();
+            }
+            (Some(near), None) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.to),
+            (None, Some(near)) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.from),
+            (None, None) => {}
         }
-        c.end();
     }
+}
+
+/// Draws the part of a hand wire on this sheet, from its terminal `near` (its place and the
+/// direction it leaves in) to the end `far`, which is not on this sheet.
+fn draw_stub(
+    c: &mut Canvas,
+    hand: &Hand,
+    sheet: usize,
+    (wire, kind): (&Wire, ItemKind),
+    (point, dir): ((f32, f32), Dir),
+    far: &str,
+) {
+    if let Some(rail) = link_bus(far).and_then(|name| hand.rails.get(name)) {
+        if (rail.from..=rail.to).contains(&point.0) {
+            c.begin(kind);
+            c.line(&[point, (point.0, rail.y)], THIN, INK);
+            c.dot(point.0, point.1, DOT, INK);
+            c.dot(point.0, rail.y, DOT, INK);
+            let mid = (point.0, (point.1 + rail.y) / 2.0);
+            c.wire_number(&wire.label_key(), mid, &wire.number.to_string(), INK);
+            c.end();
+            return;
+        }
+    }
+    let (dx, dy) = match dir {
+        Dir::Up => (0.0, -1.0),
+        Dir::Down => (0.0, 1.0),
+        Dir::Left => (-1.0, 0.0),
+        Dir::Right => (1.0, 0.0),
+    };
+    let tip = (point.0 + dx * BREAK_STUB, point.1 + dy * BREAK_STUB);
+    // The name of the line, or the place of the other end when it is drawn on another sheet.
+    let label = match link_bus(far) {
+        Some(name) => Some(name.to_owned()),
+        None => far
+            .split_once(':')
+            .and_then(|(device, terminal)| {
+                hand.refs
+                    .terminals
+                    .get(&(device.to_owned(), terminal.to_owned()))
+            })
+            .filter(|at| at.sheet != sheet)
+            .map(|at| at.to_string()),
+    };
+    c.begin(kind);
+    c.line(&[point, tip], THIN, INK);
+    c.dot(point.0, point.1, DOT, INK);
+    // The break mark: an arrow head at the end of the stub, pointing on to the other end.
+    let back = (tip.0 - dx * 6.0, tip.1 - dy * 6.0);
+    let (wx, wy) = (-dy * 3.0, dx * 3.0);
+    c.line(
+        &[(back.0 + wx, back.1 + wy), tip, (back.0 - wx, back.1 - wy)],
+        THIN,
+        INK,
+    );
+    if let Some(text) = label {
+        let (x, align) = if dx < 0.0 {
+            (tip.0 - 5.0, Align::Right)
+        } else {
+            (tip.0 + 5.0, Align::Left)
+        };
+        c.text(x, tip.1 + 4.0, &text, TEXT, align, INK);
+    }
+    let mid = ((point.0 + tip.0) / 2.0, (point.1 + tip.1) / 2.0);
+    c.wire_number(&wire.label_key(), mid, &wire.number.to_string(), INK);
+    c.end();
 }
 
 /// One contact of the table under a coil: its two terminals, its form, and the reference of the
@@ -508,7 +614,10 @@ pub(crate) fn draw_coil(
         origin: (x, top),
         ports: Vec::new(),
     });
-    draw_field_device(c, device, (x, top), table);
+    // A coil put by hand has no `0V` rail under it: its `A2` wire runs down (to a break or to a
+    // device), so its table stands lower than in the ladder, clear of that wire's end.
+    draw_field_device(c, device, (x, top), &ContactTable::default());
+    draw_table(c, x, top + 50.0 + BREAK_STUB + HAND_TABLE_GAP, table);
     c.port(item, port("A1", (x, top), Dir::Up));
     c.port(item, port("A2", (x, top + 50.0), Dir::Down));
     c.end();
@@ -1134,6 +1243,7 @@ fn draw_column(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, p
 /// The first sheet has the document number `first`; `contacts` says where the contacts of the coils
 /// are drawn on the power sheets, `coils` where the coils and the auxiliary contacts are drawn (the
 /// references under the coils). Returns the sheets and the place of every device drawn.
+#[allow(clippy::too_many_arguments)]
 pub fn control_sheets(
     project: &Project,
     nets: &Nets,
@@ -1141,8 +1251,9 @@ pub fn control_sheets(
     first: usize,
     contacts: &Xrefs,
     coils: &Xrefs,
+    terminals: &TerminalXrefs,
     page: &Page,
-) -> (Vec<Sheet>, Xrefs) {
+) -> (Vec<Sheet>, Xrefs, TerminalXrefs) {
     let panel = &project.panel;
     let layout = &project.panel_layout;
     let column_x0 = page.x0() + COLUMN_DX;
@@ -1174,7 +1285,7 @@ pub fn control_sheets(
         pack_rows(&rows, capacity)
     };
     if sheet_rows.is_empty() {
-        return (Vec::new(), Xrefs::new());
+        return (Vec::new(), Xrefs::new(), TerminalXrefs::new());
     }
     // Where the 24 V come from: the device that feeds the rail.
     let source = nets
@@ -1211,6 +1322,10 @@ pub fn control_sheets(
     generated.extend(contacts.keys().cloned());
     let mut sheets = Vec::new();
     let mut places = Xrefs::new();
+    let mut drawn = TerminalXrefs::new();
+    // The rails run from the left of the body to the right edge, with the references to the
+    // neighbouring sheets at their ends.
+    let (from, to) = (page.x0() + RAIL_DX, page.x1() - TAIL);
     for (index, chunk) in sheet_rows.iter().enumerate() {
         let id = SheetId::Control(index);
         let sheet_no = first + index;
@@ -1235,6 +1350,11 @@ pub fn control_sheets(
             draw_caption(&mut c, row.device, x, page.y1() - CAPTION_DY, row.tag);
         }
 
+        // The rails of the sheet, for the hand wires to join (drawn below).
+        let rails: Rails = [(plus, "+24V"), (zero, "0V")]
+            .into_iter()
+            .map(|(y, name)| (name.to_owned(), Rail { y, from, to }))
+            .collect();
         // The devices put on the sheet by hand, then the wires drawn by hand between terminals.
         let hand = Hand {
             panel,
@@ -1244,7 +1364,9 @@ pub fn control_sheets(
             refs: Refs {
                 power: contacts,
                 coils,
+                terminals,
             },
+            rails: &rails,
             lang,
             generated: &generated,
         };
@@ -1257,10 +1379,8 @@ pub fn control_sheets(
             &mut pins,
             &mut places,
         );
+        note_terminals(&mut drawn, page, sheet_no, &pins);
 
-        // The rails run from the left of the body to the right edge, with the references to the
-        // neighbouring sheets at their ends.
-        let (from, to) = (page.x0() + RAIL_DX, page.x1() - TAIL);
         let sheet_of = |i: usize| Elsewhere { sheet: first + i };
         let style = bus::Style {
             width: THIN,
@@ -1305,7 +1425,7 @@ pub fn control_sheets(
         let caption = layout.caption(id).map_or(default, str::to_owned);
         sheets.push(Sheet::new(Some(id), caption, c));
     }
-    (sheets, places)
+    (sheets, places, drawn)
 }
 
 #[cfg(test)]

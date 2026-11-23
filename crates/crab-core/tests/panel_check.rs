@@ -211,3 +211,58 @@ fn wrong_letter_is_a_warning_only() {
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].message.contains("начинается с «Q»"));
 }
+
+#[test]
+fn a_device_cannot_be_named_as_a_bus() {
+    // `bus:<name>` in a link is a supply line: the device name is taken, in any case.
+    for name in ["bus", "BUS"] {
+        let found = errors(&changed("id = \"M1\"", &format!("id = \"{name}\"")));
+        let taken = format!("-{name}: обозначение занято под шины, выберите другое");
+        assert_eq!(
+            found.iter().filter(|m| m.contains(&taken)).count(),
+            1,
+            "{found:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_coil_wired_by_hand_needs_no_binding() {
+    // Unbound, the contactor is refused; with a hand wire to its coil it is driven by that wire.
+    let unbound = changed("bind = \"pump\"\n", "");
+    assert!(errors(&unbound)
+        .iter()
+        .any(|m| m.contains("не привязано к входу или выходу проекта")));
+    let mut wired = unbound;
+    wired.panel.links.push(crab_core::WireLink {
+        from: "K1:A2".to_owned(),
+        to: "bus:0V".to_owned(),
+    });
+    assert!(!errors(&wired)
+        .iter()
+        .any(|m| m.contains("не привязано к входу или выходу проекта")));
+}
+
+#[test]
+fn a_bus_end_names_a_line_of_the_panel() {
+    // On a 230 V panel the lines are the 24 V rails and `L`, `N`.
+    let with = |link: &str| {
+        pump_with(&format!(
+            "supply = \"ac230\"\n{GOOD}\n[[link]]\nfrom = \"K1:A2\"\nto = \"{link}\"\n"
+        ))
+    };
+    for good in ["bus:0V", "bus:+24V", "bus:L", "bus:N"] {
+        let found = errors(&with(good));
+        assert!(
+            found.iter().all(|m| !m.contains("такой шины нет")),
+            "{good}: {found:#?}"
+        );
+    }
+    let found = errors(&with("bus:X9"));
+    let wanted = "провод -K1:A2 — bus:X9: такой шины нет (есть: +24V, 0V, L, N)";
+    assert_eq!(
+        found.iter().filter(|m| m.as_str() == wanted).count(),
+        1,
+        "{found:#?}"
+    );
+}

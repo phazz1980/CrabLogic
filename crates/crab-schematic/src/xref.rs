@@ -47,6 +47,10 @@ pub fn find_ref(text: &str) -> Option<(Option<usize>, String)> {
 /// Places of devices by designation (`K1`).
 pub type Xrefs = HashMap<String, Xref>;
 
+/// Places of terminals by device and terminal (`K1`, `A2`): where each terminal is drawn on the
+/// sheets, for the hand wires that end on another sheet.
+pub type TerminalXrefs = HashMap<(String, String), Xref>;
+
 #[cfg(test)]
 mod tests {
     use super::find_ref;

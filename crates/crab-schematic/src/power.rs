@@ -14,18 +14,21 @@ use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, She
 
 use crate::bus::{self, Elsewhere};
 use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_S, THICK, WEAK};
-use crate::control::{draw_hand, Hand, Pins, Refs};
+use crate::control::{draw_hand, note_terminals, Hand, Pins, Rail, Rails, Refs};
 use crate::doc::{Page, Sheet};
 use crate::error::Error;
 use crate::lang::Lang;
-use crate::nets::{changeover_nc, is_relay_contact, mains, Nets, Wire, WireClass, EXTERNAL};
+use crate::nets::{
+    changeover_nc, in_pin, is_relay_contact, mains, out_pin, Nets, Pin, Wire, WireClass, BUS,
+    EXTERNAL,
+};
 use crate::route;
 use crate::scene::{Dir, End, ItemKind, Port};
 use crate::symbols::{
     column_width, contacts_x, draw_device, draw_earth, draw_earth_up, AuxNote, Geometry, Notes,
     HEIGHT,
 };
-use crate::xref::{Xref, Xrefs};
+use crate::xref::{TerminalXrefs, Xref, Xrefs};
 
 /// Distance between the buses of the conductors below the feed.
 const BUS_STEP: f32 = 20.0;
@@ -145,6 +148,7 @@ impl Grid {
 /// relays and the auxiliary contacts are drawn (for the references under them). Returns the sheets,
 /// the place of every device drawn on them (the contacts of a device), and the places of the coils
 /// and auxiliary contacts put on these sheets by hand.
+#[allow(clippy::too_many_arguments)]
 pub fn power_sheets(
     panel: &Panel,
     layout: &PanelLayout,
@@ -152,8 +156,9 @@ pub fn power_sheets(
     lang: Lang,
     first_sheet: usize,
     coils: &Xrefs,
+    terminals: &TerminalXrefs,
     page: &Page,
-) -> Result<(Vec<Sheet>, Xrefs, Xrefs), Error> {
+) -> Result<(Vec<Sheet>, Xrefs, Xrefs, TerminalXrefs), Error> {
     let n = mains(panel.supply).len();
     let feed = panel.devices.iter().find(|d| d.kind == DeviceKind::Feed);
     let root = feed.map_or(EXTERNAL, |f| f.id.as_str());
@@ -161,6 +166,10 @@ pub fn power_sheets(
     let mut edges: HashMap<&str, Edge> = HashMap::new();
     let mut earth: HashMap<&str, &Wire> = HashMap::new();
     for w in &nets.wires {
+        // A hand wire to a supply line is drawn by the link alone: it is no step of the chain.
+        if w.from.device == BUS || w.to.device == BUS {
+            continue;
+        }
         match w.class {
             WireClass::Power => edges
                 .entry(w.to.device.as_str())
@@ -198,7 +207,7 @@ pub fn power_sheets(
         }
     }
     if starts.is_empty() && branches.is_empty() {
-        return Ok((Vec::new(), Xrefs::new(), Xrefs::new()));
+        return Ok((Vec::new(), Xrefs::new(), Xrefs::new(), TerminalXrefs::new()));
     }
     let mut chains: Vec<Vec<&Device>> = starts
         .iter()
@@ -391,6 +400,7 @@ pub fn power_sheets(
     let mut generated = crate::control::generated_on_control(panel, nets);
     generated.extend(slot.keys().map(|id| (*id).to_owned()));
     let mut sheets = Vec::new();
+    let mut drawn = TerminalXrefs::new();
     // The coils and auxiliary contacts put on these sheets by hand.
     let mut hand = Xrefs::new();
     for index in 0..total {
@@ -402,6 +412,7 @@ pub fn power_sheets(
             .collect();
         placed.sort_by_key(|(_, s)| (s.col, s.row));
         let mut c = Canvas::new();
+        let mut rails = Rails::new();
         c.use_labels(layout);
         c.set_sheet(&format!("p{index}"));
         // The line can be moved by hand, but not above the frame.
@@ -450,6 +461,8 @@ pub fn power_sheets(
             INK,
         );
 
+        // The terminals the generator draws (where a hand wire from another sheet may end).
+        let mut pins = Pins::new();
         // Devices.
         let mut geos: HashMap<&str, Geometry> = HashMap::new();
         for &(d, s) in &placed {
@@ -517,6 +530,28 @@ pub fn power_sheets(
                 c.port(item, port(format!("in:{k}"), x, geo.in_y, Dir::Up));
                 if geo.out_y != geo.in_y {
                     c.port(item, port(format!("out:{k}"), x, geo.out_y, Dir::Down));
+                }
+            }
+            // The terminals at the same places as the ports: the supply side and the load side of
+            // each pole, named as the wires name them (`K1:1`, `Q1:2`).
+            for (k, &x) in geo.poles.iter().enumerate() {
+                let Some(name) = mains(panel.supply).get(k) else {
+                    break;
+                };
+                let (inn, out) = (in_pin(panel, d, k, name), out_pin(panel, d, k, name));
+                // An input device stands with the lines going up through it: its supply side is
+                // its lower end (`out_y`), where the lines come in, and its load side the top.
+                let (in_side, out_side) = if s.input {
+                    ((geo.out_y, Dir::Down), (geo.in_y, Dir::Up))
+                } else {
+                    ((geo.in_y, Dir::Up), (geo.out_y, Dir::Down))
+                };
+                let mut place = |pin: Pin, (y, dir): (f32, Dir)| {
+                    pins.insert((pin.device, pin.terminal), ((x, y), dir));
+                };
+                place(inn.clone(), in_side);
+                if inn != out && (s.input || geo.out_y != geo.in_y) {
+                    place(out, out_side);
                 }
             }
             if let Some((x, y)) = geo.pe {
@@ -745,19 +780,31 @@ pub fn power_sheets(
                 let sheet_of = |j: usize| Elsewhere {
                     sheet: first_sheet + j,
                 };
+                let start = if index == 0 {
+                    line_x(k)
+                } else {
+                    page.x0() + 40.0
+                };
+                let prev = carried_from[index][k]
+                    .or_else(|| (0..index).rev().find(|&j| has_bus[j][k]))
+                    .map(sheet_of);
+                let next = carried_to[index]
+                    .or_else(|| (index + 1..total).find(|&j| has_bus[j][k]))
+                    .map(sheet_of);
+                rails.insert(
+                    mains(panel.supply)[k].to_owned(),
+                    Rail {
+                        y: bus_y(k),
+                        from: start,
+                        to: bus::stop(page, *end, next.is_some()),
+                    },
+                );
                 c.begin(ItemKind::Bus { index, k });
                 bus::draw(
                     &mut c,
                     page,
                     bus_y(k),
-                    (
-                        if index == 0 {
-                            line_x(k)
-                        } else {
-                            page.x0() + 40.0
-                        },
-                        *end,
-                    ),
+                    (start, *end),
                     &bus_label(panel.supply, k),
                     &bus::Style {
                         width: THICK,
@@ -765,12 +812,8 @@ pub fn power_sheets(
                         bold: false,
                         riser: (index == 0).then(|| riser_from(k)),
                     },
-                    carried_from[index][k]
-                        .or_else(|| (0..index).rev().find(|&j| has_bus[j][k]))
-                        .map(sheet_of),
-                    carried_to[index]
-                        .or_else(|| (index + 1..total).find(|&j| has_bus[j][k]))
-                        .map(sheet_of),
+                    prev,
+                    next,
                 );
                 c.end();
             }
@@ -853,7 +896,6 @@ pub fn power_sheets(
         draw_captions(&mut c, &placed, &geos, &next_of, page);
 
         // The devices put on the sheet by hand, and the wires drawn by hand between them.
-        let mut pins = Pins::new();
         let view = Hand {
             panel,
             layout,
@@ -862,7 +904,9 @@ pub fn power_sheets(
             refs: Refs {
                 power: &places,
                 coils,
+                terminals,
             },
+            rails: &rails,
             lang,
             generated: &generated,
         };
@@ -875,6 +919,7 @@ pub fn power_sheets(
             &mut pins,
             &mut hand,
         );
+        note_terminals(&mut drawn, page, first_sheet + index, &pins);
 
         let title = lang.pick("Силовая часть", "Power circuit");
         let default = if total > 1 {
@@ -886,7 +931,7 @@ pub fn power_sheets(
         let caption = layout.caption(id).map_or(default, str::to_owned);
         sheets.push(Sheet::new(Some(id), caption, c));
     }
-    Ok((sheets, places, hand))
+    Ok((sheets, places, hand, drawn))
 }
 
 /// The captions under the columns of a sheet that end in a load (motor, load, power supply): the
