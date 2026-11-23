@@ -374,7 +374,21 @@ pub(crate) struct ContactRow {
     pub near: String,
     pub far: String,
     pub form: ContactForm,
+    /// For a changeover contact: its normally closed terminal (`12`, with `near` `11` and `far`
+    /// `14`). `None` for the other forms.
+    pub changeover: Option<String>,
     pub at: Option<String>,
+}
+
+impl ContactRow {
+    /// Lines of the table the row takes: a changeover contact takes two.
+    pub(crate) fn lines(&self) -> usize {
+        if self.changeover.is_some() {
+            2
+        } else {
+            1
+        }
+    }
 }
 
 /// The table of the contacts under a coil: the rows, and how many contacts are not shown.
@@ -410,6 +424,7 @@ pub(crate) fn contact_table(
                 near: near.clone(),
                 far: far.clone(),
                 form: ContactForm::No,
+                changeover: None,
                 at: pole_at.clone(),
             }),
             _ => None,
@@ -421,6 +436,7 @@ pub(crate) fn contact_table(
             near,
             far,
             form: aux.form,
+            changeover: changeover_nc(panel, aux),
             // A contact of a relay with a load is drawn on the power sheet, not beside its coil.
             at: coils
                 .get(&aux.id)
@@ -431,14 +447,25 @@ pub(crate) fn contact_table(
     limit_table(rows)
 }
 
-/// Keeps the table within `MAX_TABLE_LINES` lines: when there are more rows, the first
-/// `MAX_TABLE_LINES - 1` are kept and `hidden` counts the rest (drawn as the `+N` line).
+/// Keeps the table within `MAX_TABLE_LINES` lines: when the rows take more, the first rows that
+/// fit in `MAX_TABLE_LINES - 1` lines are kept and `hidden` counts the rest (drawn as the `+N`
+/// line).
 fn limit_table(mut rows: Vec<ContactRow>) -> ContactTable {
-    let mut hidden = 0;
-    if rows.len() > MAX_TABLE_LINES {
-        hidden = rows.len() - (MAX_TABLE_LINES - 1);
-        rows.truncate(MAX_TABLE_LINES - 1);
+    let total: usize = rows.iter().map(ContactRow::lines).sum();
+    if total <= MAX_TABLE_LINES {
+        return ContactTable { rows, hidden: 0 };
     }
+    let mut kept = 0;
+    let mut used = 0;
+    for row in &rows {
+        if used + row.lines() > MAX_TABLE_LINES - 1 {
+            break;
+        }
+        used += row.lines();
+        kept += 1;
+    }
+    let hidden = rows.len() - kept;
+    rows.truncate(kept);
     ContactTable { rows, hidden }
 }
 
@@ -1304,6 +1331,7 @@ mod tests {
             near: format!("{i}1"),
             far: format!("{i}2"),
             form: ContactForm::No,
+            changeover: None,
             at: None,
         };
         let rows: Vec<ContactRow> = (0..10).map(row).collect();
@@ -1314,5 +1342,35 @@ mod tests {
         assert_eq!(shown.rows.last(), Some(&row(6)));
         let full = limit_table(rows[..MAX_TABLE_LINES].to_vec());
         assert_eq!((full.rows.len(), full.hidden), (MAX_TABLE_LINES, 0));
+    }
+
+    #[test]
+    fn a_changeover_row_counts_two_lines() {
+        let plain = |i: usize| ContactRow {
+            near: format!("{i}3"),
+            far: format!("{i}4"),
+            form: ContactForm::No,
+            changeover: None,
+            at: None,
+        };
+        let changeover = ContactRow {
+            near: "11".to_owned(),
+            far: "14".to_owned(),
+            form: ContactForm::Changeover,
+            changeover: Some("12".to_owned()),
+            at: None,
+        };
+        assert_eq!(changeover.lines(), 2);
+        // The changeover and six rows fill the eight lines: nothing is left out.
+        let mut rows = vec![changeover.clone()];
+        rows.extend((1..=6).map(plain));
+        let full = limit_table(rows.clone());
+        assert_eq!((full.rows.len(), full.hidden), (7, 0));
+        // One row more: the changeover and five rows stay, `+2` is the eighth line.
+        rows.push(plain(7));
+        let shown = limit_table(rows);
+        assert_eq!(shown.rows.len(), 6);
+        assert_eq!(shown.hidden, 2);
+        assert_eq!(shown.rows[0], changeover);
     }
 }

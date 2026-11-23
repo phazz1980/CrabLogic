@@ -146,7 +146,7 @@ fn rect_centre(body: &str, w: f32, h: f32) -> (f32, f32) {
 fn the_zone_of_a_coil_is_the_zone_where_it_is_drawn() {
     let doc = document(&pump(PUMP_PANEL));
     let coil = &doc.coil_at["K1"];
-    let (x, y) = rect_centre(&doc.sheets[coil.sheet - 1].body, 20.0, 50.0);
+    let (x, y) = rect_centre(&doc.sheets[coil.sheet - 1].body, 30.0, 15.0);
     assert_eq!(coil.zone, Page::default().zone(x, y));
     // The sensor is a box of 60 × 50 on the same sheet.
     let sensor = &doc.coil_at["B1"];
@@ -1186,4 +1186,107 @@ fn the_supply_note_does_not_cover_the_first_table() {
             );
         }
     }
+}
+
+/// A changeover contact of `K1` in series with its coil (`K1_3`), and one under the coil (`K1_4`).
+const CHANGEOVER_SERIES: &str = "
+[[device]]
+id = \"K1_3\"
+kind = \"aux\"
+of = \"K1\"
+series = \"K1\"
+form = \"changeover\"
+";
+const CHANGEOVER_TABLE: &str = "
+[[device]]
+id = \"K1_4\"
+kind = \"aux\"
+of = \"K1\"
+form = \"changeover\"
+";
+
+/// The place of a text of the control sheet (`x`, `y`), if it is written there.
+fn text_at(texts: &[(f32, f32, String)], x: f32, y: f32, text: &str) -> bool {
+    texts
+        .iter()
+        .any(|(tx, ty, s)| (tx - x).abs() < 0.01 && (ty - y).abs() < 0.01 && s == text)
+}
+
+/// The series changeover: `11` at the top right, `14` on the axis at the bottom right, and `12`
+/// left of the normally closed terminal at the height of `14`, with no other text next to it.
+#[test]
+fn a_series_changeover_labels_its_12_clear_of_the_wires() {
+    let doc = document(&pump(&format!("{PUMP_PANEL}{CHANGEOVER_SERIES}")));
+    let (x, top) = symbol_origin(&doc, "control", "K1_3").expect("контакт K1_3");
+    let texts = control_texts(&doc);
+    assert!(
+        text_at(&texts, x + 8.0, top + 8.0, "11"),
+        "нет «11»: {texts:?}"
+    );
+    assert!(
+        text_at(&texts, x + 8.0, top + 42.0, "14"),
+        "нет «14»: {texts:?}"
+    );
+    let twelve_y = top + 42.0;
+    assert!(
+        text_at(&texts, x - 14.0, twelve_y, "12"),
+        "«12» не слева от клеммы на уровне «14»: {texts:?}"
+    );
+    for (tx, ty, text) in &texts {
+        if text == "12" {
+            continue;
+        }
+        let near = (ty - twelve_y).abs() < 8.0 && *tx > x - 30.0 && *tx < x - 6.0;
+        assert!(!near, "«{text}» рядом с «12»: {texts:?}");
+    }
+}
+
+/// A changeover row of the table takes two lines: `11` and `14` on the lower one, `12` on the
+/// upper one, and the dashed link runs past both.
+#[test]
+fn a_changeover_row_of_the_table_takes_two_lines() {
+    let doc = document(&pump(&format!("{PUMP_PANEL}{CHANGEOVER_TABLE}")));
+    let texts = table_texts(&doc, "K1");
+    let place = |t: &str| {
+        texts
+            .iter()
+            .find(|(_, _, s)| s == t)
+            .map(|(x, y, _)| (*x, *y))
+            .unwrap_or_else(|| panic!("нет «{t}»: {texts:?}"))
+    };
+    let (x11, y11) = place("11");
+    let (x12, y12) = place("12");
+    let (x14, y14) = place("14");
+    assert_eq!(y11, y14, "11 и 14 на одной строке");
+    assert!(x12 > x11 && x14 > x11, "11 слева, 12 и 14 справа");
+    assert!(
+        (y11 - y12).abs() >= 8.0,
+        "12 и 11 на разных строках: {y12} {y11}"
+    );
+
+    // The dashed link of the table runs on the axis from the first row past the last line.
+    let (x, _) = symbol_origin(&doc, "control", "K1").expect("катушка");
+    let sheet = doc
+        .sheets
+        .iter()
+        .find(|s| matches!(s.id, Some(SheetId::Control(_))))
+        .expect("лист управления");
+    let links: Vec<Vec<(f32, f32)>> = sheet
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Line {
+                points,
+                dashed: true,
+                ..
+            } if points.iter().all(|(px, _)| (px - x).abs() < 0.01) => Some(points.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(links.len(), 1, "пунктирная связь: {links:?}");
+    let (top, bottom) = (links[0][0].1, links[0][links[0].len() - 1].1);
+    assert!(
+        top <= y12 && bottom >= y11,
+        "связь не проходит обе строки: {links:?}"
+    );
 }

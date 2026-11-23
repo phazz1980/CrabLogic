@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crab_core::panel::is_valid_designation;
-use crab_core::{check_panel, Library, Panel, Project};
+use crab_core::{check_panel, Library, Panel, Project, Severity};
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -102,6 +102,32 @@ fn a_contact_needs_a_switching_device_and_a_coil() {
     let mut p = panel(BASE);
     p.devices.iter_mut().find(|d| d.id == "K1_1").unwrap().bind = "pump".into();
     assert!(errors(&p).iter().any(|m| m.contains("нужно что-то одно")));
+}
+
+#[test]
+fn a_contact_without_a_coil_is_a_warning_not_an_error() {
+    let mut p = panel(BASE);
+    p.devices.iter_mut().find(|d| d.id == "Q1_1").unwrap().of = String::new();
+    let (lib, _) = Library::load(repo_path("library")).unwrap();
+    let mut project = Project::load(repo_path("examples/pump")).unwrap();
+    project.panel = p;
+    let report = check_panel(&project, &lib);
+    let warnings: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        warnings.contains(&"-Q1_1: контакт не привязан к катушке"),
+        "{warnings:#?}"
+    );
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.message.contains("Q1_1") && d.message.contains("аппарата")),
+        "{report:#?}"
+    );
 }
 
 #[test]

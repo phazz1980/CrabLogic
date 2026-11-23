@@ -125,6 +125,20 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     if panel.is_empty() {
         return report;
     }
+    // A contact that is not bound to a coil yet is a warning: the sheet still builds.
+    for device in panel
+        .devices
+        .iter()
+        .filter(|d| d.kind == DeviceKind::Aux && d.of.is_empty())
+    {
+        report.push(
+            DiagKind::Panel,
+            Severity::Warning,
+            None,
+            None,
+            format!("{}: контакт не привязан к катушке", device.designation()),
+        );
+    }
     let mut error = |message: String| {
         report.push(DiagKind::Panel, Severity::Error, None, None, message);
     };
@@ -274,6 +288,8 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     for device in panel.devices.iter().filter(|d| d.kind == DeviceKind::Aux) {
         let name = format!("доп. контакт {}", device.id);
         match panel.device(&device.of) {
+            // Reported as a warning above.
+            None if device.of.is_empty() => {}
             None => error(format!(
                 "{name}: нет аппарата «{}», которому он принадлежит",
                 device.of

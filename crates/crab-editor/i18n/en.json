@@ -1352,7 +1352,7 @@
  "Номер": "Number",
  "уже у другого провода": "is already on another wire",
  "Добавить доп. контакт": "Add auxiliary contact",
- "Доп. контакты без аппарата": "Contacts without a device",
+ "Контакты без катушки": "Contacts without a coil",
  "Аппарат": "Device",
  "Тип контакта": "Contact type",
  "Замыкающий": "Normally open",

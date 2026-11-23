@@ -597,6 +597,11 @@ const TABLE_TIP_GAP: f32 = 8.0;
 /// Length of the hook of a normally closed contact of the table, from the tip of the blade.
 const TABLE_HOOK_W: f32 = 6.0;
 
+/// Width of the body of a coil.
+const COIL_BODY_W: f32 = 30.0;
+/// Height of the body of a coil.
+const COIL_BODY_H: f32 = 15.0;
+
 /// Draws a coil, a sensor or a button on the control sheet, its top terminal at `(x, top)`.
 /// `contacts` is the table of the contacts of a coil (`control::contact_table`); it is drawn under
 /// the coil. Kinds without a place on the control sheet draw nothing.
@@ -610,13 +615,33 @@ pub fn draw_field_device(
     let dot = |c: &mut Canvas, x: f32, y: f32| c.circle(x, y, DOT, THIN, INK);
     match device.kind {
         DeviceKind::Contactor | DeviceKind::Relay => {
-            c.rect(x - 10.0, top, 20.0, 50.0, THIN, INK);
+            // A wide body (about 11 x 5 mm, as in cabinet documentation) between two leads; the
+            // terminals stay 50 apart so the ladder keeps its rows.
+            let body_top = top + 25.0 - COIL_BODY_H / 2.0;
+            let body_bottom = top + 25.0 + COIL_BODY_H / 2.0;
+            c.line(&[(x, top), (x, body_top)], THIN, INK);
+            c.rect(
+                x - COIL_BODY_W / 2.0,
+                body_top,
+                COIL_BODY_W,
+                COIL_BODY_H,
+                THIN,
+                INK,
+            );
+            c.line(&[(x, body_bottom), (x, top + 50.0)], THIN, INK);
             dot(c, x, top);
             dot(c, x, top + 50.0);
-            // The designation is left of the symbol (7.1.6.1).
-            c.bold(x - 18.0, top + 25.0, &name, TEXT, Align::Right, INK);
-            c.text(x + 15.0, top + 8.0, "A1", TEXT, Align::Left, WEAK);
-            c.text(x + 15.0, top + 42.0, "A2", TEXT, Align::Left, WEAK);
+            // The designation is left of the symbol (7.1.6.1); the terminals right of the leads.
+            c.bold(
+                x - COIL_BODY_W / 2.0 - 5.0,
+                top + 25.0,
+                &name,
+                TEXT,
+                Align::Right,
+                INK,
+            );
+            c.text(x + 4.0, top + 11.0, "A1", TEXT, Align::Left, WEAK);
+            c.text(x + 4.0, top + 43.0, "A2", TEXT, Align::Left, WEAK);
             // Under the A2 terminal, right of the wire that runs down from it to the 0 V bus.
             draw_table(c, x, top + 64.0, contacts);
             Some(Field {
@@ -756,14 +781,52 @@ pub(crate) fn draw_channel(
 /// a row (where the contact is drawn) stands at its left; `+N` ends the table when rows are left out.
 pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
     let rows = &table.rows;
-    let centre = |i: usize| y + (i as f32 + 0.5) * TABLE_LINE_H;
-    if rows.len() >= 2 {
-        let last = centre(rows.len() - 1);
-        c.dashed(&[(x, centre(0)), (x, last)], THIN, INK);
+    // The first line of each row: a changeover row takes two lines.
+    let mut starts = Vec::with_capacity(rows.len());
+    let mut lines = 0;
+    for row in rows {
+        starts.push(lines);
+        lines += row.lines();
+    }
+    let line = |first: usize, k: f32| y + (first as f32 + k) * TABLE_LINE_H;
+    if let Some(last) = rows.last() {
+        // The mechanical link runs from the first row to the last line of the last row, past the
+        // two lines of a changeover.
+        if rows.len() >= 2 {
+            let top = line(starts[0], 0.5);
+            let bottom = line(starts[rows.len() - 1] + last.lines() - 1, 0.5);
+            c.dashed(&[(x, top), (x, bottom)], THIN, INK);
+        }
     }
     let (near_x, far_x) = (x - TABLE_HALF_W, x + TABLE_HALF_W);
     for (i, row) in rows.iter().enumerate() {
-        let cy = centre(i);
+        if let Some(nc) = &row.changeover {
+            // Changeover, two lines: the common terminal on the lower line, the blade rising to the
+            // hook of the normally closed terminal on the upper line; the normally open terminal
+            // is on the lower line, at the right.
+            let (up, lo) = (line(starts[i], 0.5), line(starts[i], 1.5));
+            if let Some(at) = &row.at {
+                c.text(x - TABLE_REF_DX, up, at, TEXT_S, Align::Right, INK);
+            }
+            c.text(
+                near_x - TABLE_NUM_DX,
+                lo,
+                &row.near,
+                TEXT_S,
+                Align::Right,
+                INK,
+            );
+            c.text(far_x + TABLE_NUM_DX, up, nc, TEXT_S, Align::Left, INK);
+            c.text(far_x + TABLE_NUM_DX, lo, &row.far, TEXT_S, Align::Left, INK);
+            c.circle(near_x, lo, DOT, THIN, INK);
+            c.circle(far_x, lo, DOT, THIN, INK);
+            c.circle(far_x, up, DOT, THIN, INK);
+            let hook_start = (far_x - TABLE_HOOK_W, up);
+            c.line(&[(near_x, lo), hook_start], THIN, INK);
+            c.line(&[hook_start, (far_x, up)], THIN, INK);
+            continue;
+        }
+        let cy = line(starts[i], 0.5);
         if let Some(at) = &row.at {
             c.text(x - TABLE_REF_DX, cy, at, TEXT_S, Align::Right, INK);
         }
@@ -780,17 +843,16 @@ pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
         c.circle(far_x, cy, DOT, THIN, INK);
         let tip = (far_x - TABLE_TIP_GAP, cy - TABLE_BLADE_H);
         c.line(&[(near_x, cy), tip], THIN, INK);
-        // Normally closed, and a changeover (open blade plus the hook of its other side).
-        if matches!(row.form, ContactForm::Nc | ContactForm::Changeover) {
+        // Normally closed: the blade rests on a hook that runs to the far terminal.
+        if row.form == ContactForm::Nc {
             let hook = (tip.0 + TABLE_HOOK_W, tip.1);
             c.line(&[tip, hook, (far_x, cy)], THIN, INK);
         }
     }
     if table.hidden > 0 {
-        let cy = centre(rows.len());
         c.text(
             x,
-            cy,
+            y + (lines as f32 + 0.5) * TABLE_LINE_H,
             &format!("+{}", table.hidden),
             TEXT_S,
             Align::Center,
@@ -802,7 +864,7 @@ pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, table: &ContactTable) {
 /// An auxiliary contact on the control sheet, drawn upright with the designation of its device
 /// left of it (`-Q2`), the terminal numbers right of the ends and `at`, where the device stands on
 /// the power sheet, under the designation. The signal side is the top end. A changeover has its
-/// normally closed terminal `nc` on the left, under the designation, with its number below it.
+/// normally closed terminal `nc` on the left stub, its number left of the terminal.
 pub fn draw_aux_field(
     c: &mut Canvas,
     of: &str,
@@ -824,19 +886,18 @@ pub fn draw_aux_field(
             c.line(&[(x, top + 10.0), (x - 8.0, top + 40.0)], THIN, INK);
             c.line(&[(x - 8.0, top + 40.0), (x, top + 40.0)], THIN, INK);
         }
-        // Changeover: the open blade, and a hook on the left at its lower end down to the
-        // normally closed terminal.
+        // Changeover (IEC 60617): the blade goes down and left to the hook of the normally closed
+        // contact, a stub 8 left of the axis that ends in its terminal at the foot; the normally
+        // open terminal is on the axis, under the gap the blade leaves.
         ContactForm::Changeover => {
-            c.line(&[(x, top + 10.0), (x - 8.0, top + 40.0)], THIN, INK);
-            c.line(&[(x - 8.0, top + 40.0), (x - 14.0, top + 40.0)], THIN, INK);
-            c.line(
-                &[(x - 14.0, top + 40.0), (x - 14.0, top + AUX_H - DOT)],
-                THIN,
-                INK,
-            );
-            c.circle(x - 14.0, top + AUX_H, DOT, THIN, INK);
+            let (nc_x, nc_y) = (x - 8.0, top + AUX_H);
+            c.line(&[(x, top + 10.0), (nc_x, top + 30.0)], THIN, INK);
+            c.line(&[(nc_x, top + 30.0), (nc_x + 5.0, top + 30.0)], THIN, INK);
+            c.line(&[(nc_x, top + 30.0), (nc_x, nc_y - DOT)], THIN, INK);
+            c.circle(nc_x, nc_y, DOT, THIN, INK);
+            // Left of the terminal, at the height of the `14` label on the right.
             if let Some(nc) = nc {
-                c.text(x - 14.0, top + AUX_H + 12.0, nc, TEXT, Align::Center, INK);
+                c.text(nc_x - 6.0, nc_y - 8.0, nc, TEXT, Align::Right, WEAK);
             }
         }
     }
@@ -849,13 +910,14 @@ pub fn draw_aux_field(
         INK,
     );
     if let Some(at) = at {
-        // A changeover moves the device reference left, clear of its hook.
-        let at_x = if form == ContactForm::Changeover {
-            x - 18.0
+        // A changeover keeps its reference above the designation: under it, the `12` label of the
+        // normally closed terminal would be in the way.
+        let at_y = if form == ContactForm::Changeover {
+            top + 12.0
         } else {
-            x - 14.0
+            top + 43.0
         };
-        c.text(at_x, top + 43.0, at, TEXT, Align::Right, INK);
+        c.text(x - 14.0, at_y, at, TEXT, Align::Right, INK);
     }
     c.text(x + 8.0, top + 8.0, top_label, TEXT, Align::Left, WEAK);
     c.text(

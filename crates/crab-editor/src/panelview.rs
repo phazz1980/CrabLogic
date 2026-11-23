@@ -490,13 +490,13 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
     let orphans: Vec<&Device> = panel
         .devices
         .iter()
-        .filter(|d| d.kind == DeviceKind::Aux && panel.device(&d.of).is_none())
+        .filter(|d| d.kind == DeviceKind::Aux && (d.of.is_empty() || panel.device(&d.of).is_none()))
         .collect();
     if !orphans.is_empty() {
         group(
             ui,
             ("panel_group", "orphans"),
-            tr("Доп. контакты без аппарата"),
+            tr("Контакты без катушки"),
             Level::Sub,
             |_| {},
             |ui| {
