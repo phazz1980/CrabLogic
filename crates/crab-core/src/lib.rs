@@ -62,7 +62,7 @@ pub use logic::{SheetExecution, SheetSpeed};
 pub use panel::{
     link_device, ContactForm, Device, DeviceKind, Panel, Supply, WireLink, PANEL_FILE, PANEL_PDF,
 };
-pub use panel_edit::{rebind_device, rename_device, rename_devices};
+pub use panel_edit::{rebind_device, rename_device, rename_devices, rewire, WireEnd};
 pub use panel_layout::{
     bus_key, part_key, split_part, symbol_key, PanelLayout, Placed, SheetId, SymbolShift,
     WireShape, COIL, MAX_SHEETS, PANEL_LAYOUT_FILE,

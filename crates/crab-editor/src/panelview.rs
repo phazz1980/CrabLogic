@@ -84,6 +84,14 @@ enum Drag {
         from: (String, String),
         at: (f32, f32),
     },
+    /// The end of a wire moved to another terminal (with Ctrl): the wire key, which end, where
+    /// it was, and the terminals it may be dropped on (`DEV:terminal` and their places).
+    Rewire {
+        key: String,
+        end: crab_core::WireEnd,
+        at: (f32, f32),
+        targets: Vec<(String, (f32, f32))>,
+    },
 }
 
 /// A device dragged from the tree: dropped on a control sheet it is put there.
@@ -1686,18 +1694,152 @@ fn port_at(
             .iter()
             .find(|pt| (pt.x - p.x).hypot(pt.y - p.y) <= tolerance)
             .map(|pt| {
-                // A part of a device (`K1/coil`, the channel `A1/IO5` of the board) is wired as
-                // the device: the ends of a wire are `K1:A1`, `A1:IO5`.
-                let owner = crab_core::split_part(device).0;
-                let terminal = match (*view, panel.device(owner)) {
-                    ("control", Some(d)) => {
-                        crab_schematic::control::terminal_of_port(panel, d, &pt.name)
-                    }
-                    _ => pt.name.clone(),
-                };
-                (owner.to_owned(), terminal, (pt.x, pt.y))
+                let (owner, terminal) = port_terminal(panel, view, device, &pt.name);
+                (owner, terminal, (pt.x, pt.y))
             })
     })
+}
+
+/// The device and the terminal a port of a symbol is wired as. A part of a device (`K1/coil`,
+/// the channel `A1/IO5` of the board) is wired as the device: the ends of a wire are `K1:A1`,
+/// `A1:IO5`; a port of a control symbol is named by the terminal of the device.
+fn port_terminal(
+    panel: &crab_core::Panel,
+    view: &str,
+    device: &str,
+    port: &str,
+) -> (String, String) {
+    let owner = crab_core::split_part(device).0;
+    let terminal = match (view, panel.device(owner)) {
+        ("control", Some(d)) => crab_schematic::control::terminal_of_port(panel, d, port),
+        _ => port.to_owned(),
+    };
+    (owner.to_owned(), terminal)
+}
+
+/// The end of a wire under a point of the page, the nearest one: the wire key, which end it is
+/// and where. Which end a point of the wire is comes from the symbol whose port it touches (a
+/// signal wire is drawn from the device to the board, though its key starts at the board); a
+/// point on no port counts by the drawing order: the first point is the `from` end.
+fn wire_end_at(
+    sheet: &Sheet,
+    p: Pos2,
+    tolerance: f32,
+) -> Option<(String, crab_core::WireEnd, (f32, f32))> {
+    // A wire ends a dot (2.5) away from its port: the nearest port within a little more.
+    let owner_at = |q: (f32, f32)| {
+        sheet
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Symbol { device, ports, .. } => Some((device, ports)),
+                _ => None,
+            })
+            .flat_map(|(device, ports)| {
+                ports
+                    .iter()
+                    .map(move |pt| ((pt.x - q.0).hypot(pt.y - q.1), device))
+            })
+            .filter(|(d, _)| *d <= 3.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, device)| crab_core::split_part(device).0)
+    };
+    let mut best: Option<(f32, String, crab_core::WireEnd, (f32, f32))> = None;
+    for item in &sheet.items {
+        let ItemKind::Wire { key, from, to } = &item.kind else {
+            continue;
+        };
+        let lines: Vec<&Vec<(f32, f32)>> = item
+            .ops
+            .iter()
+            .filter_map(|&o| match sheet.ops.get(o) {
+                Some(Op::Line { points, .. }) => Some(points),
+                _ => None,
+            })
+            .collect();
+        let (Some(&first), Some(&last)) = (
+            lines.first().and_then(|l| l.first()),
+            lines.last().and_then(|l| l.last()),
+        ) else {
+            continue;
+        };
+        for (q, by_order) in [
+            (first, crab_core::WireEnd::From),
+            (last, crab_core::WireEnd::To),
+        ] {
+            let d = (q.0 - p.x).hypot(q.1 - p.y);
+            if d > tolerance || best.as_ref().is_some_and(|b| b.0 <= d) {
+                continue;
+            }
+            let end = match owner_at(q) {
+                Some(owner) if owner == to.device && owner != from.device => crab_core::WireEnd::To,
+                Some(owner) if owner == from.device && owner != to.device => {
+                    crab_core::WireEnd::From
+                }
+                _ => by_order,
+            };
+            best = Some((d, key.clone(), end, q));
+        }
+    }
+    best.map(|(_, key, end, q)| (key, end, q))
+}
+
+/// The terminal (`DEV:terminal`) of any symbol of the sheet under a point of the page.
+fn terminal_at(sheet: &Sheet, panel: &crab_core::Panel, p: Pos2, tolerance: f32) -> Option<String> {
+    sheet.items.iter().find_map(|item| {
+        let ItemKind::Symbol {
+            view,
+            device,
+            ports,
+            ..
+        } = &item.kind
+        else {
+            return None;
+        };
+        ports
+            .iter()
+            .find(|pt| (pt.x - p.x).hypot(pt.y - p.y) <= tolerance)
+            .map(|pt| {
+                let (owner, terminal) = port_terminal(panel, view, device, &pt.name);
+                format!("{owner}:{terminal}")
+            })
+    })
+}
+
+/// Where the end `end` of the wire `key` can be dropped: each terminal of the sheet the panel
+/// accepts it on (`DEV:terminal`), with the place to mark. Each is tried on a copy of the project.
+fn rewire_targets(
+    sheet: &Sheet,
+    project: &crab_core::Project,
+    lib: &crab_core::Library,
+    key: &str,
+    end: crab_core::WireEnd,
+) -> Vec<(String, (f32, f32))> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in &sheet.items {
+        let ItemKind::Symbol {
+            view,
+            device,
+            ports,
+            ..
+        } = &item.kind
+        else {
+            continue;
+        };
+        for pt in ports {
+            let (owner, terminal) = port_terminal(&project.panel, view, device, &pt.name);
+            let target = format!("{owner}:{terminal}");
+            if !seen.insert(target.clone()) {
+                continue;
+            }
+            let mut copy = project.clone();
+            if crab_core::rewire(&mut copy, lib, key, end, &target).is_ok() {
+                out.push((target, (pt.x, pt.y)));
+            }
+        }
+    }
+    out
 }
 
 /// Why a device (or a part of one, `K1/coil`) dragged from the tree cannot be put on a sheet: the
@@ -1998,6 +2140,8 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     let tolerance = 6.0 / (fit * view_state.zoom);
     // A text is moved with Shift held; without it the drag takes the symbol or the wire.
     let shift_held = ui.input(|i| i.modifiers.shift);
+    // With Ctrl held the end of a wire is taken to another terminal.
+    let ctrl_held = ui.input(|i| i.modifiers.command);
     if resp.drag_started() {
         let scale0 = fit * view_state.zoom;
         let origin0 =
@@ -2015,6 +2159,17 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                     start: (p.x, p.y),
                     shift,
                 });
+            }
+            if let (true, Some(doc)) = (ctrl_held, app.doc.as_ref()) {
+                if let Some((key, end, at)) = wire_end_at(sheet, p, tolerance * 1.5) {
+                    let targets = rewire_targets(sheet, &doc.project, &app.lib, &key, end);
+                    return Some(Drag::Rewire {
+                        key,
+                        end,
+                        at,
+                        targets,
+                    });
+                }
             }
             if let Some((device, terminal, at)) = app
                 .doc
@@ -2084,6 +2239,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     let hover = resp.hover_pos().map(page_at);
     let mut layout_edit: Option<LayoutEdit> = None;
     let mut new_link: Option<crab_core::WireLink> = None;
+    let mut rewire: Option<(String, crab_core::WireEnd, String)> = None;
     let mut remove_link: Option<String> = None;
     let mut unplace: Option<String> = None;
     let mut select = None;
@@ -2117,11 +2273,32 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                         egui::Stroke::new(1.5, ui.visuals().selection.stroke.color),
                     );
                 }
+                // The end being moved follows the pointer; the terminals it may go to are marked,
+                // the one under the pointer brighter.
+                Drag::Rewire { at, targets, .. } => {
+                    let color = ui.visuals().selection.stroke.color;
+                    painter.line_segment([view.at(*at), pos], egui::Stroke::new(1.5, color));
+                    for (_, q) in targets {
+                        let near = (q.0 - p.x).hypot(q.1 - p.y) <= tolerance * 1.5;
+                        let r = if near { 6.0 } else { 4.0 };
+                        painter.circle_stroke(view.at(*q), r, egui::Stroke::new(1.5, color));
+                    }
+                }
             }
         }
         if resp.drag_stopped() {
             view_state.drag = None;
-            if let Drag::Link { from, .. } = &drag {
+            if let Drag::Rewire { key, end, .. } = &drag {
+                // Let go over a terminal: the core decides, a refusal is shown with its reason.
+                let target = resp.interact_pointer_pos().map(page_at).and_then(|p| {
+                    app.doc
+                        .as_ref()
+                        .and_then(|d| terminal_at(sheet, &d.project.panel, p, tolerance * 1.5))
+                });
+                if let Some(target) = target {
+                    rewire = Some((key.clone(), *end, target));
+                }
+            } else if let Drag::Link { from, .. } = &drag {
                 // Let go over another terminal: the wire is made.
                 let target = resp.interact_pointer_pos().map(page_at).and_then(|p| {
                     app.doc
@@ -2142,7 +2319,9 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         }
         ui.ctx().request_repaint();
     } else if let Some(p) = hover {
-        if app
+        if ctrl_held && wire_end_at(sheet, p, tolerance * 1.5).is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
+        } else if app
             .doc
             .as_ref()
             .is_some_and(|d| port_at(sheet, &d.project.panel, p, tolerance * 1.5).is_some())
@@ -2353,6 +2532,24 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     }
     if let (Some(edit), Some(doc)) = (layout_edit, app.doc.as_mut()) {
         apply_layout_edit(doc, edit);
+    }
+    if let (Some((key, end, target)), Some(doc)) = (rewire, app.doc.as_mut()) {
+        let lib = &app.lib;
+        match doc.edit_panel_project(None, |p| crab_core::rewire(p, lib, &key, end, &target)) {
+            Ok(()) => app.panel_view.problem = None,
+            Err(message) => {
+                // The device of the moved end is selected so the reason shows in its properties.
+                let moved = key.split_once('>').map(|(a, b)| match end {
+                    crab_core::WireEnd::From => a,
+                    crab_core::WireEnd::To => b,
+                });
+                if let Some(device) = moved.map(crab_core::link_device) {
+                    app.panel_view.selected = Some(device.to_owned());
+                    app.panel_view.coil = false;
+                }
+                app.panel_view.problem = Some(message);
+            }
+        }
     }
     if let Some(doc) = app.doc.as_mut() {
         if let Some(link) = new_link {
@@ -2820,6 +3017,118 @@ bind = "sensor.out"
         let (device, terminal, _) =
             port_at(&coil, &panel, Pos2::new(10.0, 10.0), 2.0).expect("a port");
         assert_eq!((device.as_str(), terminal.as_str()), ("K1", "A1"));
+    }
+
+    /// The rewiring gesture on the pump example: the end of every wire is found under the
+    /// pointer, every terminal marked as allowed is accepted by the core, and the panel still
+    /// builds after the change.
+    #[test]
+    fn every_marked_terminal_takes_the_end_of_the_wire() {
+        let (lib, _) =
+            crab_core::Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library"))
+                .unwrap();
+        let project =
+            crab_core::Project::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump"))
+                .unwrap();
+        let (document, _) = build_document_in(&project, &lib, Lang::Ru, Format::A3).unwrap();
+        let mut moved = 0;
+        for sheet in &document.sheets {
+            for item in &sheet.items {
+                let ItemKind::Wire { key, .. } = &item.kind else {
+                    continue;
+                };
+                let lines: Vec<&Vec<(f32, f32)>> = item
+                    .ops
+                    .iter()
+                    .filter_map(|&o| match &sheet.ops[o] {
+                        Op::Line { points, .. } => Some(points),
+                        _ => None,
+                    })
+                    .collect();
+                let (Some(first), Some(last)) = (
+                    lines.first().and_then(|l| l.first()),
+                    lines.last().and_then(|l| l.last()),
+                ) else {
+                    continue;
+                };
+                for (end, at) in [
+                    (crab_core::WireEnd::From, *first),
+                    (crab_core::WireEnd::To, *last),
+                ] {
+                    let found = wire_end_at(sheet, Pos2::new(at.0, at.1), 1.0);
+                    assert!(found.is_some(), "конец провода {key} не найден");
+                    for (target, _) in rewire_targets(sheet, &project, &lib, key, end) {
+                        let mut copy = project.clone();
+                        crab_core::rewire(&mut copy, &lib, key, end, &target)
+                            .unwrap_or_else(|e| panic!("{key} → {target}: {e}"));
+                        build_document_in(&copy, &lib, Lang::Ru, Format::A3)
+                            .unwrap_or_else(|e| panic!("{key} → {target}: {e:?}"));
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        assert!(moved > 0, "ни один конец провода нельзя перепаять");
+    }
+
+    /// A signal wire is drawn from the device to the channel of the board, though its key starts
+    /// at the board: the end at the channel is still the `from` end.
+    #[test]
+    fn the_end_at_the_board_is_the_board_end_of_the_key() {
+        let (lib, _) =
+            crab_core::Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library"))
+                .unwrap();
+        let project =
+            crab_core::Project::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump"))
+                .unwrap();
+        let (document, _) = build_document_in(&project, &lib, Lang::Ru, Format::A3).unwrap();
+        let mut checked = 0;
+        for sheet in &document.sheets {
+            let board_ports: Vec<(f32, f32)> = sheet
+                .items
+                .iter()
+                .filter_map(|i| match &i.kind {
+                    ItemKind::Symbol {
+                        view: "board",
+                        ports,
+                        ..
+                    } => Some(ports.iter().map(|p| (p.x, p.y)).collect::<Vec<_>>()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            for item in &sheet.items {
+                let ItemKind::Wire { key, from, .. } = &item.kind else {
+                    continue;
+                };
+                if from.device != crab_schematic::BOARD {
+                    continue;
+                }
+                let points: Vec<(f32, f32)> = item
+                    .ops
+                    .iter()
+                    .filter_map(|&o| match &sheet.ops[o] {
+                        Op::Line { points, .. } => Some(points.clone()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect();
+                let at_board = points.iter().copied().find(|q| {
+                    board_ports
+                        .iter()
+                        .any(|b| (b.0 - q.0).hypot(b.1 - q.1) <= 3.0)
+                });
+                let Some(q) = at_board else {
+                    continue;
+                };
+                let (k, end, _) = wire_end_at(sheet, Pos2::new(q.0, q.1), 0.5).expect("конец");
+                if k == *key {
+                    assert_eq!(end, crab_core::WireEnd::From, "{key}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "нет сигнальных проводов к плате");
     }
 
     #[test]

@@ -3,8 +3,11 @@
 //!
 //! Every operation checks everything first and changes nothing when it refuses.
 
-use crate::panel::{DeviceKind, Panel};
-use crate::{panel_binding, panel_tags, Library, Project};
+use crate::panel::{link_device, DeviceKind, Panel};
+use crate::{panel_binding, panel_tags, Library, ParamKind, ParamValue, Project};
+
+/// Designation of the controller board in the wires (the same as `crab_schematic::BOARD`).
+const BOARD: &str = "A1";
 
 /// Kinds that are never fed by another device: a feed is the source, a sensor, a button and a
 /// terminal are not in the power graph (`specs/electrical-schematics`, "Топология цепей").
@@ -279,4 +282,199 @@ fn set_bind(project: &mut Project, device: &str, bind: String) {
     if let Some(d) = project.panel.devices.iter_mut().find(|d| d.id == device) {
         d.bind = bind;
     }
+}
+
+/// Which end of a wire key `A:pin>B:pin` is moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireEnd {
+    From,
+    To,
+}
+
+/// Splits a wire end `DEV:pin` into the device and the terminal.
+fn split_end(end: &str) -> Option<(&str, &str)> {
+    let (device, pin) = end.split_once(':')?;
+    (!device.is_empty() && !pin.is_empty()).then_some((device, pin))
+}
+
+/// The terminal of the board that the tag `tag` is wired to (`IO26`, or `expander.5`), as
+/// `crab_schematic` writes it; `None` for a tag without a board pin.
+fn board_terminal_of(project: &Project, lib: &Library, tag: &str) -> Option<String> {
+    let block = project.logic.block(tag)?;
+    let def = lib.resolve(&project.logic, block)?;
+    let pin_param = def.def.params.iter().find(|p| p.kind == ParamKind::Pin)?;
+    match block.params.get(&pin_param.name)? {
+        ParamValue::Int(pin) => Some(match &block.expander {
+            Some(expander) => format!("{expander}.{pin}"),
+            None => format!("IO{pin}"),
+        }),
+        _ => None,
+    }
+}
+
+/// The tag of the project that is wired to the terminal `terminal` of the board.
+fn tag_on_terminal(project: &Project, lib: &Library, terminal: &str) -> Option<String> {
+    project
+        .logic
+        .blocks
+        .iter()
+        .filter(|b| project.is_tag(lib, &b.id))
+        .find(|b| board_terminal_of(project, lib, &b.id).as_deref() == Some(terminal))
+        .map(|b| b.id.clone())
+}
+
+/// Whether the end of a wire (`DEV:pin`) is a protective earth terminal: the earth wire between
+/// two devices of a power chain is not the chain itself.
+fn is_pe(end: &str) -> bool {
+    split_end(end).is_some_and(|(_, pin)| pin.to_ascii_lowercase().ends_with("pe"))
+}
+
+/// The upstream device and the downstream one of a power wire between `a` and `b`, and whether
+/// the downstream device is fed by `load` (`true`) or by `from` (a branch).
+fn power_wire(panel: &Panel, a: &str, b: &str) -> Option<(String, String, bool)> {
+    if a == b {
+        return None;
+    }
+    let (da, db) = (panel.device(a)?, panel.device(b)?);
+    if da.load == b {
+        Some((a.to_owned(), b.to_owned(), true))
+    } else if db.load == a {
+        Some((b.to_owned(), a.to_owned(), true))
+    } else if db.from == a {
+        Some((a.to_owned(), b.to_owned(), false))
+    } else if da.from == b {
+        Some((b.to_owned(), a.to_owned(), false))
+    } else {
+        None
+    }
+}
+
+/// The refusal for a wire that the generator draws.
+fn generator_wire(from: &str, to: &str) -> String {
+    format!(
+        "-{from} — -{to}: этот провод строит генератор; перепаять его нельзя, нарисуйте ручной провод"
+    )
+}
+
+/// Moves one end of the wire `key` (`A:pin>B:pin`, as `WireLink::key` and wire numbers write it)
+/// to the terminal `target` (`DEV:pin`), changing the real connection of the panel.
+///
+/// A hand-drawn wire changes its link. A power wire moves the feeding of its downstream device
+/// (`load`, or a branch `from`). A wire to the board moves the tag bound to the terminal. Any
+/// other wire is drawn by the generator and is refused. All or nothing: on Err the project is
+/// unchanged.
+pub fn rewire(
+    project: &mut Project,
+    lib: &Library,
+    key: &str,
+    end: WireEnd,
+    target: &str,
+) -> Result<(), String> {
+    let bad_key = || format!("неверный провод «{key}»");
+    let (a, b) = key.split_once('>').ok_or_else(bad_key)?;
+    split_end(a).ok_or_else(bad_key)?;
+    split_end(b).ok_or_else(bad_key)?;
+    let (moving, staying) = match end {
+        WireEnd::From => (a, b),
+        WireEnd::To => (b, a),
+    };
+    let moving_dev = link_device(moving).to_owned();
+    let staying_dev = link_device(staying).to_owned();
+    let (target_dev, _) = split_end(target).ok_or_else(|| format!("неверный вывод «{target}»"))?;
+    let target_dev = target_dev.to_owned();
+
+    if target == staying {
+        return Err("провод не может начинаться и кончаться на одном выводе".to_owned());
+    }
+    if target_dev != BOARD && project.panel.device(&target_dev).is_none() {
+        return Err(format!("-{target_dev}: нет такого устройства в панели"));
+    }
+    if target == moving {
+        return Ok(());
+    }
+
+    let mut next = project.clone();
+    let hand = next.panel.links.iter().position(|l| l.key() == key);
+    if let Some(index) = hand {
+        let mut link = next.panel.links[index].clone();
+        match end {
+            WireEnd::From => link.from = target.to_owned(),
+            WireEnd::To => link.to = target.to_owned(),
+        }
+        let taken = next
+            .panel
+            .links
+            .iter()
+            .enumerate()
+            .any(|(i, l)| i != index && l.key() == link.key());
+        if taken {
+            return Err("такой провод уже есть".to_owned());
+        }
+        next.panel.links[index] = link;
+    } else if moving_dev == BOARD && staying_dev == BOARD {
+        return Err(generator_wire(link_device(a), link_device(b)));
+    } else if moving_dev == BOARD {
+        // The board end moves to another terminal: the device at the other end takes its tag.
+        if target_dev != BOARD {
+            return Err(format!(
+                "-{staying_dev}: к выводу платы провод можно подключить только к другому выводу платы"
+            ));
+        }
+        let (_, terminal) = split_end(target).unwrap_or_default();
+        let tag = tag_on_terminal(project, lib, terminal)
+            .ok_or_else(|| format!("к выводу {terminal} не привязан тег проекта"))?;
+        rebind_device(&mut next, lib, &staying_dev, Some(&tag))?;
+    } else if staying_dev == BOARD {
+        // The device end moves to another device: it takes the tag of the terminal, the old
+        // device lets go of it first (a tag has one device).
+        if target_dev == BOARD {
+            return Err(format!(
+                "-{moving_dev}: провод нельзя подключить к плате с этого конца"
+            ));
+        }
+        let (_, terminal) = split_end(staying).unwrap_or_default();
+        let tag = tag_on_terminal(project, lib, terminal)
+            .ok_or_else(|| format!("к выводу {terminal} не привязан тег проекта"))?;
+        rebind_device(&mut next, lib, &moving_dev, None)?;
+        rebind_device(&mut next, lib, &target_dev, Some(&tag))?;
+    } else if let Some((up, down, load)) =
+        power_wire(&project.panel, &moving_dev, &staying_dev).filter(|_| !is_pe(a) && !is_pe(b))
+    {
+        if target_dev == BOARD {
+            return Err(generator_wire(link_device(a), link_device(b)));
+        }
+        // Another terminal of the same device: who feeds whom stays the same.
+        if target_dev == moving_dev {
+            return Ok(());
+        }
+        if moving_dev == down {
+            // The new device is fed by the upstream one; the old downstream device is left.
+            if load {
+                next.panel.reconnect_power(&target_dev, Some(&up))?;
+                // Reconnecting replaced the `load` of the upstream device; a branch from it goes too.
+                if let Some(d) = next
+                    .panel
+                    .devices
+                    .iter_mut()
+                    .find(|d| d.id == down && d.from == up)
+                {
+                    d.from.clear();
+                }
+            } else {
+                next.panel.branch_power(&target_dev, Some(&up))?;
+                next.panel.branch_power(&down, None)?;
+            }
+        } else if load {
+            // The upstream end moves: the downstream device is fed by the new device.
+            next.panel.reconnect_power(&down, Some(&target_dev))?;
+        } else {
+            next.panel.branch_power(&down, Some(&target_dev))?;
+        }
+    } else {
+        return Err(generator_wire(link_device(a), link_device(b)));
+    }
+
+    next.panel.wire_numbers.remove(key);
+    *project = next;
+    Ok(())
 }

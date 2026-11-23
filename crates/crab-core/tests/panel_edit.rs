@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use crab_core::{check_panel, rebind_device, Library, Panel, Project};
+use crab_core::{
+    check_panel, rebind_device, rewire, Block, Library, Panel, ParamValue, Project, WireEnd,
+};
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -277,4 +279,244 @@ fn reconnect_keeps_the_panel_checked() {
     assert!(errors(&project).is_empty(), "{:?}", errors(&project));
     project.panel.reconnect_power("K1", None).unwrap();
     assert!(errors(&project).is_empty(), "{:?}", errors(&project));
+}
+
+/// `CHAIN` with a relay K2 on a branch of Q1 (`from`), a free breaker Q3, and a hand-drawn wire
+/// Q1:2 to K1:1 with its number.
+fn wired(extra: &str) -> Project {
+    let src = format!(
+        r#"{CHAIN}
+[[device]]
+id = "K2"
+kind = "relay"
+from = "Q1"
+
+[[device]]
+id = "Q3"
+kind = "breaker"
+
+[[link]]
+from = "Q1:2"
+to = "K1:1"
+
+[wire_numbers]
+"Q1:2>K1:1" = 3
+{extra}
+"#
+    );
+    pump_with(&src)
+}
+
+/// A second digital output of the project, on the board terminal `IO27`.
+fn with_second_output(project: &mut Project) {
+    project.logic.blocks.push(Block {
+        id: "pump2".into(),
+        kind: "digital_out".into(),
+        params: [("pin".to_owned(), ParamValue::Int(27))]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    });
+}
+
+#[test]
+fn rewire_moves_the_end_of_a_hand_wire() {
+    let mut project = wired("");
+    rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::To, "M1:L1").unwrap();
+    assert_eq!(project.panel.links.len(), 1);
+    assert_eq!(project.panel.links[0].from, "Q1:2");
+    assert_eq!(project.panel.links[0].to, "M1:L1");
+    assert!(!project.panel.wire_numbers.contains_key("Q1:2>K1:1"));
+
+    rewire(
+        &mut project,
+        &library(),
+        "Q1:2>M1:L1",
+        WireEnd::From,
+        "Q3:2",
+    )
+    .unwrap();
+    assert_eq!(project.panel.links[0].from, "Q3:2");
+}
+
+#[test]
+fn rewire_refuses_a_hand_wire_that_already_exists() {
+    let mut project = wired("");
+    project
+        .panel
+        .links
+        .push(toml::from_str("from = \"Q1:2\"\nto = \"M1:L1\"").unwrap());
+    let before = project.clone();
+    let err = rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::To, "M1:L1").unwrap_err();
+    assert!(err.contains("такой провод уже есть"), "{err}");
+    assert_eq!(project, before);
+}
+
+#[test]
+fn rewire_moves_the_downstream_end_of_a_load_link() {
+    // Q1 feeds K1 by `load`; the wire goes to the new breaker Q2 instead.
+    let mut project = pump_with(CHAIN);
+    rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::To, "Q2:1").unwrap();
+    assert_eq!(load_of(&project.panel, "Q1"), "Q2");
+    assert_eq!(load_of(&project.panel, "Q2"), "");
+    assert!(project.panel.devices.iter().all(|d| d.load != "K1"));
+    assert_eq!(project.panel.device("K1").unwrap().from, "");
+    assert_eq!(load_of(&project.panel, "K1"), "M1");
+}
+
+#[test]
+fn rewire_moves_the_upstream_end_of_a_load_link() {
+    // K1 is now fed by Q2, and Q1 feeds nothing.
+    let mut project = pump_with(CHAIN);
+    rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::From, "Q2:2").unwrap();
+    assert_eq!(load_of(&project.panel, "Q2"), "K1");
+    assert_eq!(load_of(&project.panel, "Q1"), "");
+    assert_eq!(load_of(&project.panel, "K1"), "M1");
+}
+
+#[test]
+fn rewire_moves_the_end_of_a_branch() {
+    // K2 is a branch of Q1 (`from`); its end moves to Q2.
+    let mut project = wired("");
+    rewire(&mut project, &library(), "Q1:4>K2:1", WireEnd::To, "Q2:1").unwrap();
+    assert_eq!(project.panel.device("Q2").unwrap().from, "Q1");
+    assert_eq!(project.panel.device("K2").unwrap().from, "");
+    assert_eq!(load_of(&project.panel, "Q1"), "K1");
+
+    // And the feed of the branch is changed from the other end.
+    rewire(&mut project, &library(), "Q1:4>Q2:1", WireEnd::From, "Q3:4").unwrap();
+    assert_eq!(project.panel.device("Q2").unwrap().from, "Q3");
+}
+
+#[test]
+fn rewire_to_another_terminal_of_the_same_device_keeps_the_feed() {
+    // The end of the branch Q1 → K2 goes to another terminal of K2: K2 is still fed by Q1.
+    let mut project = wired("");
+    rewire(&mut project, &library(), "Q1:4>K2:1", WireEnd::To, "K2:3").unwrap();
+    assert_eq!(project.panel.device("K2").unwrap().from, "Q1");
+    let mut project = pump_with(CHAIN);
+    rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::To, "K1:3").unwrap();
+    assert_eq!(load_of(&project.panel, "Q1"), "K1");
+}
+
+#[test]
+fn rewire_refuses_an_earth_wire_and_a_loop() {
+    let mut project = pump_with(CHAIN);
+    let before = project.clone();
+    // The earth wire between K1 and M1 is not the power chain.
+    assert!(rewire(&mut project, &library(), "K1:pe>M1:pe", WireEnd::To, "Q2:1").is_err());
+    // Q1 fed by itself, and Q1 fed by K1 that it feeds.
+    assert!(rewire(&mut project, &library(), "Q1:2>K1:1", WireEnd::To, "Q1:1").is_err());
+    assert!(rewire(&mut project, &library(), "K1:2>M1:1", WireEnd::To, "Q1:1").is_err());
+    assert_eq!(project.panel, before.panel);
+}
+
+#[test]
+fn rewire_moves_the_board_end_to_another_tag() {
+    let mut project = pump_with(CHAIN);
+    with_second_output(&mut project);
+    rewire(
+        &mut project,
+        &library(),
+        "A1:IO26>K1:A1",
+        WireEnd::From,
+        "A1:IO27",
+    )
+    .unwrap();
+    assert_eq!(bind_of(&project.panel, "K1"), "pump2");
+}
+
+#[test]
+fn rewire_refuses_a_board_terminal_without_a_tag() {
+    let mut project = pump_with(CHAIN);
+    let before = project.clone();
+    let err = rewire(
+        &mut project,
+        &library(),
+        "A1:IO26>K1:A1",
+        WireEnd::From,
+        "A1:IO5",
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("к выводу IO5 не привязан тег проекта"),
+        "{err}"
+    );
+    assert_eq!(project, before);
+}
+
+#[test]
+fn rewire_moves_the_device_end_of_a_board_wire() {
+    // K1 gives up `pump`, and the relay K2 takes it.
+    let mut project = wired("");
+    rewire(
+        &mut project,
+        &library(),
+        "A1:IO26>K1:A1",
+        WireEnd::To,
+        "K2:A1",
+    )
+    .unwrap();
+    assert_eq!(bind_of(&project.panel, "K1"), "");
+    assert_eq!(bind_of(&project.panel, "K2"), "pump");
+}
+
+#[test]
+fn rewire_refuses_a_wire_the_generator_draws() {
+    // Q2 and M1 are not linked in the panel: the wire is made by the generator.
+    let mut project = pump_with(CHAIN);
+    let before = project.clone();
+    let err = rewire(&mut project, &library(), "Q2:2>M1:L1", WireEnd::To, "L1:1").unwrap_err();
+    assert!(
+        err.contains("-Q2 — -M1: этот провод строит генератор"),
+        "{err}"
+    );
+    assert_eq!(project, before);
+}
+
+#[test]
+fn rewire_refusals_change_nothing() {
+    let cases: [(&str, WireEnd, &str, &str); 7] = [
+        ("Q1:2", WireEnd::To, "Q1:2", "неверный провод «Q1:2»"),
+        (
+            "Q1:2>K1:1",
+            WireEnd::To,
+            "Q1:2",
+            "не может начинаться и кончаться на одном выводе",
+        ),
+        (
+            "Q1:2>K1:1",
+            WireEnd::To,
+            "Z9:1",
+            "-Z9: нет такого устройства в панели",
+        ),
+        ("Q1:2>K1:1", WireEnd::To, "K1", "неверный вывод «K1»"),
+        // The board end of a wire moves only to another terminal of the board.
+        (
+            "A1:IO26>K1:A1",
+            WireEnd::From,
+            "K1:2",
+            "к выводу платы провод можно подключить только",
+        ),
+        (
+            "A1:IO26>K1:A1",
+            WireEnd::From,
+            "A1:IO5",
+            "к выводу IO5 не привязан тег проекта",
+        ),
+        // A motor takes no tag of the board.
+        (
+            "A1:IO26>K1:A1",
+            WireEnd::To,
+            "M1:L1",
+            "двигатель не привязывается",
+        ),
+    ];
+    for (key, end, target, message) in cases {
+        let mut project = wired("");
+        let before = project.clone();
+        let err = rewire(&mut project, &library(), key, end, target).unwrap_err();
+        assert!(err.contains(message), "{key} {end:?} {target}: {err}");
+        assert_eq!(project, before, "{key} {end:?} {target}");
+    }
 }
