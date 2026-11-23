@@ -318,6 +318,20 @@ impl Panel {
             .unwrap_or_default()
     }
 
+    /// The designation for a device of `kind` put on the drawing sheet number `sheet` (of the
+    /// document): `K3.1`, then `K3.2`... in the order the devices are put there; the number after
+    /// the point is one more than the largest one already taken on that sheet.
+    pub fn next_sheet_id(&self, kind: DeviceKind, sheet: usize) -> String {
+        let prefix = format!("{}{sheet}.", kind.letter());
+        let last = self
+            .devices
+            .iter()
+            .filter_map(|d| d.id.strip_prefix(&prefix)?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+        format!("{prefix}{}", last + 1)
+    }
+
     /// Gives the device `old` the designation `new`: the devices that it feeds or switches
     /// (`load`) and the stored numbers of its wires follow it. The designation must be free and a
     /// valid identifier.
@@ -506,6 +520,30 @@ rating = "0,75 кВт"
     fn unknown_kind_is_an_error() {
         let text = "[[device]]\nid = \"X1\"\nkind = \"toaster\"";
         assert!(toml::from_str::<Panel>(text).is_err());
+    }
+
+    #[test]
+    fn a_device_put_on_a_sheet_is_named_by_the_sheet_in_the_order_it_is_put() {
+        assert_eq!(Panel::default().next_sheet_id(DeviceKind::Relay, 3), "K3.1");
+        let panel: Panel = toml::from_str(
+            r#"
+[[device]]
+id = "K3.1"
+kind = "relay"
+[[device]]
+id = "K3.4"
+kind = "relay"
+[[device]]
+id = "K5.9"
+kind = "relay"
+[[device]]
+id = "Q3.7"
+kind = "breaker"
+"#,
+        )
+        .unwrap();
+        assert_eq!(panel.next_sheet_id(DeviceKind::Contactor, 3), "K3.5");
+        assert_eq!(panel.next_sheet_id(DeviceKind::Relay, 4), "K4.1");
     }
 
     #[test]

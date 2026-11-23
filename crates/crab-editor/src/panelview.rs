@@ -97,6 +97,26 @@ enum Drag {
 /// A device dragged from the tree: dropped on a control sheet it is put there.
 struct DevicePayload(String);
 
+/// An entry of the palette dragged onto a sheet: a new device of this kind (or its coil, or a
+/// contact of a relay) is made where it is dropped.
+#[derive(Clone, Copy)]
+struct PalettePayload {
+    kind: DeviceKind,
+    part: crab_schematic::PalettePart,
+}
+
+/// The entries of the palette of a kind: the part and its title. A contactor is the device and its
+/// coil; a relay is a coil and its contacts (`specs/panel-palette`).
+fn palette_entries(kind: DeviceKind) -> Vec<(crab_schematic::PalettePart, String)> {
+    use crab_schematic::PalettePart::{Coil, Contact, Whole};
+    let t = |s: &str| tr(s).to_owned();
+    match kind {
+        DeviceKind::Contactor => vec![(Whole, t("Контактор")), (Coil, t("Катушка"))],
+        DeviceKind::Relay => vec![(Coil, t("Катушка")), (Contact, t("Контакт"))],
+        _ => vec![(Whole, kind_title(kind))],
+    }
+}
+
 /// A change of the manual layout made by the mouse; applied when the sheet is drawn.
 #[derive(Debug, Clone, PartialEq)]
 enum LayoutEdit {
@@ -294,7 +314,8 @@ enum Action {
     Select(String),
     /// The coil of a contactor or a relay.
     SelectCoil(String),
-    Add(DeviceKind),
+    /// A palette entry clicked: its device is made without a place on a sheet.
+    Add(PalettePayload),
     /// An auxiliary contact for the device.
     AddAux(String),
     /// A temperature sensor of a motor.
@@ -372,19 +393,12 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
     }
     ui.separator();
 
+    palette(ui, panel.supply, &action);
+    ui.separator();
+
     for (title, kinds) in GROUPS {
-        let tools = |ui: &mut Ui| {
-            ui.menu_button("+", |ui| {
-                for &kind in kinds {
-                    if ui.button(kind_title(kind)).clicked() {
-                        *action.borrow_mut() = Some(Action::Add(kind));
-                        ui.close();
-                    }
-                }
-            })
-            .response
-            .on_hover_text(tr("Добавить устройство"));
-        };
+        // New devices come from the palette above; the groups list what the panel has.
+        let tools = |_: &mut Ui| {};
         let body = |ui: &mut Ui| {
             for device in panel.devices.iter().filter(|d| kinds.contains(&d.kind)) {
                 let problem = report.is_some_and(|r| {
@@ -516,6 +530,158 @@ pub fn tree(app: &mut EditorApp, ui: &mut Ui) {
         }
     }
     apply(app, action.into_inner());
+}
+
+/// A new device of `kind`, not connected yet.
+fn new_device(id: String, kind: DeviceKind) -> Device {
+    Device {
+        id,
+        kind,
+        rating: String::new(),
+        part: String::new(),
+        bind: String::new(),
+        load: String::new(),
+        poles: None,
+        of: String::new(),
+        form: ContactForm::default(),
+        pins: String::new(),
+        from: String::new(),
+        // Nothing feeds a new device until the user says where it is connected.
+        free: !matches!(
+            kind,
+            DeviceKind::Feed | DeviceKind::Aux | DeviceKind::Sensor | DeviceKind::Button
+        ),
+        series: String::new(),
+    }
+}
+
+/// Makes the device of a palette entry: a coil is named by the drawing sheet `number` it is put
+/// on (`K3.1`, in the order the coils are put; without a sheet like any device), a contact of a
+/// relay comes without its coil (`K_1`; the coil is chosen in its properties). Returns the
+/// designation and the layout key the entry is put under (`K3.1/coil` for a coil).
+fn new_entry(
+    panel: &mut crab_core::Panel,
+    payload: PalettePayload,
+    number: Option<usize>,
+) -> (String, String) {
+    use crab_schematic::PalettePart::{Coil, Contact, Whole};
+    let (id, kind, key) = match payload.part {
+        Coil => {
+            let id = number.map_or_else(
+                || panel.next_id(payload.kind),
+                |n| panel.next_sheet_id(payload.kind, n),
+            );
+            let key = crab_core::part_key(&id, crab_core::COIL);
+            (id, payload.kind, key)
+        }
+        Contact => {
+            let id = panel.next_aux_id(&DeviceKind::Relay.letter().to_string());
+            (id.clone(), DeviceKind::Aux, id)
+        }
+        Whole => {
+            let id = panel.next_id(payload.kind);
+            (id.clone(), payload.kind, id)
+        }
+    };
+    panel.devices.push(new_device(id.clone(), kind));
+    (id, key)
+}
+
+/// Makes the device of a palette entry dropped on the drawing sheet `on` (document number
+/// `number`, when known) at `(x, y)` and puts it there. Returns the designation.
+fn drop_new(
+    project: &mut crab_core::Project,
+    payload: PalettePayload,
+    on: SheetId,
+    number: Option<usize>,
+    (x, y): (f32, f32),
+) -> String {
+    let (id, key) = new_entry(&mut project.panel, payload, number);
+    project.panel_layout.place(&key, on, x, y);
+    id
+}
+
+/// The palette: every kind of device with the picture of its symbol, in the groups of the tree.
+/// An entry is dragged onto a sheet (the device is made there) or clicked (the device is made and
+/// waits in the tree for its place).
+fn palette(ui: &mut Ui, supply: crab_core::Supply, action: &std::cell::RefCell<Option<Action>>) {
+    egui::CollapsingHeader::new(tr("Элементы"))
+        .id_salt("panel_palette")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (title, kinds) in GROUPS {
+                ui.weak(tr(title));
+                for &kind in kinds {
+                    let entries = palette_entries(kind);
+                    // A device of parts: its name, the parts under it.
+                    let nested = entries.len() > 1 && kind == DeviceKind::Relay;
+                    if nested {
+                        ui.label(kind_title(kind));
+                    }
+                    for (part, name) in entries {
+                        ui.horizontal(|ui| {
+                            if nested {
+                                ui.add_space(12.0);
+                            }
+                            let payload = PalettePayload { kind, part };
+                            let resp = ui
+                                .dnd_drag_source(
+                                    ui.make_persistent_id((
+                                        "panel_palette",
+                                        format!("{kind:?}"),
+                                        part,
+                                    )),
+                                    payload,
+                                    |ui| {
+                                        ui.horizontal(|ui| {
+                                            preview_image(ui, kind, part, supply);
+                                            ui.label(&name);
+                                        });
+                                    },
+                                )
+                                .response;
+                            if resp.clicked() {
+                                *action.borrow_mut() = Some(Action::Add(payload));
+                            }
+                            resp.on_hover_text(tr("Перетащите на лист"));
+                        });
+                    }
+                }
+            }
+        });
+}
+
+/// The picture of a palette entry: its symbol, fitted into a small box.
+fn preview_image(
+    ui: &mut Ui,
+    kind: DeviceKind,
+    part: crab_schematic::PalettePart,
+    supply: crab_core::Supply,
+) {
+    let size = Vec2::new(44.0, 30.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    thread_local! {
+        // The pictures do not change while the program runs: made once per entry and supply.
+        static CACHE: std::cell::RefCell<std::collections::HashMap<String, crab_schematic::Preview>> =
+            Default::default();
+    }
+    let key = format!("{kind:?}/{part:?}/{supply:?}");
+    let pv = CACHE.with(|c| {
+        c.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| crab_schematic::preview(kind, part, supply))
+            .clone()
+    });
+    let (w, h) = (pv.max.0 - pv.min.0, pv.max.1 - pv.min.1);
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let scale = ((size.x - 4.0) / w).min((size.y - 4.0) / h);
+    let used = Vec2::new(w, h) * scale;
+    let origin = rect.min + (size - used) / 2.0 - Vec2::new(pv.min.0, pv.min.1) * scale;
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, Color32::WHITE);
+    draw_ops(&painter, &View { origin, scale }, &pv.ops);
 }
 
 /// Whether `id` is a designation with a sheet number, `K17.1`: a letter, the sheet, a point, the
@@ -808,39 +974,14 @@ fn apply(app: &mut EditorApp, action: Option<Action>) {
             app.panel_view.problem = None;
             app.right_open_for_panel();
         }
-        Action::Add(kind) => {
+        Action::Add(payload) => {
             let Some(doc) = &mut app.doc else {
                 return;
             };
             let id = doc
-                .edit_panel::<_, ()>(None, |p| {
-                    let id = p.next_id(kind);
-                    p.devices.push(Device {
-                        id: id.clone(),
-                        kind,
-                        rating: String::new(),
-                        part: String::new(),
-                        bind: String::new(),
-                        load: String::new(),
-                        poles: None,
-                        of: String::new(),
-                        form: ContactForm::default(),
-                        pins: String::new(),
-                        from: String::new(),
-                        // Nothing feeds a new device until the user says where it is connected.
-                        free: !matches!(
-                            kind,
-                            DeviceKind::Feed
-                                | DeviceKind::Aux
-                                | DeviceKind::Sensor
-                                | DeviceKind::Button
-                        ),
-                        series: String::new(),
-                    });
-                    Ok(id)
-                })
+                .edit_panel::<_, ()>(None, |p| Ok(new_entry(p, payload, None).0))
                 .unwrap_or_default();
-            app.panel_view.coil = false;
+            app.panel_view.coil = payload.part == crab_schematic::PalettePart::Coil;
             app.panel_view.selected = Some(id);
             app.panel_view.rename = None;
             app.panel_view.problem = None;
@@ -2432,6 +2573,27 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             }
         }
     }
+    // An entry of the palette dropped here: a new device is made where it is dropped.
+    let mut made: Option<(PalettePayload, SheetId, Option<usize>, f32, f32)> = None;
+    if let Some(payload) = resp.dnd_release_payload::<PalettePayload>() {
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            let at = page_at(pos);
+            match sheet.id {
+                Some(target) => made = Some((*payload, target, Some(index + 1), at.x, at.y)),
+                None => {
+                    // On a title or a table sheet: the first control sheet, which is shown. Before
+                    // there is one its number is not known: the coil is named like any device.
+                    let number = document
+                        .sheets
+                        .iter()
+                        .position(|s| s.id == Some(SheetId::Control(0)))
+                        .map(|i| i + 1);
+                    made = Some((*payload, SheetId::Control(0), number, 80.0, 400.0));
+                    view_state.goto = Some(SheetId::Control(0));
+                }
+            }
+        }
+    }
     // A click on a reference goes to the sheet and the zone it names.
     let mut jump: Option<(usize, String)> = None;
     if resp.clicked() {
@@ -2570,6 +2732,14 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         }
         if let Some(id) = unplace {
             doc.edit_panel_layout(None, |l| l.unplace(&id));
+        }
+        if let Some((payload, on, number, x, y)) = made {
+            let id = doc
+                .edit_panel_project::<_, ()>(None, |p| Ok(drop_new(p, payload, on, number, (x, y))))
+                .unwrap_or_default();
+            app.panel_view.selected = Some(id);
+            app.panel_view.coil = payload.part == crab_schematic::PalettePart::Coil;
+            app.panel_view.problem = None;
         }
         if let Some((id, target, x, y)) = put {
             doc.edit_panel_layout(None, |l| l.place(&id, target, x, y));
@@ -3134,6 +3304,55 @@ bind = "sensor.out"
             }
         }
         assert!(checked > 0, "нет сигнальных проводов к плате");
+    }
+
+    /// An entry of the palette dropped on a sheet makes its device and puts it there: a coil is
+    /// named by the sheet in the order of the drops, a contact comes without its coil.
+    #[test]
+    fn an_entry_of_the_palette_dropped_on_a_sheet_makes_its_device_there() {
+        use crab_schematic::PalettePart::{Coil, Contact, Whole};
+        let mut project =
+            crab_core::Project::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump"))
+                .unwrap();
+        project.panel = crab_core::Panel::default();
+        let on = SheetId::Free(0);
+        let drop = |p: &mut crab_core::Project, kind, part| {
+            drop_new(
+                p,
+                PalettePayload { kind, part },
+                on,
+                Some(4),
+                (120.0, 200.0),
+            )
+        };
+        assert_eq!(drop(&mut project, DeviceKind::Relay, Coil), "K4.1");
+        assert_eq!(drop(&mut project, DeviceKind::Contactor, Coil), "K4.2");
+        let contact = drop(&mut project, DeviceKind::Relay, Contact);
+        let breaker = drop(&mut project, DeviceKind::Breaker, Whole);
+        let layout = &project.panel_layout;
+        assert_eq!(layout.placed["K4.1/coil"].sheet, on);
+        assert_eq!(layout.placed["K4.2/coil"].sheet, on);
+        assert_eq!(contact, "K_1");
+        let c = project.panel.device(&contact).unwrap();
+        assert_eq!((c.kind, c.of.as_str()), (DeviceKind::Aux, ""));
+        assert!(layout.placed.contains_key(&contact));
+        assert_eq!(
+            project.panel.device(&breaker).unwrap().kind,
+            DeviceKind::Breaker
+        );
+        assert_eq!(
+            (layout.placed[&breaker].x, layout.placed[&breaker].y),
+            (120.0, 200.0)
+        );
+        // Every entry of the palette has a picture.
+        for (_, kinds) in GROUPS {
+            for &kind in kinds {
+                for (part, _) in palette_entries(kind) {
+                    let pv = crab_schematic::preview(kind, part, crab_core::Supply::Ac230);
+                    assert!(!pv.ops.is_empty(), "{kind:?} {part:?}");
+                }
+            }
+        }
     }
 
     #[test]
