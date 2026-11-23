@@ -245,3 +245,24 @@ fn a_relay_contact_is_fed_and_feeds_a_load_but_a_breaker_contact_does_not() {
     assert!(q.reconnect_power("Q1_1", Some("Q1")).is_err());
     assert!(q.reconnect_power("M1", Some("Q1_1")).is_err());
 }
+
+#[test]
+fn feeding_from_a_busy_source_makes_a_branch_and_back_to_the_load() {
+    let mut p = panel(RELAY);
+    // Q1 feeds K2_1 already: E2 gets the line of Q1 by a branch, K2_1 stays.
+    p.feed_from("E2", Some("Q1")).unwrap();
+    assert_eq!(p.device("Q1").unwrap().load, "K2_1");
+    assert_eq!(p.device("E2").unwrap().from, "Q1");
+    // A free source takes the device as its load; the branch is let go.
+    p.feed_from("E2", Some("K2_2")).unwrap();
+    assert_eq!(p.device("K2_2").unwrap().load, "E2");
+    assert_eq!(p.device("E2").unwrap().from, "");
+    // Straight from the feed: nothing feeds it.
+    p.feed_from("E2", None).unwrap();
+    assert!(p.devices.iter().all(|d| d.load != "E2"));
+    assert_eq!(p.device("E2").unwrap().from, "");
+    // A refusal changes nothing.
+    let before = p.clone();
+    assert!(p.feed_from("Q1", Some("Q1")).is_err());
+    assert_eq!(p, before);
+}

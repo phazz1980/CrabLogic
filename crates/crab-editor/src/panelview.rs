@@ -1055,14 +1055,6 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
     let Some(device) = doc.project.panel.device(&id).cloned() else {
         return;
     };
-    let others: Vec<String> = doc
-        .project
-        .panel
-        .devices
-        .iter()
-        .filter(|d| d.id != id)
-        .map(|d| d.id.clone())
-        .collect();
     let tags = panel_binding(device.kind)
         .map(|(input, digital_only)| {
             panel_tags(&doc.project, &app.lib)
@@ -1093,7 +1085,6 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
     // relays of old projects that have them (`specs/panel-relay-contacts`).
     let old_relay = device.kind == DeviceKind::Relay;
     let relay_poles = !old_relay || device.poles.is_some();
-    let relay_load = !old_relay || !device.load.is_empty();
     egui::Grid::new("panel_props")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -1272,9 +1263,8 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     .iter()
                     .find(|d| d.load == id)
                     .map(|d| d.id.clone())
-                    // A contact has no «Ответвление от»: its branch shows here.
-                    .or_else(|| relay_contact.then(|| device.from.clone()))
-                    .unwrap_or_default();
+                    // Fed on a branch of a line that feeds another device too.
+                    .unwrap_or_else(|| device.from.clone());
                 // A device just added is connected to nothing until a place is chosen.
                 let unplugged = device.free && feeder.is_empty() && device.from.is_empty();
                 ui.label(tr("Питается от"));
@@ -1324,66 +1314,6 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     edit.feeder = Some(chosen);
                 }
                 ui.end_row();
-            }
-
-            // A contact of a relay is only fed: what it switches names it in «Питается от».
-            if !is_aux {
-                // A second source: the device hangs on a branch of another device's line, which
-                // keeps what it feeds; the junction is drawn on the sheet by itself.
-                ui.label(tr("Ответвление от"));
-                let mut branch = device.from.clone();
-                egui::ComboBox::from_id_salt("panel_branch")
-                    .selected_text(if branch.is_empty() {
-                        tr("нет").to_owned()
-                    } else {
-                        format!("-{branch}")
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut branch, String::new(), tr("нет"));
-                        for d in doc.project.panel.devices.iter().filter(|d| {
-                            d.id != id
-                                && (doc.project.panel.is_relay_contact(d)
-                                    || matches!(
-                                        d.kind,
-                                        DeviceKind::Breaker
-                                            | DeviceKind::Rcd
-                                            | DeviceKind::Fuse
-                                            | DeviceKind::Switch
-                                            | DeviceKind::Psu
-                                            | DeviceKind::Contactor
-                                            | DeviceKind::Relay
-                                            | DeviceKind::Terminal
-                                    ))
-                        }) {
-                            ui.selectable_value(&mut branch, d.id.clone(), format!("-{}", d.id));
-                        }
-                    });
-                if branch != device.from {
-                    edit.branch = Some(branch);
-                }
-                ui.end_row();
-
-                // A motor and a load other than a device have nothing behind them.
-                if !matches!(device.kind, DeviceKind::Motor | DeviceKind::Load) && relay_load {
-                    ui.label(tr("Нагрузка (питает или коммутирует)"));
-                    let mut load = device.load.clone();
-                    egui::ComboBox::from_id_salt("panel_load")
-                        .selected_text(if load.is_empty() {
-                            tr("ничего").to_owned()
-                        } else {
-                            format!("-{load}")
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut load, String::new(), tr("ничего"));
-                            for other in &others {
-                                ui.selectable_value(&mut load, other.clone(), format!("-{other}"));
-                            }
-                        });
-                    if load != device.load {
-                        edit.load = Some(load);
-                    }
-                    ui.end_row();
-                }
             }
         });
     // After a terminal block the wires may be numbered by hand: one number to a conductor.
@@ -1450,11 +1380,8 @@ struct Edit {
     /// Number of poles (`Some(None)`: all the conductors of the supply).
     poles: Option<Option<u8>>,
     bind: Option<String>,
-    load: Option<String>,
     /// The device that feeds this one (empty: straight from the feed).
     feeder: Option<String>,
-    /// The device whose line this one branches from (empty: none).
-    branch: Option<String>,
     /// Form of an auxiliary contact.
     form: Option<ContactForm>,
     /// Terminal numbers of an auxiliary contact.
@@ -1543,24 +1470,12 @@ fn apply_edit(app: &mut EditorApp, id: &str, edit: Edit) {
     if let Some(bind) = edit.bind {
         field(doc, "bind", &|d| d.bind = bind.clone());
     }
-    if let Some(load) = edit.load {
-        field(doc, "load", &|d| d.load = load.clone());
-    }
     if let Some(parent) = edit.feeder {
+        // A source that already feeds another device feeds this one on a branch of its line.
         let parent = (!parent.is_empty()).then_some(parent);
-        match doc.edit_panel(None, |p| p.reconnect_power(id, parent.as_deref())) {
+        match doc.edit_panel(None, |p| p.feed_from(id, parent.as_deref())) {
             Ok(()) => {
                 // The device goes under its new place by itself.
-                doc.edit_panel_layout(None, |l| l.clear_symbol(&symbol_key("power", id)));
-                app.panel_view.problem = None;
-            }
-            Err(message) => app.panel_view.problem = Some(message),
-        }
-    }
-    if let Some(source) = edit.branch {
-        let source = (!source.is_empty()).then_some(source);
-        match doc.edit_panel(None, |p| p.branch_power(id, source.as_deref())) {
-            Ok(()) => {
                 doc.edit_panel_layout(None, |l| l.clear_symbol(&symbol_key("power", id)));
                 app.panel_view.problem = None;
             }

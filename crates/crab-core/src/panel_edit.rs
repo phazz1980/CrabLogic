@@ -128,6 +128,30 @@ impl Panel {
         Ok(())
     }
 
+    /// «Питается от», the one way the editor connects power: `parent` feeds `device`. A parent
+    /// that feeds nothing yet gets the device as its load ([`Self::reconnect_power`]); one that
+    /// already feeds another device feeds this one too, on a branch of its line
+    /// ([`Self::branch_power`]). `None`, or the feed, means straight from the feed. What fed the
+    /// device before lets it go. Nothing changes when it refuses.
+    pub fn feed_from(&mut self, device: &str, parent: Option<&str>) -> Result<(), String> {
+        let mut next = self.clone();
+        next.reconnect_power(device, None)?;
+        if let Some(parent) = parent {
+            let source = next
+                .device(parent)
+                .ok_or_else(|| format!("нет устройства «{parent}»"))?;
+            let busy =
+                source.kind != DeviceKind::Feed && !source.load.is_empty() && source.load != device;
+            if busy {
+                next.branch_power(device, Some(parent))?;
+            } else {
+                next.reconnect_power(device, Some(parent))?;
+            }
+        }
+        *self = next;
+        Ok(())
+    }
+
     /// Makes `parent` feed `device`: `parent.load = device`. `None`, or a feed as the parent, means
     /// the device is fed straight from the feed, so no device feeds it afterwards. A device that
     /// fed `device` before is released; a load that `parent` fed before is replaced (to feed
