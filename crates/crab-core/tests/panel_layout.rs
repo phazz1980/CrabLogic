@@ -4,7 +4,9 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crab_core::panel::{ContactForm, Device, DeviceKind};
-use crab_core::{Layout, Logic, Panel, PanelLayout, Project, ProjectConfig, PANEL_LAYOUT_FILE};
+use crab_core::{
+    Layout, Logic, Panel, PanelLayout, Project, ProjectConfig, SheetId, PANEL_LAYOUT_FILE,
+};
 use zip::ZipArchive;
 
 fn config() -> ProjectConfig {
@@ -64,7 +66,9 @@ fn archive_has(path: &Path, entry: &str) -> bool {
 fn rename_device_moves_the_layout_with_the_panel() {
     let dir = scratch("rename-device");
     let mut project = project_in(&dir, "rename");
-    project.panel_layout.place("K1", 0, 20.0, 20.0);
+    project
+        .panel_layout
+        .place("K1", SheetId::Power(0), 20.0, 20.0);
     project.panel_layout.set_shift("power:K1", 5.0, 5.0);
     project.panel_layout.set_bend("K1:2>M1:L1", Some(10.0));
     crab_core::rename_device(&mut project, "K1", "K5").unwrap();
@@ -97,7 +101,9 @@ fn refused_rename_leaves_the_panel_and_the_layout_unchanged() {
 fn rename_device_moves_the_placed_coil_part() {
     let dir = scratch("rename-coil");
     let mut project = project_in(&dir, "coil");
-    project.panel_layout.place("K1/coil", 0, 40.0, 20.0);
+    project
+        .panel_layout
+        .place("K1/coil", SheetId::Control(0), 40.0, 20.0);
     crab_core::rename_device(&mut project, "K1", "K5").unwrap();
     assert_eq!(
         project.panel_layout.placed.keys().collect::<Vec<_>>(),
@@ -136,6 +142,65 @@ fn project_saves_and_loads_the_layout_in_the_archive() {
     let again = Project::load(&project.path).unwrap();
     assert_eq!(again.panel_layout, project.panel_layout);
     assert_eq!(again, project);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn project_keeps_sheet_names_captions_and_placed_devices_in_the_archive() {
+    let dir = scratch("sheets");
+    let mut project = project_in(&dir, "t");
+    project
+        .panel_layout
+        .set_caption(SheetId::Free(1), "  Pump drive  ");
+    project
+        .panel_layout
+        .place("K1", SheetId::Free(1), 40.0, 20.0);
+    project.save().unwrap();
+
+    let again = Project::load(&project.path).unwrap();
+    assert_eq!(
+        again.panel_layout.caption(SheetId::Free(1)),
+        Some("Pump drive")
+    );
+    assert_eq!(again.panel_layout.caption(SheetId::Free(0)), None);
+    assert_eq!(again.panel_layout.placed["K1"].sheet, SheetId::Free(1));
+    assert_eq!(again, project);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn folder_layout_of_the_old_numbering_reads_as_power_sheet_names() {
+    let dir = scratch("legacy-version");
+    std::fs::write(
+        dir.join("project.toml"),
+        "[project]\nname = \"t\"\n[board]\nfqbn = \"x:y:z\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("logic.toml"), "").unwrap();
+    std::fs::write(
+        dir.join("panel.toml"),
+        "[[device]]\nid = \"K1\"\nkind = \"contactor\"\n[[device]]\nid = \"M1\"\nkind = \"motor\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(PANEL_LAYOUT_FILE),
+        "[placed.\"K1\"]\nsheet = 0\nx = 10.0\ny = 10.0\npower = true\n",
+    )
+    .unwrap();
+
+    let project = Project::load(&dir).unwrap();
+    assert_eq!(project.panel_layout.placed["K1"].sheet, SheetId::Power(0));
+    // Saving writes the name, not the old flag.
+    project.save().unwrap();
+    let text = {
+        let mut zip = ZipArchive::new(File::open(&project.path).unwrap()).unwrap();
+        let mut entry = zip.by_name(PANEL_LAYOUT_FILE).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
+        text
+    };
+    assert!(text.contains("sheet = \"power:0\""), "{text}");
+    assert!(!text.contains("power = "), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -64,8 +64,8 @@ pub use panel::{
 };
 pub use panel_edit::{rebind_device, rename_device, rename_devices};
 pub use panel_layout::{
-    bus_key, part_key, split_part, symbol_key, PanelLayout, Placed, SymbolShift, WireShape, COIL,
-    PANEL_LAYOUT_FILE,
+    bus_key, part_key, split_part, symbol_key, PanelLayout, Placed, SheetId, SymbolShift,
+    WireShape, COIL, MAX_SHEETS, PANEL_LAYOUT_FILE,
 };
 pub use pins::PinFunction;
 pub use project::{

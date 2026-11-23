@@ -9,6 +9,7 @@ mod canvas;
 pub mod control;
 pub mod doc;
 mod error;
+mod free;
 mod lang;
 pub mod nets;
 pub mod power;
@@ -33,6 +34,9 @@ pub use sheet_names::sheet_designations;
 pub use tables::{device_kind_name, Table, Tables};
 pub use xref::{Xref, Xrefs};
 
+/// Document number of the first drawing sheet: the title sheet is number 1.
+const FIRST_DRAWING_SHEET: usize = 2;
+
 /// The documents of a project: the sheets and the wires with their numbers. Run
 /// [`crab_core::check_panel`] first. The numbers are not stored in the project: call
 /// [`Nets::store`] and save it to keep them.
@@ -45,6 +49,10 @@ pub fn build_document(
 }
 
 /// [`build_document`] on sheets of the given format.
+///
+/// The drawing sheets follow the title sheet in this order: the power sheets, the control sheets,
+/// the free sheets. A device put by hand keeps its sheet name (`SheetId`) whatever the number of
+/// the sheets of the other kinds is.
 pub fn build_document_in(
     project: &Project,
     lib: &Library,
@@ -54,22 +62,35 @@ pub fn build_document_in(
     let page = Page::new(format);
     let nets = build_nets(project, lib);
     let panel = &project.panel;
-    // The title sheet is number 1, the power sheets follow it, then the control sheets.
+    let layout = &project.panel_layout;
     // Two passes: the first one places the devices (the number of sheets and the zones do not
-    // depend on the captions), the second one writes the references to the places of the other part.
+    // depend on the captions or on the coils), the second one writes the references to the places
+    // of the other part.
     let none = Xrefs::new();
-    let (power, power_at, hand) =
-        power::power_sheets(panel, &project.panel_layout, &nets, lang, 2, &none, &page)?;
-    let first_control = power.len() + 2;
-    let (_, control_coils) =
-        control::control_sheets(project, &nets, lang, first_control, &none, &none, &page);
-    let coil_at = merge_coils(control_coils, hand);
-    let (power, _, _) = power::power_sheets(
+    let (power, power_at, hand_power) = power::power_sheets(
         panel,
-        &project.panel_layout,
+        layout,
         &nets,
         lang,
-        2,
+        FIRST_DRAWING_SHEET,
+        &none,
+        &page,
+    )?;
+    let first_control = FIRST_DRAWING_SHEET + power.len();
+    let (control, control_coils) =
+        control::control_sheets(project, &nets, lang, first_control, &power_at, &none, &page);
+    let first_free = first_control + control.len();
+    let free_count = free::count(project);
+    let (_, hand_free) = free::free_sheets(
+        project, &nets, lang, first_free, free_count, &power_at, &none, &page,
+    );
+    let coil_at = merge_coils(control_coils, [hand_power, hand_free]);
+    let (power, _, _) = power::power_sheets(
+        panel,
+        layout,
+        &nets,
+        lang,
+        FIRST_DRAWING_SHEET,
         &coil_at,
         &page,
     )?;
@@ -82,8 +103,12 @@ pub fn build_document_in(
         &coil_at,
         &page,
     );
+    let (free, _) = free::free_sheets(
+        project, &nets, lang, first_free, free_count, &power_at, &coil_at, &page,
+    );
     let mut sheets = power;
     sheets.extend(control);
+    sheets.extend(free);
     // The tables come last; the sheets are only for the panel that has something to draw.
     let tables = tables::build_tables(project, &nets, lang);
     if !sheets.is_empty() {
@@ -108,11 +133,13 @@ pub fn build_document_in(
 }
 
 /// The places of the coils and auxiliary contacts: the ones drawn on the control sheets, then the
-/// ones put on the power sheets by hand. A device whose place is known from the control sheets
-/// keeps it.
-fn merge_coils(mut coils: Xrefs, hand: Xrefs) -> Xrefs {
-    for (device, at) in hand {
-        coils.entry(device).or_insert(at);
+/// ones put by hand on the power and the free sheets. A device whose place is known from the
+/// control sheets keeps it.
+fn merge_coils(mut coils: Xrefs, hands: [Xrefs; 2]) -> Xrefs {
+    for hand in hands {
+        for (device, at) in hand {
+            coils.entry(device).or_insert(at);
+        }
     }
     coils
 }

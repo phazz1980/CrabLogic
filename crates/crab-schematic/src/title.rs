@@ -110,5 +110,9 @@ pub fn title_sheet(
         Align::Left,
         WEAK,
     );
-    Sheet::new(lang.pick("Титульный лист", "Title sheet").to_owned(), c)
+    Sheet::new(
+        None,
+        lang.pick("Титульный лист", "Title sheet").to_owned(),
+        c,
+    )
 }

@@ -59,7 +59,6 @@ fn every_drawn_device_has_a_symbol_with_ports() {
         ("power", "G1"),
         ("control", "K1"),
         ("control", "B1"),
-        ("board", "A1"),
     ] {
         let found = symbols
             .iter()
@@ -67,6 +66,13 @@ fn every_drawn_device_has_a_symbol_with_ports() {
             .unwrap_or_else(|| panic!("no {view} symbol of {device}"));
         assert!(found.2 > 0, "{view} {device} has no ports");
     }
+    // The board is its channels: a symbol of each bound terminal, with its port.
+    assert!(
+        symbols
+            .iter()
+            .any(|(v, d, p)| *v == "board" && d.starts_with("A1/") && *p > 0),
+        "no channel of the board"
+    );
     // Every symbol has some drawing.
     for sheet in &doc.sheets {
         for item in &sheet.items {

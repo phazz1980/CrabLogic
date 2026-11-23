@@ -311,6 +311,7 @@ pub fn table_sheets(table: &Table, page: &Page) -> Vec<Sheet> {
             }
         }
         sheets.push(Sheet::new(
+            None,
             if total_pages > 1 {
                 format!("{} ({}/{total_pages})", table.title, index + 1)
             } else {

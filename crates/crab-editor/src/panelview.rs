@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use crab_core::{
     bus_key, check_panel, panel_binding, panel_tags, symbol_key, ContactForm, Device, DeviceKind,
-    Report, Severity,
+    Report, Severity, SheetId,
 };
 use crab_schematic::{
     build_document_in, device_kind_name, Align, Document, Format, Item, ItemKind, Lang, Op, Rgb,
@@ -140,8 +140,12 @@ pub struct PanelView {
     link_menu: Option<String>,
     /// The device put on a sheet by hand that the right-click menu is open for.
     unplace_menu: Option<String>,
-    /// Show the first control sheet at the next frame (a device has just been put on it).
-    goto_control: bool,
+    /// Show this sheet at the next frame (a device has just been put on it, or it was just added).
+    goto: Option<SheetId>,
+    /// The caption of the shown sheet being typed: the sheet and the text.
+    caption_edit: Option<(SheetId, String)>,
+    /// «Разложить заново всё» was pressed once and waits for the confirmation.
+    confirm_reset: bool,
 }
 
 impl Default for PanelView {
@@ -153,7 +157,9 @@ impl Default for PanelView {
             coil: false,
             link_menu: None,
             unplace_menu: None,
-            goto_control: false,
+            goto: None,
+            caption_edit: None,
+            confirm_reset: false,
             lang: None,
             format: Format::default(),
             cache: None,
@@ -233,16 +239,16 @@ fn refresh(app: &mut EditorApp) {
         .and_then(|c| c.document.as_ref().ok())
         .map_or(0, |d| d.sheets.len().saturating_sub(1));
     app.panel_view.sheet = app.panel_view.sheet.min(last);
-    if app.panel_view.goto_control {
-        let first = app
+    if let Some(id) = app.panel_view.goto {
+        let found = app
             .panel_view
             .cache
             .as_ref()
             .and_then(|c| c.document.as_ref().ok())
-            .and_then(|d| d.sheets.iter().position(is_control));
-        if let Some(first) = first {
-            app.panel_view.sheet = first;
-            app.panel_view.goto_control = false;
+            .and_then(|d| d.sheets.iter().position(|s| s.id == Some(id)));
+        if let Some(found) = found {
+            app.panel_view.sheet = found;
+            app.panel_view.goto = None;
         }
     }
     let path = app.doc.as_ref().map(|d| d.project.path.clone());
@@ -1617,7 +1623,7 @@ fn power_span(document: &Document) -> (usize, usize) {
         .sheets
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.title.starts_with("Силовая") || s.title.starts_with("Power"))
+        .filter(|(_, s)| matches!(s.id, Some(crab_core::SheetId::Power(_))))
         .map(|(i, _)| i + 1)
         .collect();
     (
@@ -1672,28 +1678,18 @@ fn port_at(
             .iter()
             .find(|pt| (pt.x - p.x).hypot(pt.y - p.y) <= tolerance)
             .map(|pt| {
-                let terminal = match (*view, panel.device(device)) {
+                // A part of a device (`K1/coil`, the channel `A1/IO5` of the board) is wired as
+                // the device: the ends of a wire are `K1:A1`, `A1:IO5`.
+                let owner = crab_core::split_part(device).0;
+                let terminal = match (*view, panel.device(owner)) {
                     ("control", Some(d)) => {
                         crab_schematic::control::terminal_of_port(panel, d, &pt.name)
                     }
                     _ => pt.name.clone(),
                 };
-                (device.clone(), terminal, (pt.x, pt.y))
+                (owner.to_owned(), terminal, (pt.x, pt.y))
             })
     })
-}
-
-/// Whether the sheet is a power sheet.
-fn is_power(sheet: &Sheet) -> bool {
-    sheet.title.starts_with("Силовая часть") || sheet.title.starts_with("Power circuit")
-}
-
-/// Whether the sheet is a control sheet (it has the board).
-fn is_control(sheet: &Sheet) -> bool {
-    sheet
-        .items
-        .iter()
-        .any(|i| matches!(&i.kind, ItemKind::Symbol { view: "board", .. }))
 }
 
 /// The wire drawn by hand under a point of the page: its key.
@@ -2202,9 +2198,8 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             });
         }
     }
-    // A device dragged from the tree and dropped here is put on the control sheet.
-    let mut put: Option<(String, usize, f32, f32)> = None;
-    let mut put_power: Option<(String, usize, f32, f32)> = None;
+    // A device dragged from the tree and dropped here is put on the sheet it is dropped on.
+    let mut put: Option<(String, SheetId, f32, f32)> = None;
     if let Some(payload) = resp.dnd_release_payload::<DevicePayload>() {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             let at = page_at(pos);
@@ -2212,23 +2207,13 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             if document.coil_at.contains_key(&id) {
                 view_state.problem =
                     Some(tr("Это устройство уже нарисовано на листе управления").to_owned());
-            } else if is_control(sheet) {
-                let number = document.sheets[..index]
-                    .iter()
-                    .filter(|s| is_control(s))
-                    .count();
-                put = Some((id, number, at.x, at.y));
-            } else if is_power(sheet) {
-                let number = document.sheets[..index]
-                    .iter()
-                    .filter(|s| is_power(s))
-                    .count();
-                put_power = Some((id, number, at.x, at.y));
+            } else if let Some(target) = sheet.id {
+                put = Some((id, target, at.x, at.y));
             } else {
-                // Dropped on another sheet: the device goes on the first control sheet, which
-                // is shown, so that it can be put in place and wired.
-                put = Some((id, 0, 80.0, 400.0));
-                view_state.goto_control = true;
+                // Dropped on a title or a table sheet: the device goes on the first control sheet,
+                // which is shown, so that it can be put in place and wired.
+                put = Some((id, SheetId::Control(0), 80.0, 400.0));
+                view_state.goto = Some(SheetId::Control(0));
             }
         }
     }
@@ -2253,9 +2238,10 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 view_state.label = Some((key.to_owned(), size));
                 view_state.selected = None;
             } else {
+                // A part (`K1/coil`) selects its device.
                 select = symbol_at(sheet, p)
                     .and_then(|i| i.device())
-                    .map(str::to_owned);
+                    .map(|d| crab_core::split_part(d).0.to_owned());
             }
         }
     }
@@ -2273,7 +2259,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     let accent = app.theme.palette.accent;
     if let Some(chosen) = &view_state.selected {
         for item in &sheet.items {
-            if item.device() == Some(chosen.as_str()) {
+            if item.device().map(|d| crab_core::split_part(d).0) == Some(chosen.as_str()) {
                 if let Some(r) = item_bounds(sheet, item) {
                     let r = Rect::from_min_max(
                         view.at((r.min.x, r.min.y)),
@@ -2352,13 +2338,8 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         if let Some(id) = unplace {
             doc.edit_panel_layout(None, |l| l.unplace(&id));
         }
-        if let Some((id, number, x, y)) = put_power {
-            doc.edit_panel_layout(None, |l| l.place_power(&id, number, x, y));
-            app.panel_view.selected = Some(id);
-            app.panel_view.coil = false;
-        }
-        if let Some((id, number, x, y)) = put {
-            doc.edit_panel_layout(None, |l| l.place(&id, number, x, y));
+        if let Some((id, target, x, y)) = put {
+            doc.edit_panel_layout(None, |l| l.place(&id, target, x, y));
             app.panel_view.selected = Some(id);
             app.panel_view.coil = false;
         }
@@ -2410,6 +2391,72 @@ fn start_pdf(
     rx
 }
 
+/// The buttons of the shown sheet: its caption, a new free sheet, removing a free sheet.
+fn sheet_controls(
+    view: &mut PanelView,
+    doc: &mut Option<crate::doc::Doc>,
+    ui: &mut Ui,
+    shown: Option<SheetId>,
+    title: Option<&String>,
+    free_count: usize,
+) {
+    let Some(doc) = doc else {
+        return;
+    };
+    if let Some(id) = shown {
+        let editing = view.caption_edit.as_ref().is_some_and(|(e, _)| *e == id);
+        if !editing {
+            let text = doc
+                .project
+                .panel_layout
+                .caption(id)
+                .unwrap_or("")
+                .to_owned();
+            view.caption_edit = Some((id, text));
+        }
+        if let Some((_, text)) = &mut view.caption_edit {
+            let hint = title.map_or("", |t| t.as_str());
+            let response = ui.add(
+                egui::TextEdit::singleline(text)
+                    .hint_text(hint)
+                    .desired_width(160.0),
+            );
+            response.clone().on_hover_text(tr(
+                "Подпись листа: идёт в основную надпись и в содержание; пусто — подпись по умолчанию",
+            ));
+            if response.lost_focus() {
+                let text = text.clone();
+                if doc.project.panel_layout.caption(id).unwrap_or("") != text.trim() {
+                    doc.edit_panel_layout(None, |l| l.set_caption(id, &text));
+                }
+            }
+        }
+    }
+    if ui
+        .button("+")
+        .on_hover_text(tr("Добавить свободный лист"))
+        .clicked()
+    {
+        let id = SheetId::Free(free_count);
+        let caption = format!("{} {}", tr("Схема"), free_count + 1);
+        doc.edit_panel_layout(None, |l| l.set_caption(id, &caption));
+        view.goto = Some(id);
+        view.caption_edit = None;
+    }
+    if let Some(SheetId::Free(k)) = shown {
+        if ui
+            .button(tr("Удалить лист"))
+            .on_hover_text(tr(
+                "Удалить этот свободный лист; устройства с него вернутся в дерево, следующие листы сдвинутся",
+            ))
+            .clicked()
+        {
+            doc.edit_panel_layout(None, |l| l.remove_free_sheet(k));
+            view.caption_edit = None;
+        }
+    }
+}
+
 /// Above the sheet: the sheets, the language and the format.
 fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
     let Some(cache) = &app.panel_view.cache else {
@@ -2419,6 +2466,14 @@ fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
         |_| Vec::new(),
         |d| d.sheets.iter().map(|s| s.title.clone()).collect(),
     );
+    let ids: Vec<Option<SheetId>> = cache
+        .document
+        .as_ref()
+        .map_or_else(|_| Vec::new(), |d| d.sheets.iter().map(|s| s.id).collect());
+    let free_count = ids
+        .iter()
+        .filter(|id| matches!(id, Some(SheetId::Free(_))))
+        .count();
     let errors = cache.report.errors().count();
     let view = &mut app.panel_view;
     ui.horizontal(|ui| {
@@ -2453,6 +2508,7 @@ fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
             view.sheet += 1;
             view.highlight = None;
         }
+        sheet_controls(view, &mut app.doc, ui, ids.get(view.sheet).copied().flatten(), titles.get(view.sheet), free_count);
         ui.separator();
         let mut lang = view.language();
         ui.selectable_value(&mut lang, Lang::Ru, "RU");
@@ -2485,13 +2541,31 @@ fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
                     });
                 }
             }
-            let any = !doc.project.panel_layout.is_empty();
-            if ui
-                .add_enabled(any, egui::Button::new(tr("Сбросить раскладку")))
-                .on_hover_text(tr("Вернуть все символы и провода на автоматические места"))
+            let layout = &doc.project.panel_layout;
+            let any = !layout.symbols.is_empty()
+                || !layout.wires.is_empty()
+                || !layout.bus_to.is_empty()
+                || !layout.placed.is_empty();
+            if view.confirm_reset {
+                ui.label(tr("Убрать всё, что расставлено вручную?"));
+                if ui.button(tr("Да, разложить")).clicked() {
+                    doc.edit_panel_layout(None, |l| {
+                        l.clear_all();
+                        l.placed.clear();
+                    });
+                    view.confirm_reset = false;
+                }
+                if ui.button(tr("Отмена")).clicked() {
+                    view.confirm_reset = false;
+                }
+            } else if ui
+                .add_enabled(any, egui::Button::new(tr("Разложить заново всё")))
+                .on_hover_text(tr(
+                    "Вернуть все символы и провода на автоматические места и убрать с листов то, что положено вручную (подписи листов остаются)",
+                ))
                 .clicked()
             {
-                doc.edit_panel_layout(None, |l| l.clear_all());
+                view.confirm_reset = true;
             }
             ui.separator();
         }
@@ -2680,10 +2754,38 @@ bind = "sensor.out"
     fn sheet_of(ops: Vec<Op>, items: Vec<Item>) -> Sheet {
         Sheet {
             title: String::new(),
+            id: None,
             body: String::new(),
             ops,
             items,
         }
+    }
+
+    #[test]
+    fn a_wire_from_a_part_ends_at_its_device() {
+        let part = |view: &'static str, device: &str, name: &str| Item {
+            kind: ItemKind::Symbol {
+                view,
+                device: device.to_owned(),
+                origin: (0.0, 0.0),
+                ports: vec![crab_schematic::scene::Port {
+                    name: name.to_owned(),
+                    x: 10.0,
+                    y: 10.0,
+                    dir: crab_schematic::scene::Dir::Down,
+                }],
+            },
+            ops: Vec::new(),
+        };
+        let panel = crab_core::Panel::default();
+        let channel = sheet_of(Vec::new(), vec![part("board", "A1/IO5", "IO5")]);
+        let (device, terminal, _) =
+            port_at(&channel, &panel, Pos2::new(10.0, 10.0), 2.0).expect("a port");
+        assert_eq!((device.as_str(), terminal.as_str()), ("A1", "IO5"));
+        let coil = sheet_of(Vec::new(), vec![part("control", "K1/coil", "A1")]);
+        let (device, terminal, _) =
+            port_at(&coil, &panel, Pos2::new(10.0, 10.0), 2.0).expect("a port");
+        assert_eq!((device.as_str(), terminal.as_str()), ("K1", "A1"));
     }
 
     #[test]

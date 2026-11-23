@@ -9,10 +9,11 @@
 
 use std::collections::HashMap;
 
-use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout};
+use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, SheetId};
 
 use crate::bus::{self, Elsewhere};
 use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, THICK, WEAK};
+use crate::control::{draw_hand, Hand, Pins, Refs};
 use crate::doc::{Page, Sheet};
 use crate::error::Error;
 use crate::lang::Lang;
@@ -374,6 +375,10 @@ pub fn power_sheets(
         }
     }
 
+    // The devices the generator draws, on the power sheets or on the control sheets: a hand
+    // placement of them is not drawn again.
+    let mut generated = crate::control::generated_on_control(panel, nets);
+    generated.extend(slot.keys().map(|id| (*id).to_owned()));
     let mut sheets = Vec::new();
     // The coils and auxiliary contacts put on these sheets by hand.
     let mut hand = Xrefs::new();
@@ -815,66 +820,37 @@ pub fn power_sheets(
         }
 
         // The devices put on the sheet by hand, and the wires drawn by hand between them.
-        let mut pins = crate::control::Pins::new();
-        for (key, at) in &layout.placed {
-            let (id, _) = crab_core::split_part(key);
-            if panel.device(id).is_none() {
-                continue;
-            }
-            if !at.power || at.sheet.min(total - 1) != index || slot.contains_key(id) {
-                continue;
-            }
-            let (dx, dy) = layout.shift(&symbol_key("control", key));
-            let origin = (
-                (at.x + dx).clamp(page.x0() + 10.0, page.x1() - 80.0),
-                (at.y + dy).clamp(page.y0() + 30.0, page.y1() - 60.0),
-            );
-            let refs = crate::control::Refs {
+        let mut pins = Pins::new();
+        let view = Hand {
+            panel,
+            layout,
+            nets,
+            page,
+            refs: Refs {
                 power: &places,
                 coils,
-            };
-            crate::control::draw_placed(&mut c, panel, key, origin, layout, &mut pins, refs);
-            if let Some((name, xref)) =
-                crate::control::placed_xref(panel, key, origin, page, first_sheet + index)
-            {
-                hand.insert(name, xref);
-            }
-        }
-        for (lane, link) in panel.links.iter().enumerate() {
-            let end = |s: &str| {
-                let (device, terminal) = s.split_once(':')?;
-                pins.get(&(device.to_owned(), terminal.to_owned())).copied()
-            };
-            let (Some(a), Some(b)) = (end(&link.from), end(&link.to)) else {
-                continue;
-            };
-            let (fd, ft) = link.from.split_once(':').unwrap_or((&link.from, ""));
-            let (td, tt) = link.to.split_once(':').unwrap_or((&link.to, ""));
-            c.begin(ItemKind::Wire {
-                key: link.key(),
-                from: End::new(fd, ft),
-                to: End::new(td, tt),
-            });
-            let points = crate::control::link_route(a, b, (lane % 5) as f32 * 5.0);
-            c.line(&points, THICK, INK);
-            c.dot(a.0 .0, a.0 .1, DOT, INK);
-            c.dot(b.0 .0, b.0 .1, DOT, INK);
-            if let Some(w) = nets.wires.iter().find(|w| w.key() == link.key()) {
-                let mid = ((points[1].0 + points[2].0) / 2.0, points[1].1);
-                c.wire_number(&w.label_key(), mid, &w.number.to_string(), INK);
-            }
-            c.end();
-        }
+            },
+            generated: &generated,
+        };
+        draw_hand(
+            &mut c,
+            &view,
+            SheetId::Power(index),
+            total.saturating_sub(1),
+            first_sheet + index,
+            &mut pins,
+            &mut hand,
+        );
 
         let title = lang.pick("Силовая часть", "Power circuit");
-        sheets.push(Sheet::new(
-            if total > 1 {
-                format!("{title} ({}/{total})", index + 1)
-            } else {
-                title.to_owned()
-            },
-            c,
-        ));
+        let default = if total > 1 {
+            format!("{title} ({}/{total})", index + 1)
+        } else {
+            title.to_owned()
+        };
+        let id = SheetId::Power(index);
+        let caption = layout.caption(id).map_or(default, str::to_owned);
+        sheets.push(Sheet::new(Some(id), caption, c));
     }
     Ok((sheets, places, hand))
 }

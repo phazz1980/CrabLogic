@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crab_core::{Library, Panel, Project};
+use crab_core::{Library, Panel, Project, SheetId};
 use crab_schematic::{build_document, render_pdf, source, Error, Lang};
 
 fn repo_path(rel: &str) -> PathBuf {
@@ -940,8 +940,16 @@ fn a_wire_drawn_by_hand_replaces_the_automatic_one_at_its_terminals() {
 #[test]
 fn a_device_put_on_the_control_sheet_is_drawn_with_its_terminals_and_wires() {
     use crab_schematic::ItemKind;
-    let mut project = with_links("[[link]]\nfrom = \"Q2:2\"\nto = \"K1:A2\"\n");
-    project.panel_layout.place("Q2", 0, 300.0, 300.0);
+    // Q2 is fed from the feed, so the generator draws it: the breaker put by hand is the free Q9.
+    let mut project = with_links("[[link]]\nfrom = \"Q9:2\"\nto = \"K1:A2\"\n");
+    project
+        .panel
+        .devices
+        .push(toml::from_str("id = \"Q9\"\nkind = \"breaker\"\nfree = true").unwrap());
+    // The first control sheet.
+    project
+        .panel_layout
+        .place("Q9", SheetId::Control(0), 300.0, 300.0);
     let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
     let sheet = doc
         .sheets
@@ -961,15 +969,15 @@ fn a_device_put_on_the_control_sheet_is_drawn_with_its_terminals_and_wires() {
                 device,
                 ports,
                 ..
-            } if device == "Q2" => Some(ports.len()),
+            } if device == "Q9" => Some(ports.len()),
             _ => None,
         })
-        .expect("Q2 on the control sheet");
+        .expect("Q9 on the control sheet");
     assert!(ports >= 4);
     assert!(sheet
         .items
         .iter()
-        .any(|i| matches!(&i.kind, ItemKind::Wire { key, .. } if key == "Q2:2>K1:A2")));
+        .any(|i| matches!(&i.kind, ItemKind::Wire { key, .. } if key == "Q9:2>K1:A2")));
 }
 
 #[test]
@@ -990,7 +998,9 @@ fn a_device_put_on_the_power_sheet_is_drawn_there_not_on_the_control_sheet() {
         .panel
         .devices
         .push(toml::from_str("id = \"Q9\"\nkind = \"breaker\"\nfree = true").unwrap());
-    project.panel_layout.place_power("Q9", 0, 300.0, 300.0);
+    project
+        .panel_layout
+        .place("Q9", SheetId::Power(0), 300.0, 300.0);
     let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
     let has_q9 = |title: &str| {
         doc.sheets
@@ -1007,7 +1017,9 @@ fn a_device_put_on_the_power_sheet_is_drawn_there_not_on_the_control_sheet() {
     // Q2 is in an automatic chain (it has a feeder): putting it by hand draws no second, manual
     // symbol of Q2 on the power sheet.
     let mut project = with_links("");
-    project.panel_layout.place_power("Q2", 0, 300.0, 300.0);
+    project
+        .panel_layout
+        .place("Q2", SheetId::Power(0), 300.0, 300.0);
     let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
     let manual_q2 = doc
         .sheets
@@ -1028,7 +1040,9 @@ fn a_coil_of_a_free_contactor_put_on_the_power_sheet_is_its_own_symbol() {
         .panel
         .devices
         .push(toml::from_str("id = \"K9\"\nkind = \"contactor\"\nfree = true").unwrap());
-    project.panel_layout.place_power("K9/coil", 0, 300.0, 300.0);
+    project
+        .panel_layout
+        .place("K9/coil", SheetId::Power(0), 300.0, 300.0);
     let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
     let drawn = doc
         .sheets
@@ -1050,7 +1064,9 @@ fn a_coil_put_by_hand_on_the_power_sheet_is_the_place_of_its_contactor() {
         .panel
         .devices
         .push(toml::from_str("id = \"K9\"\nkind = \"contactor\"\nfree = true").unwrap());
-    project.panel_layout.place_power("K9/coil", 0, 300.0, 300.0);
+    project
+        .panel_layout
+        .place("K9/coil", SheetId::Power(0), 300.0, 300.0);
     let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
     let coil = &doc.coil_at["K9"];
     assert!(doc.sheets[coil.sheet - 1]

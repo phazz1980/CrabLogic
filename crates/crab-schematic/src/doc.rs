@@ -10,6 +10,8 @@
 
 use std::fmt::Write as _;
 
+use crab_core::SheetId;
+
 use crate::canvas::{Align, Canvas, Op, EXTRA, INK, TEXT, TEXT_S, THICK, THIN, WEAK};
 use crate::lang::Lang;
 use crate::tables::Tables;
@@ -158,6 +160,8 @@ impl Page {
 /// One sheet: its caption for the title block and the drawing of its body.
 pub struct Sheet {
     pub title: String,
+    /// The name of the drawing sheet (see `SheetId`). `None` for the title and the tables.
+    pub id: Option<SheetId>,
     /// Typst calls of the body (see [`Canvas`]).
     pub body: String,
     /// The same drawing as operations, for the editor.
@@ -167,11 +171,12 @@ pub struct Sheet {
 }
 
 impl Sheet {
-    /// A sheet with the drawing of `canvas`.
-    pub fn new(title: String, canvas: Canvas) -> Self {
+    /// A sheet with the drawing of `canvas`; `id` is the name of a drawing sheet.
+    pub fn new(id: Option<SheetId>, title: String, canvas: Canvas) -> Self {
         let (body, ops, items) = canvas.into_scene();
         Self {
             title,
+            id,
             body,
             ops,
             items,

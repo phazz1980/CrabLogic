@@ -4,8 +4,10 @@
 //! are added keeps the manual part relative to it.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::panel::Panel;
 
@@ -17,6 +19,76 @@ pub const PANEL_LAYOUT_FILE: &str = "panel-layout.toml";
 /// positions snap to 5 u.
 const GRID: f32 = 5.0;
 
+/// Most sheets of one kind that the layout names (a guard against a runaway number).
+pub const MAX_SHEETS: usize = 100;
+
+/// Name of a drawing sheet. It does not change when sheets are added: the power sheet `i` and the
+/// control sheet `j` are counted inside their group, as the generator makes them; the free sheet
+/// `k` is one of the sheets the user adds.
+///
+/// Text form: `power:0`, `control:1`, `free:2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SheetId {
+    Power(usize),
+    Control(usize),
+    Free(usize),
+}
+
+impl SheetId {
+    /// The number of the sheet inside its kind (`free:2` gives 2).
+    pub fn number(self) -> usize {
+        match self {
+            Self::Power(n) | Self::Control(n) | Self::Free(n) => n,
+        }
+    }
+}
+
+impl fmt::Display for SheetId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Power(n) => write!(f, "power:{n}"),
+            Self::Control(n) => write!(f, "control:{n}"),
+            Self::Free(n) => write!(f, "free:{n}"),
+        }
+    }
+}
+
+impl FromStr for SheetId {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let Some((kind, number)) = text.split_once(':') else {
+            return Err(format!(
+                "лист «{text}»: нужно имя вида power:0, control:0 или free:0"
+            ));
+        };
+        let number: usize = number
+            .parse()
+            .map_err(|_| format!("лист «{text}»: номер листа должен быть целым числом"))?;
+        match kind {
+            "power" => Ok(Self::Power(number)),
+            "control" => Ok(Self::Control(number)),
+            "free" => Ok(Self::Free(number)),
+            _ => Err(format!(
+                "лист «{text}»: неизвестный вид листа, нужен power, control или free"
+            )),
+        }
+    }
+}
+
+impl Serialize for SheetId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for SheetId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// Manual layout of the panel sheets.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PanelLayout {
@@ -26,25 +98,64 @@ pub struct PanelLayout {
     /// key = wire key as `crab_schematic::nets::Wire::key()` gives it (e.g. `K1:2>M1:L1`)
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub wires: BTreeMap<String, WireShape>,
-    /// key = number of a power sheet (from 0) as text (TOML keys are strings): the number of the sheet its supply lines are
-    /// carried on to by hand; the sheets between get the lines too.
+    /// Supply lines carried on by hand: key = the power sheet (from 0) as text, as TOML keys are
+    /// strings; value = the number of the target sheet in the document (the title sheet is 1).
+    /// The lines go straight there, not through the sheets between.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bus_to: BTreeMap<String, usize>,
-    /// Devices put on a control sheet by hand: key = the device id.
+    /// Devices put on a sheet by hand: key = the device id (or a part of it, `K1/coil`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub placed: BTreeMap<String, Placed>,
+    /// Captions of the sheets: key = the `SheetId` as text (`free:0`), value = the caption.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub captions: BTreeMap<String, String>,
 }
 
-/// Where a device was put on the control sheets by hand: the sheet (from 0, among the control
-/// sheets) and the place on it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+/// Where a device was put on a drawing sheet by hand: the sheet and the place on it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PlacedFile")]
 pub struct Placed {
-    /// On a power sheet (`sheet` counts the power sheets) and not on a control sheet.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub power: bool,
-    pub sheet: usize,
+    pub sheet: SheetId,
     pub x: f32,
     pub y: f32,
+}
+
+/// The entry of a device as it is read: the new form (`sheet = "control:0"`) and the old one
+/// (`sheet = 0` with `power = true` for a power sheet, counted inside its group).
+#[derive(Deserialize)]
+struct PlacedFile {
+    /// Old form only: `true` when the number of `sheet` counts the power sheets.
+    #[serde(default)]
+    power: bool,
+    sheet: SheetRef,
+    x: f32,
+    y: f32,
+}
+
+/// The `sheet` value of an entry: a name, or the number of an old entry.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SheetRef {
+    Name(String),
+    Number(usize),
+}
+
+impl TryFrom<PlacedFile> for Placed {
+    type Error = String;
+
+    fn try_from(file: PlacedFile) -> Result<Self, Self::Error> {
+        let sheet = match file.sheet {
+            SheetRef::Name(text) => text.parse::<SheetId>()?,
+            // An old entry: the number counts inside its group, `power` tells the group.
+            SheetRef::Number(n) if file.power => SheetId::Power(n),
+            SheetRef::Number(n) => SheetId::Control(n),
+        };
+        Ok(Self {
+            sheet,
+            x: file.x,
+            y: file.y,
+        })
+    }
 }
 
 /// Offset of a device symbol from its automatic place, in units of 1/4 mm.
@@ -212,6 +323,58 @@ impl PanelLayout {
             && self.wires.is_empty()
             && self.bus_to.is_empty()
             && self.placed.is_empty()
+            && self.captions.is_empty()
+    }
+
+    /// Caption the user gave the sheet; `None` when there is none.
+    pub fn caption(&self, sheet: SheetId) -> Option<&str> {
+        self.captions
+            .get(&sheet.to_string())
+            .map(String::as_str)
+            .filter(|caption| !caption.is_empty())
+    }
+
+    /// Sets the caption of the sheet (trimmed; an empty one removes it). A sheet beyond
+    /// `MAX_SHEETS` is ignored.
+    pub fn set_caption(&mut self, sheet: SheetId, caption: &str) {
+        if sheet.number() >= MAX_SHEETS {
+            return;
+        }
+        let key = sheet.to_string();
+        let caption = caption.trim();
+        if caption.is_empty() {
+            self.captions.remove(&key);
+        } else {
+            self.captions.insert(key, caption.to_owned());
+        }
+    }
+
+    /// Removes the free sheet `k`: its caption and the devices put on it by hand go, the later
+    /// free sheets move one number down (placed devices and captions). The generator's sheets
+    /// cannot be removed, so only free sheets come here.
+    pub fn remove_free_sheet(&mut self, k: usize) {
+        self.placed
+            .retain(|_, placed| placed.sheet != SheetId::Free(k));
+        for placed in self.placed.values_mut() {
+            if let SheetId::Free(n) = placed.sheet {
+                if n > k {
+                    placed.sheet = SheetId::Free(n.saturating_sub(1));
+                }
+            }
+        }
+        let mut captions = BTreeMap::new();
+        for (key, caption) in std::mem::take(&mut self.captions) {
+            match key.parse::<SheetId>() {
+                Ok(SheetId::Free(n)) if n == k => {}
+                Ok(SheetId::Free(n)) if n > k => {
+                    captions.insert(SheetId::Free(n.saturating_sub(1)).to_string(), caption);
+                }
+                _ => {
+                    captions.insert(key, caption);
+                }
+            }
+        }
+        self.captions = captions;
     }
 
     /// Offset of the symbol from its automatic place; `(0, 0)` when it has none.
@@ -278,51 +441,48 @@ impl PanelLayout {
     }
 
     /// Drops the whole manual layout (symbols and wires). The devices put on the sheets by hand
-    /// stay where they are.
+    /// and the sheet captions stay where they are.
     pub fn clear_all(&mut self) {
         self.symbols.clear();
         self.wires.clear();
         self.bus_to.clear();
     }
 
-    /// Puts the device on a control sheet at a place; the place snaps to the grid. `device` may
-    /// be a part key (`K1/coil`).
-    pub fn place(&mut self, device: &str, sheet: usize, x: f32, y: f32) {
+    /// Puts the device on the sheet at a place; the place snaps to the grid. The offset of the
+    /// symbol from an earlier automatic place is dropped (the control one, and the power one when
+    /// the sheet is a power sheet). `device` may be a part key (`K1/coil`). A sheet beyond
+    /// `MAX_SHEETS` is ignored.
+    pub fn place(&mut self, device: &str, sheet: SheetId, x: f32, y: f32) {
+        if sheet.number() >= MAX_SHEETS {
+            return;
+        }
         self.placed.insert(
             device.to_owned(),
             Placed {
-                power: false,
                 sheet,
                 x: snap(x),
                 y: snap(y),
             },
         );
-        // The offset from an earlier place means nothing now.
         self.symbols.remove(&symbol_key("control", device));
-    }
-
-    /// Puts the device on a power sheet (counted among the power sheets) at a place. `device` may
-    /// be a part key (`K1/coil`).
-    pub fn place_power(&mut self, device: &str, sheet: usize, x: f32, y: f32) {
-        self.place(device, sheet, x, y);
-        if let Some(p) = self.placed.get_mut(device) {
-            p.power = true;
+        if matches!(sheet, SheetId::Power(_)) {
+            self.symbols.remove(&symbol_key("power", device));
         }
-        self.symbols.remove(&symbol_key("power", device));
     }
 
-    /// Takes the device off the control sheets. `device` may be a part key (`K1/coil`).
+    /// Takes the device off the sheets. `device` may be a part key (`K1/coil`).
     pub fn unplace(&mut self, device: &str) {
         self.placed.remove(device);
         self.symbols.remove(&symbol_key("control", device));
     }
 
-    /// The sheet the supply lines of the power sheet `index` (from 0) are carried on to by hand.
+    /// The document sheet the supply lines of the power sheet `index` (from 0) are carried on to
+    /// by hand (see the field `bus_to`).
     pub fn bus_to(&self, index: usize) -> Option<usize> {
         self.bus_to.get(&index.to_string()).copied()
     }
 
-    /// Carries the supply lines of the power sheet `index` on to the sheet number `to`; `None`
+    /// Carries the supply lines of the power sheet `index` on to the document sheet `to`; `None`
     /// takes the manual setting back.
     pub fn set_bus_to(&mut self, index: usize, to: Option<usize>) {
         match to {
@@ -467,10 +627,118 @@ mod tests {
         let mut layout = PanelLayout::default();
         layout.set_shift("a:K1", 5.0, -10.0);
         layout.set_bend("K1:2>M1:L1", Some(15.0));
+        layout.place("K2", SheetId::Free(1), 10.0, 10.0);
+        layout.set_caption(SheetId::Control(0), "Drives");
         let text = toml::to_string(&layout).unwrap();
         let again: PanelLayout = toml::from_str(&text).unwrap();
         assert_eq!(again, layout);
         assert_eq!(toml::to_string(&PanelLayout::default()).unwrap(), "");
+    }
+
+    #[test]
+    fn sheet_names_have_a_text_form_that_round_trips() {
+        assert_eq!(SheetId::Power(0).to_string(), "power:0");
+        assert_eq!(SheetId::Control(1).to_string(), "control:1");
+        assert_eq!(SheetId::Free(2).to_string(), "free:2");
+        for id in [SheetId::Power(3), SheetId::Control(0), SheetId::Free(12)] {
+            assert_eq!(id.to_string().parse::<SheetId>(), Ok(id));
+        }
+        assert_eq!(SheetId::Free(4).number(), 4);
+        assert!("drive:1".parse::<SheetId>().unwrap_err().contains("drive"));
+        assert!("free".parse::<SheetId>().is_err());
+        assert!("free:x".parse::<SheetId>().is_err());
+    }
+
+    #[test]
+    fn placed_is_written_by_name_and_old_entries_read_as_before() {
+        let mut layout = PanelLayout::default();
+        layout.place("K1", SheetId::Control(0), 10.0, 10.0);
+        let text = toml::to_string(&layout).unwrap();
+        assert!(text.contains("sheet = \"control:0\""), "{text}");
+        assert!(!text.contains("power"), "{text}");
+        // A file of the old numbering: `power` tells the power sheets, the number counts inside
+        // the group; a file of the version that had no `version` key at all reads the same way.
+        let old: PanelLayout = toml::from_str(
+            "version = 0
+[placed.K2]
+power = true
+sheet = 1
+x = 0.0
+y = 0.0
+
+[placed.K3]
+power = false
+sheet = 2
+x = 5.0
+y = 0.0
+",
+        )
+        .unwrap();
+        assert_eq!(old.placed["K2"].sheet, SheetId::Power(1));
+        assert_eq!(old.placed["K3"].sheet, SheetId::Control(2));
+        // The new form reads too, and gives back the same entries.
+        let back: PanelLayout = toml::from_str(&toml::to_string(&old).unwrap()).unwrap();
+        assert_eq!(back, old);
+        assert!(toml::from_str::<PanelLayout>(
+            "[placed.K2]\nsheet = \"lamp:1\"\nx = 0.0\ny = 0.0\n"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn captions_are_trimmed_by_name_and_an_empty_one_removes() {
+        let mut layout = PanelLayout::default();
+        layout.set_caption(SheetId::Free(2), "  Drives  ");
+        assert_eq!(layout.caption(SheetId::Free(2)), Some("Drives"));
+        assert_eq!(layout.caption(SheetId::Free(0)), None);
+        assert_eq!(layout.caption(SheetId::Control(2)), None);
+        assert!(!layout.is_empty());
+        layout.clear_all();
+        assert_eq!(layout.caption(SheetId::Free(2)), Some("Drives"));
+        layout.set_caption(SheetId::Free(2), "   ");
+        assert_eq!(layout.caption(SheetId::Free(2)), None);
+        assert!(layout.is_empty());
+        // A caption of a sheet beyond the guard is not kept.
+        layout.set_caption(SheetId::Free(MAX_SHEETS), "x");
+        layout.set_caption(SheetId::Power(usize::MAX), "x");
+        assert!(layout.captions.is_empty());
+    }
+
+    #[test]
+    fn remove_free_sheet_moves_the_later_free_sheets() {
+        let mut layout = PanelLayout::default();
+        layout.set_caption(SheetId::Power(0), "Power");
+        layout.set_caption(SheetId::Control(0), "Control");
+        layout.set_caption(SheetId::Free(0), "Zero");
+        layout.set_caption(SheetId::Free(1), "One");
+        layout.set_caption(SheetId::Free(2), "Two");
+        layout.place("K1", SheetId::Free(1), 10.0, 10.0);
+        layout.place("K2", SheetId::Free(2), 20.0, 10.0);
+        layout.place("K3", SheetId::Control(0), 30.0, 10.0);
+        layout.remove_free_sheet(1);
+        assert_eq!(layout.caption(SheetId::Power(0)), Some("Power"));
+        assert_eq!(layout.caption(SheetId::Control(0)), Some("Control"));
+        assert_eq!(layout.caption(SheetId::Free(0)), Some("Zero"));
+        assert_eq!(layout.caption(SheetId::Free(1)), Some("Two"));
+        assert_eq!(layout.caption(SheetId::Free(2)), None);
+        assert!(!layout.placed.contains_key("K1"));
+        assert_eq!(layout.placed["K2"].sheet, SheetId::Free(1));
+        assert_eq!(layout.placed["K3"].sheet, SheetId::Control(0));
+    }
+
+    #[test]
+    fn place_drops_the_offsets_of_the_automatic_place() {
+        let mut layout = PanelLayout::default();
+        layout.set_shift("power:K1", 5.0, 5.0);
+        layout.set_shift("control:K1", 10.0, 0.0);
+        layout.place("K1", SheetId::Control(0), 0.0, 0.0);
+        assert_eq!(layout.shift("power:K1"), (5.0, 5.0));
+        assert_eq!(layout.shift("control:K1"), (0.0, 0.0));
+        layout.place("K1", SheetId::Power(1), 0.0, 0.0);
+        assert_eq!(layout.shift("power:K1"), (0.0, 0.0));
+        layout.set_shift("power:K2", 5.0, 0.0);
+        layout.place("K2", SheetId::Free(0), 0.0, 0.0);
+        assert_eq!(layout.shift("power:K2"), (5.0, 0.0));
     }
 
     #[test]
@@ -499,7 +767,7 @@ mod tests {
     #[test]
     fn rename_moves_symbols_labels_wires_and_placed_devices() {
         let mut layout = PanelLayout::default();
-        layout.place("K1", 0, 40.0, 20.0);
+        layout.place("K1", SheetId::Power(0), 40.0, 20.0);
         layout.set_shift(&symbol_key("power", "K1"), 5.0, 5.0);
         layout.set_shift(&symbol_key("power", "K10"), 10.0, 0.0);
         layout.set_shift(&label_key("K1", "name"), 5.0, -5.0);
@@ -517,7 +785,7 @@ mod tests {
         assert_eq!(layout.bend("K10:2>K5:3"), Some(-10.0));
         assert_eq!(layout.bend("K5:4>K10:1"), Some(20.0));
         assert_eq!(layout.placed.keys().collect::<Vec<_>>(), vec!["K5"]);
-        assert_eq!(layout.placed["K5"].sheet, 0);
+        assert_eq!(layout.placed["K5"].sheet, SheetId::Power(0));
     }
 
     #[test]
@@ -567,8 +835,8 @@ mod tests {
         let panel = panel_with(&["K1"]);
         let mut layout = PanelLayout::default();
         // `place` drops the control offset of the device, so the places come first.
-        layout.place(&part_key("K1", COIL), 0, 10.0, 10.0);
-        layout.place(&part_key("Q9", COIL), 0, 10.0, 10.0);
+        layout.place(&part_key("K1", COIL), SheetId::Control(0), 10.0, 10.0);
+        layout.place(&part_key("Q9", COIL), SheetId::Control(0), 10.0, 10.0);
         layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 0.0);
         layout.set_shift(&label_key(&part_key("K1", COIL), "name"), 5.0, 0.0);
         layout.set_shift(&symbol_key("control", &part_key("Q9", COIL)), 5.0, 0.0);
@@ -584,8 +852,8 @@ mod tests {
     #[test]
     fn rename_moves_part_entries_and_leaves_similar_devices_alone() {
         let mut layout = PanelLayout::default();
-        layout.place(&part_key("K1", COIL), 0, 40.0, 20.0);
-        layout.place(&part_key("K10", COIL), 0, 60.0, 20.0);
+        layout.place(&part_key("K1", COIL), SheetId::Control(0), 40.0, 20.0);
+        layout.place(&part_key("K10", COIL), SheetId::Control(0), 60.0, 20.0);
         layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 5.0);
         layout.set_shift(&symbol_key("control", &part_key("K10", COIL)), 10.0, 0.0);
         layout.set_shift(&label_key(&part_key("K1", COIL), "name"), 5.0, -5.0);
@@ -605,8 +873,8 @@ mod tests {
     #[test]
     fn rename_all_swaps_devices_with_their_parts() {
         let mut layout = PanelLayout::default();
-        layout.place(&part_key("K1", COIL), 0, 40.0, 20.0);
-        layout.place(&part_key("K2", COIL), 0, 80.0, 20.0);
+        layout.place(&part_key("K1", COIL), SheetId::Control(0), 40.0, 20.0);
+        layout.place(&part_key("K2", COIL), SheetId::Control(0), 80.0, 20.0);
         layout.set_shift(&symbol_key("control", &part_key("K1", COIL)), 5.0, 0.0);
         layout.set_shift(&symbol_key("control", &part_key("K2", COIL)), 0.0, 10.0);
         layout.rename_all(&[("K1".into(), "K2".into()), ("K2".into(), "K1".into())]);

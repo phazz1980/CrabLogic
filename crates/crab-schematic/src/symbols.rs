@@ -6,13 +6,15 @@
 //! Movable parts are drawn as the standard asks (7.4.4): breakers and contacts open, the contact
 //! moves to the right when its coil is energised.
 
-use crab_core::{ContactForm, Device, DeviceKind, Supply};
+use crab_core::panel_layout::label_key;
+use crab_core::{part_key, ContactForm, Device, DeviceKind, Supply};
 
 use crate::canvas::{
     Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_L, TEXT_M, TEXT_S, THICK, THIN, WEAK,
 };
 use crate::lang::Lang;
-use crab_core::panel_layout::label_key;
+use crate::nets::BOARD;
+use crate::scene::{Dir, ItemKind, Port};
 
 /// Distance between the conductors of a device: two modules, so that text fits between the wires.
 pub const POLE: f32 = 20.0;
@@ -528,10 +530,7 @@ pub fn draw_field_device(
             c.text(x + 15.0, top + 8.0, "A1", TEXT, Align::Left, WEAK);
             c.text(x + 15.0, top + 42.0, "A2", TEXT, Align::Left, WEAK);
             // Under the A2 terminal, right of the wire that runs down from it to the 0 V bus.
-            for (i, line) in contacts.iter().enumerate() {
-                let y = top + 64.0 + i as f32 * TABLE_LINE_H;
-                c.text(x + 6.0, y, line, TEXT_S, Align::Left, INK);
-            }
+            draw_table(c, x, top + 64.0, contacts);
             Some(Field {
                 signal: (x, top),
                 plus: None,
@@ -539,23 +538,52 @@ pub fn draw_field_device(
             })
         }
         DeviceKind::Sensor => {
+            // The plus comes from the top (the +24 V rail), the signal and the minus go down.
             c.rect(x - 30.0, top, 60.0, 50.0, THIN, INK);
-            dot(c, x, top);
-            dot(c, x - 15.0, top + 50.0);
-            dot(c, x + 15.0, top + 50.0);
+            dot(c, x - SENSOR_SIGNAL_DX, top);
+            dot(c, x - SENSOR_SIGNAL_DX, top + 50.0);
+            dot(c, x + SENSOR_SIGNAL_DX, top + 50.0);
             c.bold(x, top + 16.0, &name, TEXT, Align::Center, INK);
-            c.text(x - 15.0, top + 38.0, "+", TEXT, Align::Center, WEAK);
-            c.text(x + 15.0, top + 38.0, "-", TEXT, Align::Center, WEAK);
+            // The terminals: `+` at the top (the `+24V` rail), `S` (the signal) and `-` at the bottom,
+            // as the panel names them (`terminal_of_port`).
+            c.text(
+                x - SENSOR_SIGNAL_DX - SENSOR_LABEL_DX,
+                top - SENSOR_LABEL_DX,
+                "+",
+                TEXT,
+                Align::Right,
+                WEAK,
+            );
+            c.text(
+                x - SENSOR_SIGNAL_DX,
+                top + 38.0,
+                "S",
+                TEXT,
+                Align::Center,
+                WEAK,
+            );
+            c.text(
+                x + SENSOR_SIGNAL_DX,
+                top + 38.0,
+                "-",
+                TEXT,
+                Align::Center,
+                WEAK,
+            );
             Some(Field {
-                signal: (x, top),
-                plus: Some((x - 15.0, top + 50.0)),
-                minus: Some((x + 15.0, top + 50.0)),
+                signal: (x - SENSOR_SIGNAL_DX, top + 50.0),
+                plus: Some((x - SENSOR_SIGNAL_DX, top)),
+                minus: Some((x + SENSOR_SIGNAL_DX, top + 50.0)),
             })
         }
         DeviceKind::Button => {
-            // A push button: the contact with its actuator, open; it closes to the right.
+            // A push button: the contact with its actuator, open; it closes to the right. The
+            // top terminal is fed from the +24 V rail, the bottom one goes to the input.
             dot(c, x, top);
             dot(c, x, top + 60.0);
+            // The terminals: `1` at the top (the `+24V` side), `2` at the bottom (the input).
+            c.text(x + 6.0, top + 12.0, "1", TEXT_S, Align::Left, WEAK);
+            c.text(x + 6.0, top + 52.0, "2", TEXT_S, Align::Left, WEAK);
             c.line(&[(x, top + DOT), (x, top + 15.0)], THIN, INK);
             c.line(&[(x, top + 15.0), (x - 10.0, top + 45.0)], THIN, INK);
             c.line(&[(x, top + 45.0), (x, top + 60.0 - DOT)], THIN, INK);
@@ -563,8 +591,8 @@ pub fn draw_field_device(
             c.line(&[(x - 20.0, top + 22.5), (x - 20.0, top + 37.5)], THIN, INK);
             c.bold(x + 15.0, top + 30.0, &name, TEXT, Align::Left, INK);
             Some(Field {
-                signal: (x, top),
-                plus: Some((x, top + 60.0)),
+                signal: (x, top + 60.0),
+                plus: Some((x, top)),
                 minus: None,
             })
         }
@@ -574,6 +602,77 @@ pub fn draw_field_device(
 
 /// Height of a contact symbol on the control sheet.
 pub const AUX_H: f32 = 50.0;
+
+/// Distance of the signal and of the minus terminals of a sensor from its middle; the plus is
+/// above the signal.
+pub(crate) const SENSOR_SIGNAL_DX: f32 = 20.0;
+/// Offset of the `+` of a sensor from its top terminal, up and to the left of it.
+const SENSOR_LABEL_DX: f32 = 4.0;
+
+/// Size of the box of a channel of the board.
+pub(crate) const CHANNEL_W: f32 = 60.0;
+pub(crate) const CHANNEL_H: f32 = 34.0;
+/// Baselines of the two lines of a channel (the tag, the terminal), from its top edge. The terminal
+/// is on the top edge (an input) or on the bottom edge (an output); each line is at least 10 from
+/// the terminal, so the dot and the wire do not run over the text.
+const CHANNEL_TAG_DY: f32 = 10.0;
+const CHANNEL_NAME_DY: f32 = 22.0;
+
+/// A channel box of the board: a part of the board (`A1/IO5`) that stands where its terminal is
+/// used. `(x, top)` is the middle of its top edge; the terminal is on the bottom edge of an output
+/// (`Dir::Down`) and on the top edge of an input (`Dir::Up`). It shows the tag and `-A1:IO5`.
+/// Returns the terminal and its direction; the caller notes them as the pin of the board.
+pub(crate) fn draw_channel(
+    c: &mut Canvas,
+    terminal: &str,
+    tag: &str,
+    (x, top): (f32, f32),
+    dir: Dir,
+) -> ((f32, f32), Dir) {
+    let item = c.begin(ItemKind::Symbol {
+        view: "board",
+        device: part_key(BOARD, terminal),
+        origin: (x, top),
+        ports: Vec::new(),
+    });
+    c.rect(x - CHANNEL_W / 2.0, top, CHANNEL_W, CHANNEL_H, THIN, INK);
+    c.text(x, top + CHANNEL_TAG_DY, tag, TEXT_S, Align::Center, INK);
+    c.text(
+        x,
+        top + CHANNEL_NAME_DY,
+        &format!("-{BOARD}:{terminal}"),
+        TEXT_S,
+        Align::Center,
+        WEAK,
+    );
+    let py = if dir == Dir::Up { top } else { top + CHANNEL_H };
+    c.circle(x, py, DOT, THIN, INK);
+    c.port(
+        item,
+        Port {
+            name: terminal.to_owned(),
+            x,
+            y: py,
+            dir,
+        },
+    );
+    c.end();
+    ((x, py), dir)
+}
+
+/// The lines of a contact table, one under another from `(x, y)`, right of the wire at `x`.
+pub(crate) fn draw_table(c: &mut Canvas, x: f32, y: f32, lines: &[String]) {
+    for (i, line) in lines.iter().enumerate() {
+        c.text(
+            x + 6.0,
+            y + i as f32 * TABLE_LINE_H,
+            line,
+            TEXT_S,
+            Align::Left,
+            INK,
+        );
+    }
+}
 
 /// An auxiliary contact on the control sheet, drawn upright with the designation of its device
 /// left of it (`-Q2`), the terminal numbers right of the ends and `at`, where the device stands on
