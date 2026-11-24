@@ -1,11 +1,16 @@
 //! Hand wires between sheets and to the supply lines (`specs/panel-palette`, tasks 3 and 4): a wire
 //! whose other end is on another sheet breaks off with the place of that end, a wire to a bus ends
-//! on the line of the sheet that draws it, or breaks off with the name of the line.
+//! on the line of the sheet that draws it, or breaks off with the name of the line. The automatic
+//! wires that no sheet draws are drawn the same way (task 7a).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crab_core::{Library, PanelLayout, Project, SheetId};
-use crab_schematic::{build_document, Document, Item, ItemKind, Lang, Nets, Op, Sheet};
+use crab_schematic::{
+    build_document, build_nets, control, power, Document, Format, Item, ItemKind, Lang, Nets, Op,
+    Page, Sheet, TerminalXrefs, Xrefs,
+};
 
 fn repo_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -391,4 +396,171 @@ fn a_bus_link_on_a_chained_terminal_leaves_the_chain_as_it_is() {
         .find(|w| w.key() == "Q1:1>bus:L1")
         .expect("the hand wire");
     assert_eq!(hand.number, feed.number);
+}
+
+/// The example pump with the coil of `K1` put by hand on `sheet` (or not put by hand). Its
+/// auxiliary contact `Q1_1` in series with the coil is left out, so that the wire into `A1` is the
+/// one from the channel (the series case has its own test).
+fn pump_with_coil(sheet: Option<SheetId>) -> Project {
+    let mut project = Project::load(repo_path("examples/pump")).unwrap();
+    project.panel.devices.retain(|d| d.id != "Q1_1");
+    if let Some(sheet) = sheet {
+        project.panel_layout.place("K1/coil", sheet, 300.0, 300.0);
+    }
+    project
+}
+
+fn document_and_nets(project: &Project) -> (Document, Nets) {
+    build_document(project, &library(), Lang::Ru).unwrap()
+}
+
+/// The key of the wire that has `device:terminal` at one of its ends.
+fn wire_key_at(nets: &Nets, device: &str, terminal: &str) -> String {
+    nets.wires
+        .iter()
+        .find(|w| {
+            (w.from.device == device && w.from.terminal == terminal)
+                || (w.to.device == device && w.to.terminal == terminal)
+        })
+        .map(|w| w.key())
+        .unwrap_or_else(|| panic!("no wire at {device}:{terminal}"))
+}
+
+/// How many wire items with the key `key` the document draws, on all the sheets.
+fn wire_items(doc: &Document, key: &str) -> usize {
+    doc.sheets
+        .iter()
+        .flat_map(|s| &s.items)
+        .filter(|i| matches!(&i.kind, ItemKind::Wire { key: k, .. } if k == key))
+        .count()
+}
+
+#[test]
+fn a_coil_put_by_hand_on_a_free_sheet_is_wired_to_the_channel_and_the_zero_rail_both_ways() {
+    let (_, plain) = document_and_nets(&pump_with_coil(None));
+    let (doc, nets) = document_and_nets(&pump_with_coil(Some(SheetId::Free(0))));
+    let control_no = number_of(&doc, SheetId::Control(0));
+    let free_no = number_of(&doc, SheetId::Free(0));
+    let (control, free) = (sheet(&doc, control_no), sheet(&doc, free_no));
+    // One coil of K1: the hand one. The ladder draws no coil of its own.
+    let coils = doc
+        .sheets
+        .iter()
+        .flat_map(|s| &s.items)
+        .filter(|i| i.device() == Some("K1/coil"))
+        .count();
+    assert_eq!(coils, 1);
+    assert!(!doc.sheets.iter().flat_map(|s| &s.items).any(|i| matches!(
+        &i.kind,
+        ItemKind::Symbol { view: "control", device, .. } if device == "K1"
+    )));
+    // The wire from the channel to A1: a stub on the control sheet and on the free sheet, each
+    // with the place of the other end.
+    let key = wire_key_at(&nets, "K1", "A1");
+    let (channel, _) = key.split_once('>').unwrap();
+    assert!(channel.starts_with("A1:"), "{key}");
+    let (chan_device, chan_terminal) = channel.split_once(':').unwrap();
+    assert_eq!(wire_items(&doc, &key), 2);
+    assert!(wire(control, &key).is_some());
+    assert!(wire(free, &key).is_some());
+    let coil_at = doc.terminal_at[&("K1".to_owned(), "A1".to_owned())].clone();
+    let channel_at = doc.terminal_at[&(chan_device.to_owned(), chan_terminal.to_owned())].clone();
+    assert_eq!(coil_at.sheet, free_no);
+    assert_eq!(channel_at.sheet, control_no);
+    assert!(says(control, &coil_at.to_string()));
+    assert!(says(free, &channel_at.to_string()));
+    // A2 to 0V: a labelled `0V` break on the free sheet, drawn once.
+    let ground = wire_key_at(&nets, "K1", "A2");
+    assert!(wire(free, &ground).is_some());
+    assert!(says(free, "0V"));
+    assert_eq!(wire_items(&doc, &ground), 1);
+    // The numbers do not depend on where the coil is.
+    assert_eq!(nets.wire_numbers(), plain.wire_numbers());
+}
+
+#[test]
+fn a_coil_put_by_hand_on_the_control_sheet_is_one_routed_wire_there() {
+    let (doc, nets) = document_and_nets(&pump_with_coil(Some(SheetId::Control(0))));
+    let control_no = number_of(&doc, SheetId::Control(0));
+    let key = wire_key_at(&nets, "K1", "A1");
+    // Both ends are on the control sheet: one wire, drawn there, no break.
+    assert_eq!(wire_items(&doc, &key), 1);
+    assert!(wire(sheet(&doc, control_no), &key).is_some());
+    assert_eq!(
+        doc.terminal_at[&("K1".to_owned(), "A1".to_owned())].sheet,
+        control_no
+    );
+}
+
+#[test]
+fn the_generator_draws_every_wire_of_the_pump_example() {
+    let project = Project::load(repo_path("examples/pump")).unwrap();
+    let nets = build_nets(&project, &library());
+    let page = Page::new(Format::default());
+    let (none, no_terminals) = (Xrefs::new(), TerminalXrefs::new());
+    let (power, power_at, _, _) = power::power_sheets(
+        &project.panel,
+        &project.panel_layout,
+        &nets,
+        Lang::Ru,
+        2,
+        &none,
+        &no_terminals,
+        None,
+        &page,
+    )
+    .unwrap();
+    let (control, _, _) = control::control_sheets(
+        &project,
+        &nets,
+        Lang::Ru,
+        2 + power.len(),
+        &power_at,
+        &none,
+        &no_terminals,
+        None,
+        &page,
+    );
+    // The wires the generator draws on the sheets; the general path has nothing to add to them.
+    let drawn: HashSet<String> = power
+        .iter()
+        .chain(&control)
+        .flat_map(|s| &s.items)
+        .filter_map(|i| match &i.kind {
+            ItemKind::Wire { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    for wire in nets
+        .wires
+        .iter()
+        .filter(|w| !nets.manual.contains(&w.key()))
+    {
+        assert!(drawn.contains(&wire.key()), "{} is not drawn", wire.key());
+    }
+}
+
+#[test]
+fn a_contact_in_series_with_a_coil_put_by_hand_is_wired_to_it_on_both_sheets() {
+    // The auxiliary contact `Q1_1` stays in series with `K1`: its wire into `A1` is drawn on the
+    // control sheet (the contact is there) and on the free sheet (the coil is there).
+    let (doc, nets) = document_and_nets(&Project {
+        panel_layout: pump_with_coil(Some(SheetId::Free(0))).panel_layout,
+        ..Project::load(repo_path("examples/pump")).unwrap()
+    });
+    let key = wire_key_at(&nets, "K1", "A1");
+    assert!(key.starts_with("Q1_1:"), "{key}");
+    assert_eq!(wire_items(&doc, &key), 2);
+    let control = sheet(&doc, number_of(&doc, SheetId::Control(0)));
+    let free = sheet(&doc, number_of(&doc, SheetId::Free(0)));
+    assert!(wire(control, &key).is_some());
+    assert!(wire(free, &key).is_some());
+    assert_eq!(
+        doc.sheets
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|i| i.device() == Some("K1/coil"))
+            .count(),
+        1
+    );
 }

@@ -187,6 +187,36 @@ fn wires_keep_their_numbers_when_the_panel_changes() {
 }
 
 #[test]
+fn manual_coil_links_to_power_buses_replace_generated_links() {
+    let panel = r#"
+supply = "ac400"
+[[device]]
+id = "K1"
+kind = "contactor"
+bind = "pump"
+[[device]]
+id = "G1"
+kind = "psu"
+[[link]]
+from = "K1:A1"
+to = "bus:L1"
+[[link]]
+from = "K1:A2"
+to = "bus:N"
+"#;
+    let nets = build_nets(&pump(panel), &library());
+    let keys = keys(&nets);
+    assert!(keys.iter().any(|key| key == "K1:A1>bus:L1"));
+    assert!(keys.iter().any(|key| key == "K1:A2>bus:N"));
+    assert!(!keys
+        .iter()
+        .any(|key| key.contains("K1:A1") && key != "K1:A1>bus:L1"));
+    assert!(!keys
+        .iter()
+        .any(|key| key.contains("K1:A2") && key != "K1:A2>bus:N"));
+}
+
+#[test]
 fn control_source_is_the_feed_on_24_volts_and_external_otherwise() {
     let lib = library();
     let dc = r#"
@@ -287,8 +317,8 @@ fn the_poles_of_a_breaker_limit_the_conductors_under_it() {
     assert_eq!(power_wires("ac230", "poles = 1\n"), (1, 1));
     assert_eq!(power_wires("ac400", ""), (4, 4));
     assert_eq!(power_wires("ac400", "poles = 3\n"), (3, 3));
-    // Out of the range of the supply: brought into it.
-    assert_eq!(power_wires("ac400", "poles = 1\n"), (3, 3));
+    // One pole on 400 V is a phase: the motor under it gets the neutral from the bus.
+    assert_eq!(power_wires("ac400", "poles = 1\n"), (1, 2));
 }
 
 fn nets_of(panel: &str) -> Nets {
@@ -458,4 +488,172 @@ fn a_terminal_block_splits_the_numbers_and_the_number_after_it_can_be_set_by_han
     again.store(&mut project.panel);
     assert_eq!(project.panel.wire_numbers["X2:L>M1:L"], 101);
     manual.wires.clear();
+}
+
+/// A hand wire on `A1` of a coil with contacts in series replaces only the last wire into `A1`:
+/// the board and the contacts stay wired.
+#[test]
+fn a_hand_wire_on_a1_keeps_the_contacts_in_series_wired() {
+    let nets = nets_of(
+        r#"
+supply = "ac230"
+[[device]]
+id = "K1"
+kind = "contactor"
+bind = "pump"
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+series = "K1"
+[[link]]
+from = "K1:A1"
+to = "bus:+24V"
+"#,
+    );
+    let k = key_set(&nets);
+    assert!(k.contains("A1:IO26>K1_1:13"), "{k:?}");
+    assert!(k.contains("K1:A1>bus:+24V"), "{k:?}");
+    assert!(!k.contains("K1_1:14>K1:A1"), "{k:?}");
+}
+
+/// The power wires of a panel as keys, sorted: what runs on the mains side.
+fn power_keys(nets: &Nets) -> Vec<String> {
+    let mut keys: Vec<String> = nets
+        .wires
+        .iter()
+        .filter(|w| w.class == crab_schematic::WireClass::Power)
+        .map(|w| w.key())
+        .collect();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn a_single_phase_breaker_takes_its_phase_and_the_load_gets_the_neutral_from_the_bus() {
+    let nets = nets_of(
+        r#"
+supply = "ac400"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q3"
+[[device]]
+id = "Q3"
+kind = "breaker"
+poles = 1
+conductors = ["L2"]
+load = "E1"
+[[device]]
+id = "E1"
+kind = "load"
+"#,
+    );
+    let keys = keys(&nets);
+    for expected in ["X1:L2>Q3:1", "Q3:2>E1:L2", "X1:N>E1:N"] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "нет {expected}: {keys:#?}"
+        );
+    }
+    assert!(!keys
+        .iter()
+        .any(|k| k.starts_with("X1:L1>") || k.starts_with("X1:L3>")));
+    assert_eq!(nets.conductors["Q3"], ["L2"]);
+    assert_eq!(nets.conductors["E1"], ["L2", "N"]);
+}
+
+#[test]
+fn a_two_pole_breaker_on_two_phases_gives_no_neutral_below() {
+    let nets = nets_of(
+        r#"
+supply = "ac400"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q4"
+[[device]]
+id = "Q4"
+kind = "breaker"
+poles = 2
+conductors = ["L1", "L3"]
+load = "E2"
+[[device]]
+id = "E2"
+kind = "load"
+"#,
+    );
+    let keys = keys(&nets);
+    for expected in ["X1:L1>Q4:1", "X1:L3>Q4:3", "Q4:2>E2:L1", "Q4:4>E2:L3"] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "нет {expected}: {keys:#?}"
+        );
+    }
+    assert!(!keys.iter().any(|k| k.ends_with(":N") && k.contains("E2")));
+    assert_eq!(nets.conductors["Q4"], ["L1", "L3"]);
+    assert_eq!(nets.conductors["E2"], ["L1", "L3"]);
+}
+
+#[test]
+fn a_motor_under_a_three_pole_contactor_takes_a_phase_and_the_neutral_from_the_feed() {
+    let nets = nets_of(
+        r#"
+supply = "ac400"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "K1"
+[[device]]
+id = "K1"
+kind = "contactor"
+poles = 3
+load = "M1"
+[[device]]
+id = "M1"
+kind = "motor"
+conductors = ["L2", "N"]
+"#,
+    );
+    let keys = keys(&nets);
+    // The second phase of the contactor is its second pole (`4`); the neutral passes by the bus.
+    for expected in ["K1:4>M1:L2", "X1:N>M1:N"] {
+        assert!(
+            keys.iter().any(|k| k == expected),
+            "нет {expected}: {keys:#?}"
+        );
+    }
+    assert_eq!(nets.conductors["M1"], ["L2", "N"]);
+}
+
+#[test]
+fn an_old_three_pole_breaker_on_400_volts_gives_the_same_wires() {
+    let nets = nets_of(
+        r#"
+supply = "ac400"
+[[device]]
+id = "X1"
+kind = "feed"
+load = "Q1"
+[[device]]
+id = "Q1"
+kind = "breaker"
+poles = 3
+load = "M1"
+[[device]]
+id = "M1"
+kind = "motor"
+"#,
+    );
+    assert_eq!(
+        power_keys(&nets),
+        [
+            "Q1:2>M1:L1",
+            "Q1:4>M1:L2",
+            "Q1:6>M1:L3",
+            "X1:L1>Q1:1",
+            "X1:L2>Q1:3",
+            "X1:L3>Q1:5",
+        ]
+    );
 }

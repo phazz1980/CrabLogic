@@ -28,6 +28,7 @@ fn panel() -> Panel {
         from: String::new(),
         free: false,
         series: String::new(),
+        conductors: Vec::new(),
     };
     Panel {
         devices: vec![

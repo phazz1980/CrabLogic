@@ -65,12 +65,14 @@ pub fn build_document_in(
     let nets = build_nets(project, lib);
     let panel = &project.panel;
     let layout = &project.panel_layout;
-    // Two passes: the first one places the devices (the number of sheets and the zones do not
-    // depend on the captions or on the coils), the second one writes the references to the places
-    // of the other part.
+    // Three steps. The first pass places the devices (the number of sheets and the zones do not
+    // depend on the captions or on the coils) and collects the wires the generator draws: the
+    // automatic wires that no sheet draws are drawn the general way only in the last pass, so
+    // they are left out here (`general` is `None`). The second pass writes the references to the
+    // places of the other part; the last one draws the general wires too.
     let none = Xrefs::new();
     let no_terminals = TerminalXrefs::new();
-    let (power, power_at, hand_power, power_terminals) = power::power_sheets(
+    let (power_first, power_at, hand_power, power_terminals) = power::power_sheets(
         panel,
         layout,
         &nets,
@@ -78,10 +80,11 @@ pub fn build_document_in(
         FIRST_DRAWING_SHEET,
         &none,
         &no_terminals,
+        None,
         &page,
     )?;
-    let first_control = FIRST_DRAWING_SHEET + power.len();
-    let (control, control_coils, control_terminals) = control::control_sheets(
+    let first_control = FIRST_DRAWING_SHEET + power_first.len();
+    let (control_first, control_coils, control_terminals) = control::control_sheets(
         project,
         &nets,
         lang,
@@ -89,11 +92,12 @@ pub fn build_document_in(
         &power_at,
         &none,
         &no_terminals,
+        None,
         &page,
     );
-    let first_free = first_control + control.len();
+    let first_free = first_control + control_first.len();
     let free_count = free::count(project);
-    let (_, hand_free, free_terminals) = free::free_sheets(
+    let (free_first, hand_free, free_terminals) = free::free_sheets(
         project,
         &nets,
         lang,
@@ -102,8 +106,10 @@ pub fn build_document_in(
         &power_at,
         &none,
         &no_terminals,
+        None,
         &page,
     );
+    let drawn = control::drawn_wires(power_first.iter().chain(&control_first).chain(&free_first));
     let coil_at = merge_coils(control_coils, [hand_power, hand_free]);
     let terminal_at = merge_terminals([power_terminals, control_terminals, free_terminals]);
     let (power, _, _, _) = power::power_sheets(
@@ -114,6 +120,7 @@ pub fn build_document_in(
         FIRST_DRAWING_SHEET,
         &coil_at,
         &terminal_at,
+        Some(&drawn),
         &page,
     )?;
     let (control, _, _) = control::control_sheets(
@@ -124,6 +131,7 @@ pub fn build_document_in(
         &power_at,
         &coil_at,
         &terminal_at,
+        Some(&drawn),
         &page,
     );
     let (free, _, _) = free::free_sheets(
@@ -135,6 +143,7 @@ pub fn build_document_in(
         &power_at,
         &coil_at,
         &terminal_at,
+        Some(&drawn),
         &page,
     );
     let mut sheets = power;

@@ -123,6 +123,9 @@ pub struct Nets {
     pub board_terminals: Vec<BoardTerminal>,
     /// Keys of the wires that were drawn by hand (`panel.links`), not worked out.
     pub manual: Vec<String>,
+    /// Effective conductors of each device of the power chain, by device id, in the order of the
+    /// bus (`L2`, `N`): what the device takes, not what `panel.toml` says.
+    pub conductors: BTreeMap<String, Vec<String>>,
 }
 
 impl Nets {
@@ -391,6 +394,97 @@ fn join_wires(
     groups
 }
 
+/// The conductors a device of the power chain takes on a 400 V supply, in the order of the bus
+/// (`specs/panel-phase`). The conductors that reach it are those its feeder passes on, and the
+/// neutral, which always passes by from the bus. Of those, a device takes its own `conductors` when
+/// they fit; otherwise a switching device takes the first conductors of its poles, and any other
+/// device takes what its feeder passes on. A single phase under a device gets the neutral too.
+/// `memo` keeps the answer per device; `depth` stops a cycle of feeders.
+fn phases_of(
+    panel: &Panel,
+    feeder: &HashMap<&str, &Device>,
+    device: &Device,
+    memo: &mut HashMap<String, Vec<&'static str>>,
+    depth: usize,
+) -> Vec<&'static str> {
+    if let Some(done) = memo.get(&device.id) {
+        return done.clone();
+    }
+    let lines = mains(Supply::Ac400);
+    // What the feeder passes on: the feed, or every conductor when nothing feeds the device.
+    let passed: Vec<&'static str> = match feeder.get(device.id.as_str()) {
+        Some(up) if depth <= feeder.len() => phases_of(panel, feeder, up, memo, depth + 1),
+        _ => lines.to_vec(),
+    };
+    let avail: Vec<&'static str> = lines
+        .iter()
+        .copied()
+        .filter(|line| *line == "N" || passed.contains(line))
+        .collect();
+    let fitting = |names: &[&'static str]| -> Vec<&'static str> {
+        names
+            .iter()
+            .copied()
+            .filter(|name| avail.contains(name))
+            .collect()
+    };
+    // The own conductors, in the order of the bus.
+    let own: Vec<&'static str> = lines
+        .iter()
+        .copied()
+        .filter(|line| device.conductors.iter().any(|c| c.as_str() == *line))
+        .collect();
+    let result = if is_relay_contact(panel, device) {
+        // A relay contact has one pole: its own phase, else the first one that reaches it.
+        let own_first = device
+            .conductors
+            .first()
+            .and_then(|c| lines.iter().copied().find(|line| *line == c.as_str()));
+        own_first
+            .filter(|name| avail.contains(name))
+            .or_else(|| avail.first().copied())
+            .into_iter()
+            .collect()
+    } else if has_poles(device.kind) {
+        // Without `poles` a switching device has all four conductors.
+        let poles = usize::from(device.poles.map_or(4, |p| p.clamp(1, 4)));
+        if !device.conductors.is_empty() && device.conductors.len() == poles {
+            fitting(&own)
+        } else {
+            let by_poles: &[&'static str] = match poles {
+                1 => &["L1"],
+                2 => &["L1", "N"],
+                3 => &["L1", "L2", "L3"],
+                _ => lines,
+            };
+            // The default never takes the neutral past the feeder: only what it passes on, so an
+            // old four-pole device under a three-pole one still gets three conductors.
+            let picked: Vec<&'static str> = by_poles
+                .iter()
+                .copied()
+                .filter(|name| passed.contains(name))
+                .collect();
+            if picked.is_empty() {
+                avail.iter().copied().take(poles).collect()
+            } else {
+                picked
+            }
+        }
+    } else {
+        let mut names = fitting(&own);
+        if names.is_empty() {
+            names = passed.clone();
+        }
+        // One phase alone gets the neutral from the bus.
+        if names.len() == 1 && names[0] != "N" {
+            names.push("N");
+        }
+        names
+    };
+    memo.insert(device.id.clone(), result.clone());
+    result
+}
+
 /// Works out the wires of the panel and numbers them. The numbers already kept in
 /// `project.panel.wire_numbers` stay with their wires; new wires get the numbers after the
 /// largest one. The result does not change the project: call [`Nets::store`] to keep the numbers.
@@ -443,6 +537,8 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
             || feeder.contains_key(d.id.as_str())
             || ids.contains(d.load.as_str())
     };
+    let mut memo: HashMap<String, Vec<&'static str>> = HashMap::new();
+    let mut conductors: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for t in devices
         .iter()
         .filter(|d| is_powered_device(panel, d))
@@ -450,40 +546,68 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
     {
         let up = feeder.get(t.id.as_str()).copied();
         let control = control_domain(t);
+        // On 400 V each device takes its own conductors (see `phases_of`).
+        let by_phase = !control && panel.supply == Supply::Ac400;
         let (names, class): (&[&str], _) = if control {
             (&CONTROL, WireClass::Control)
         } else {
             (mains(panel.supply), WireClass::Power)
         };
-        // A switching device with fewer poles passes on only the first conductors; what stands
-        // under it (up to the next power supply) gets just those.
-        let mut lines = names.len();
-        let mut walk = Some(t);
-        let (lo, hi) = if control {
-            Supply::Dc24.pole_range()
+        let picked: Vec<(usize, &str)> = if by_phase {
+            phases_of(panel, &feeder, t, &mut memo, 0)
+                .into_iter()
+                .enumerate()
+                .collect()
         } else {
-            panel.supply.pole_range()
-        };
-        for _ in 0..=devices.len() {
-            let Some(d) = walk else { break };
-            // A relay contact has one pole and is not clamped to the poles of the supply.
-            let poles = if is_relay_contact(panel, d) {
-                Some(1)
-            } else if has_poles(d.kind) {
-                d.poles.map(|p| usize::from(p.clamp(lo, hi)))
+            // A switching device with fewer poles passes on only the first conductors; what
+            // stands under it (up to the next power supply) gets just those.
+            let mut lines = names.len();
+            let mut walk = Some(t);
+            let (lo, hi) = if control {
+                Supply::Dc24.pole_range()
             } else {
-                None
+                panel.supply.pole_range()
             };
-            if let Some(p) = poles.filter(|_| control_domain(d) == control) {
-                lines = lines.min(p);
+            for _ in 0..=devices.len() {
+                let Some(d) = walk else { break };
+                // A relay contact has one pole and is not clamped to the poles of the supply.
+                let poles = if is_relay_contact(panel, d) {
+                    Some(1)
+                } else if has_poles(d.kind) {
+                    d.poles.map(|p| usize::from(p.clamp(lo, hi)))
+                } else {
+                    None
+                };
+                if let Some(p) = poles.filter(|_| control_domain(d) == control) {
+                    lines = lines.min(p);
+                }
+                walk = feeder.get(d.id.as_str()).copied();
             }
-            walk = feeder.get(d.id.as_str()).copied();
-        }
-        for (i, name) in names.iter().enumerate().take(lines) {
-            let from = match (up, feed) {
-                (Some(up), _) => out_pin(panel, up, i, name),
-                (None, Some(feed)) => out_pin(panel, feed, i, name),
-                (None, None) => Pin::new(EXTERNAL, *name),
+            names.iter().copied().enumerate().take(lines).collect()
+        };
+        let list = picked.iter().map(|(_, name)| (*name).to_owned()).collect();
+        conductors.insert(t.id.clone(), list);
+        // What the feeder passes on, by conductor, on 400 V.
+        let up_phases = match (by_phase, up) {
+            (true, Some(up)) => Some(phases_of(panel, &feeder, up, &mut memo, 0)),
+            _ => None,
+        };
+        for (i, name) in picked {
+            let from = match (up, &up_phases) {
+                (Some(up), Some(phases)) => match phases.iter().position(|p| *p == name) {
+                    Some(j) => out_pin(panel, up, j, name),
+                    // The neutral passes by from the bus, not through the feeder.
+                    None if name == "N" => match feed {
+                        Some(feed) => out_pin(panel, feed, 0, name),
+                        None => Pin::new(EXTERNAL, name),
+                    },
+                    None => Pin::new(EXTERNAL, name),
+                },
+                (Some(up), None) => out_pin(panel, up, i, name),
+                (None, _) => match feed {
+                    Some(feed) => out_pin(panel, feed, i, name),
+                    None => Pin::new(EXTERNAL, name),
+                },
             };
             // A device behind a power supply sees its 24 V as the conductors `+24V`, `0V`.
             drafts.push(Draft {
@@ -532,6 +656,21 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         }
     };
     let mut bound: Vec<(String, String, &Device)> = Vec::new();
+    // A link end that names something of this panel: a device, the board or a supply line. A
+    // link to anything else is left out, so it replaces no automatic wire.
+    let known_end = |end: &str| match crab_core::link_bus(end) {
+        Some(line) => CONTROL.contains(&line) || panel.supply.lines().contains(&line),
+        None => {
+            let device = crab_core::link_device(end);
+            device == BOARD || panel.device(device).is_some()
+        }
+    };
+    let manual_terminal = |device: &str, terminal: &str| {
+        let this = format!("{device}:{terminal}");
+        panel.links.iter().any(|link| {
+            (link.from == this && known_end(&link.to)) || (link.to == this && known_end(&link.from))
+        })
+    };
     for d in devices {
         let Some(bind) = (!d.bind.is_empty()).then_some(d.bind.as_str()) else {
             continue;
@@ -542,8 +681,10 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         let board = Pin::new(BOARD, &terminal);
         match d.kind {
             DeviceKind::Contactor | DeviceKind::Relay => {
+                // A manual connection of A1/A2 takes precedence over the generated control circuit.
                 // The output of the board goes through the contacts in series with the coil, in
-                // the order of the panel, to `A1`.
+                // the order of the panel, to `A1`. A hand wire on `A1` replaces only the last
+                // wire into it: the board and the contacts in series stay wired.
                 let mut from = board;
                 let mut class = WireClass::Signal;
                 for contact in devices.iter().filter(|c| {
@@ -558,16 +699,20 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
                     from = Pin::new(&contact.id, out);
                     class = WireClass::Control;
                 }
-                drafts.push(Draft {
-                    class,
-                    from,
-                    to: Pin::new(&d.id, "A1"),
-                });
-                drafts.push(Draft {
-                    class: WireClass::Control,
-                    from: Pin::new(&d.id, "A2"),
-                    to: source("0V", 1),
-                });
+                if !manual_terminal(&d.id, "A1") {
+                    drafts.push(Draft {
+                        class,
+                        from,
+                        to: Pin::new(&d.id, "A1"),
+                    });
+                }
+                if !manual_terminal(&d.id, "A2") {
+                    drafts.push(Draft {
+                        class: WireClass::Control,
+                        from: Pin::new(&d.id, "A2"),
+                        to: source("0V", 1),
+                    });
+                }
             }
             DeviceKind::Sensor => {
                 drafts.push(Draft {
@@ -745,6 +890,7 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         manual: manual_keys,
         wires,
         board_terminals,
+        conductors,
     }
 }
 

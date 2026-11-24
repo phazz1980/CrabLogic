@@ -3,7 +3,7 @@
 //!
 //! Every operation checks everything first and changes nothing when it refuses.
 
-use crate::panel::{link_device, DeviceKind, Panel};
+use crate::panel::{link_device, DeviceKind, Panel, WireLink};
 use crate::{panel_binding, panel_tags, Library, ParamKind, ParamValue, Project};
 
 /// Designation of the controller board in the wires (the same as `crab_schematic::BOARD`).
@@ -303,6 +303,31 @@ fn set_bind(project: &mut Project, device: &str, bind: String) {
     if let Some(d) = project.panel.devices.iter_mut().find(|d| d.id == device) {
         d.bind = bind;
     }
+}
+
+/// Connects the terminal `end` (`K1:A1`) by hand to `target`: a terminal (`K2_1:14`) or a line
+/// (`bus:L1`); the hand wires that ended on `end` before are taken away. `None` takes them away
+/// only, so the generator wires the terminal again. A target equal to `end` is refused.
+pub fn connect_terminal(panel: &mut Panel, end: &str, target: Option<&str>) -> Result<(), String> {
+    if split_end(end).is_none() {
+        return Err(format!("неверный вывод «{end}»"));
+    }
+    if let Some(t) = target {
+        if t == end {
+            return Err("провод не может начинаться и кончаться на одном выводе".to_owned());
+        }
+        if crate::link_bus(t).is_none() && split_end(t).is_none() {
+            return Err(format!("неверный вывод «{t}»"));
+        }
+    }
+    panel.links.retain(|l| l.from != end && l.to != end);
+    if let Some(t) = target {
+        panel.links.push(WireLink {
+            from: end.to_owned(),
+            to: t.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Which end of a wire key `A:pin>B:pin` is moved.

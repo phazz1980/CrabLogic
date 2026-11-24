@@ -5,7 +5,9 @@
 use crab_core::{split_part, Project, SheetId, MAX_SHEETS};
 
 use crate::canvas::Canvas;
-use crate::control::{draw_hand, generated_on_control, note_terminals, Hand, Pins, Rails, Refs};
+use crate::control::{
+    draw_hand, generated_on_control, note_terminals, DrawnWires, Hand, Pins, Rails, Refs,
+};
 use crate::doc::{Page, Sheet};
 use crate::lang::Lang;
 use crate::nets::Nets;
@@ -52,9 +54,10 @@ pub(crate) fn free_sheets(
     contacts: &Xrefs,
     coils: &Xrefs,
     terminals: &TerminalXrefs,
+    general: Option<&DrawnWires>,
     page: &Page,
 ) -> (Vec<Sheet>, Xrefs, TerminalXrefs) {
-    let mut generated = generated_on_control(&project.panel, nets);
+    let mut generated = generated_on_control(&project.panel, &project.panel_layout, nets);
     generated.extend(contacts.keys().cloned());
     let hand = Hand {
         panel: &project.panel,
@@ -69,6 +72,7 @@ pub(crate) fn free_sheets(
         rails: &Rails::new(),
         lang,
         generated: &generated,
+        drawn: general,
     };
     let mut sheets = Vec::new();
     let mut places = Xrefs::new();

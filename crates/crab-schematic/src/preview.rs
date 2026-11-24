@@ -46,6 +46,7 @@ pub fn preview(kind: DeviceKind, part: PalettePart, supply: Supply) -> Preview {
         from: String::new(),
         free: false,
         series: String::new(),
+        conductors: Vec::new(),
     };
     let ops = match (part, kind) {
         (

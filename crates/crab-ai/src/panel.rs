@@ -325,6 +325,7 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
                     from: String::new(),
                     free: false,
                     series: String::new(),
+                    conductors: Vec::new(),
                 };
                 apply(&mut device, args)?;
                 panel.devices.push(device);

@@ -921,6 +921,7 @@ fqbn = \"x:y:z\"
             from: String::new(),
             free: false,
             series: String::new(),
+            conductors: Vec::new(),
         });
         project.save().unwrap();
         assert!(has_panel(&project.path));

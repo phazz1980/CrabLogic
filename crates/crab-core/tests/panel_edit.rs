@@ -520,3 +520,22 @@ fn rewire_refusals_change_nothing() {
         assert_eq!(project, before, "{key} {end:?} {target}");
     }
 }
+
+#[test]
+fn a_terminal_is_connected_to_a_line_or_a_contact_and_back_to_the_generator() {
+    use crab_core::connect_terminal;
+    let mut panel = pump_with(CHAIN).panel;
+    connect_terminal(&mut panel, "K1:A1", Some("bus:L1")).unwrap();
+    assert_eq!(panel.links.len(), 1);
+    // A new target replaces the old hand wire on the same terminal.
+    connect_terminal(&mut panel, "K1:A1", Some("Q2:1")).unwrap();
+    assert_eq!(
+        panel.links.iter().map(|l| l.key()).collect::<Vec<_>>(),
+        ["K1:A1>Q2:1"]
+    );
+    // None gives the terminal back to the generator.
+    connect_terminal(&mut panel, "K1:A1", None).unwrap();
+    assert!(panel.links.is_empty());
+    assert!(connect_terminal(&mut panel, "K1:A1", Some("K1:A1")).is_err());
+    assert!(connect_terminal(&mut panel, "K1", Some("bus:L1")).is_err());
+}

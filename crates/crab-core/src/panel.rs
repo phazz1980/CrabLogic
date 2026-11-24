@@ -31,12 +31,12 @@ impl Supply {
         *self == Self::default()
     }
 
-    /// The numbers of poles a switching device may have on this supply: from one-phase `1` or
-    /// `2` (with the neutral) to three-phase `3` or `4`.
+    /// The numbers of poles a switching device may have on this supply: `1` or `2` (with the
+    /// neutral, or a pair of phases on 400 V) on a one-phase supply, `1` to `4` on 400 V.
     pub fn pole_range(self) -> (u8, u8) {
         match self {
             Self::Dc24 | Self::Ac230 => (1, 2),
-            Self::Ac400 => (3, 4),
+            Self::Ac400 => (1, 4),
         }
     }
 
@@ -178,8 +178,8 @@ pub struct Device {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub load: String,
     /// Number of conductors a breaker, RCD, contactor or relay switches (`1`, `2` on 230 V and
-    /// 24 V; `3`, `4` on 400 V); the devices under it get only these conductors. Empty: all
-    /// conductors of the supply.
+    /// 24 V; `1` to `4` on 400 V); the devices under it get only these conductors. Empty: all
+    /// conductors of the supply (`4` on 400 V).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poles: Option<u8>,
     /// For an auxiliary contact: the device it belongs to (`Q2`). For a sensor: the motor whose
@@ -205,6 +205,10 @@ pub struct Device {
     /// with the coil. Empty: the contact goes to an input of the board (`bind`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub series: String,
+    /// The conductors this device takes on a 400 V supply, in the order of the buses (`["L2"]`,
+    /// `["L3","N"]`, `["L1","L3"]`). Empty: by default (spec panel-phase).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conductors: Vec<String>,
 }
 
 impl Device {
@@ -565,6 +569,7 @@ kind = "breaker"
                 from: String::new(),
                 free: false,
                 series: String::new(),
+                conductors: Vec::new(),
             });
         }
         assert_eq!(panel.next_id(DeviceKind::Contactor), "K3");

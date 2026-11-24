@@ -509,16 +509,19 @@ fn a_contact_put_by_hand_is_named_in_the_table_under_the_coil() {
         .contains(&quoted(&after.coil_at["K1_1"].to_string())));
 }
 
-/// A coil put by hand for a contactor that the generator draws on the control sheet gives way:
-/// the generator's coil is the only one drawn.
+/// A coil put by hand for a contactor that the generator's ladder draws on the control sheet is
+/// drawn once: as its own symbol. The ladder keeps the channel and draws no coil of `K1`.
 #[test]
 fn a_coil_put_by_hand_gives_way_to_the_coil_the_generator_draws() {
     let mut project = pump(PUMP_PANEL);
     let at = after_power(&project);
     project.panel_layout.place("K1/coil", at, 300.0, 300.0);
     let doc = document(&project);
-    assert_eq!(control_symbol_ports(&doc, "K1/coil"), None);
-    assert!(control_symbol_ports(&doc, "K1").is_some());
+    assert_eq!(
+        control_symbol_ports(&doc, "K1/coil"),
+        Some(vec!["A1".to_owned(), "A2".to_owned()])
+    );
+    assert_eq!(control_symbol_ports(&doc, "K1"), None);
 }
 
 /// A part key that is not a part of the device (`K1/foo`) draws nothing and names no place.
@@ -1289,4 +1292,23 @@ fn a_changeover_row_of_the_table_takes_two_lines() {
         top <= y12 && bottom >= y11,
         "связь не проходит обе строки: {links:?}"
     );
+}
+
+/// A sensor put by hand is drawn once, as its own box; the ladder keeps only the channel of its
+/// terminal and draws no field symbol of its own.
+#[test]
+fn a_sensor_put_by_hand_is_drawn_once_and_keeps_its_channel() {
+    let mut project = pump(PUMP_PANEL);
+    let at = after_power(&project);
+    project.panel_layout.place("B1", at, 300.0, 300.0);
+    let doc = document(&project);
+    let symbols = doc
+        .sheets
+        .iter()
+        .flat_map(|s| &s.items)
+        .filter(|i| {
+            matches!(&i.kind, ItemKind::Symbol { view: "control", device, .. } if device == "B1")
+        })
+        .count();
+    assert_eq!(symbols, 1);
 }

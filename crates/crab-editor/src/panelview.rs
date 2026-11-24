@@ -552,6 +552,7 @@ fn new_device(id: String, kind: DeviceKind) -> Device {
             DeviceKind::Feed | DeviceKind::Aux | DeviceKind::Sensor | DeviceKind::Button
         ),
         series: String::new(),
+        conductors: Vec::new(),
     }
 }
 
@@ -790,6 +791,13 @@ fn coil_properties(app: &mut EditorApp, ui: &mut Ui, id: &str) {
     ui.heading(format!("{} -{id}", tr("Свойства катушки")));
     ui.separator();
     let mut edit = Edit::default();
+    let document = app
+        .panel_view
+        .cache
+        .as_ref()
+        .and_then(|c| c.document.as_ref().ok());
+    // The terminal of the coil and what it is connected to by hand (`None`: automatically).
+    let mut connect: Option<(String, Option<String>)> = None;
     egui::Grid::new("panel_coil_props")
         .num_columns(2)
         .spacing([8.0, 6.0])
@@ -816,21 +824,137 @@ fn coil_properties(app: &mut EditorApp, ui: &mut Ui, id: &str) {
                 edit.bind = Some(bind);
             }
             ui.end_row();
-            ui.label("A1");
-            ui.label(a1);
-            ui.end_row();
-            ui.label("A2");
-            ui.label(a2);
-            ui.end_row();
+            for (terminal, now) in [("A1", &a1), ("A2", &a2)] {
+                ui.label(terminal);
+                ui.vertical(|ui| {
+                    ui.label(now);
+                    if let Some(document) = document {
+                        if let Some(choice) = connect_choice(ui, document, panel, id, terminal) {
+                            connect = Some(choice);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
         });
     ui.weak(tr(
-        "Выводы A1 и A2 подключены автоматически. Чтобы подключить иначе, протяните провод от вывода к выводу на листе цепей управления.",
+        "A1 и A2 подключаются к линии щита (+24V, 0V, L1, N…) или к выводу любого устройства: сначала выберите лист, потом вывод. «Автоматически» — как рисует генератор.",
     ));
     ui.add_space(6.0);
     if ui.button(tr("Найти катушку на листе")).clicked() {
         apply(app, Some(Action::Find(id.to_owned(), Place::Control)));
     }
+    if let (Some((terminal, target)), Some(doc)) = (connect, app.doc.as_mut()) {
+        let end = format!("{id}:{terminal}");
+        if let Err(message) = doc.edit_panel(None, |p| {
+            crab_core::connect_terminal(p, &end, target.as_deref())
+        }) {
+            app.panel_view.problem = Some(message);
+        }
+    }
     apply_edit(app, id, edit);
+}
+
+/// The places a terminal can be connected to by hand: the lines of the panel (`bus:+24V`,
+/// `bus:L1`...) and every terminal drawn on the drawing sheet `sheet` (document number) but the
+/// device's own, in order.
+fn connect_targets(
+    document: &Document,
+    panel: &crab_core::Panel,
+    sheet: usize,
+    own: &str,
+) -> Vec<String> {
+    let mut lines: Vec<String> = ["+24V", "0V"]
+        .into_iter()
+        .chain(panel.supply.lines().iter().copied())
+        .map(|l| format!("bus:{l}"))
+        .collect();
+    lines.dedup();
+    let mut terminals: Vec<String> = document
+        .terminal_at
+        .iter()
+        .filter(|((device, _), at)| at.sheet == sheet && device != own)
+        .map(|((device, terminal), _)| format!("{device}:{terminal}"))
+        .collect();
+    terminals.sort();
+    terminals.dedup();
+    lines.extend(terminals);
+    lines
+}
+
+/// How a connection target is shown: a line by its name, a terminal as `-K2_1:14`.
+fn target_title(target: &str) -> String {
+    match crab_core::link_bus(target) {
+        Some(line) => format!("{} {line}", tr("линия")),
+        None => format!("-{target}"),
+    }
+}
+
+/// The two lists that connect the terminal `terminal` of `id` by hand: the sheet (the coil's own
+/// at first), then the line or the terminal on it. Returns the choice made in this frame.
+fn connect_choice(
+    ui: &mut Ui,
+    document: &Document,
+    panel: &crab_core::Panel,
+    id: &str,
+    terminal: &str,
+) -> Option<(String, Option<String>)> {
+    let sheets: Vec<(usize, String)> = document
+        .sheets
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.id.is_some())
+        .map(|(i, s)| (i + 1, format!("{} {}", i + 1, s.title)))
+        .collect();
+    let own_sheet = document
+        .terminal_at
+        .get(&(id.to_owned(), terminal.to_owned()))
+        .map(|at| at.sheet)
+        .or_else(|| sheets.first().map(|(n, _)| *n))?;
+    let key = ui.make_persistent_id(("panel_coil_sheet", id, terminal));
+    let mut sheet = ui.data(|d| d.get_temp::<usize>(key)).unwrap_or(own_sheet);
+    let mut choice = None;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt(("panel_coil_sheet_box", id, terminal))
+            .selected_text(format!("{} {sheet}", tr("лист")))
+            .show_ui(ui, |ui| {
+                for (n, title) in &sheets {
+                    ui.selectable_value(&mut sheet, *n, title);
+                }
+            });
+        let now = format!("{id}:{terminal}");
+        let current = panel.links.iter().find_map(|l| {
+            if l.from == now {
+                Some(l.to.clone())
+            } else if l.to == now {
+                Some(l.from.clone())
+            } else {
+                None
+            }
+        });
+        egui::ComboBox::from_id_salt(("panel_coil_target", id, terminal))
+            .selected_text(
+                current
+                    .as_deref()
+                    .map_or_else(|| tr("Автоматически").to_owned(), target_title),
+            )
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current.is_none(), tr("Автоматически"))
+                    .clicked()
+                {
+                    choice = Some((terminal.to_owned(), None));
+                }
+                for target in connect_targets(document, panel, sheet, id) {
+                    let on = current.as_deref() == Some(target.as_str());
+                    if ui.selectable_label(on, target_title(&target)).clicked() && !on {
+                        choice = Some((terminal.to_owned(), Some(target)));
+                    }
+                }
+            });
+    });
+    ui.data_mut(|d| d.insert_temp(key, sheet));
+    choice
 }
 
 /// Puts an auxiliary contact in series with the coil `series` (empty: on an input of the board).
@@ -1008,6 +1132,7 @@ fn apply(app: &mut EditorApp, action: Option<Action>) {
                         from: String::new(),
                         free: false,
                         series: String::new(),
+                        conductors: Vec::new(),
                     });
                     Ok(id)
                 })
@@ -1038,6 +1163,7 @@ fn apply(app: &mut EditorApp, action: Option<Action>) {
                         from: String::new(),
                         free: false,
                         series: String::new(),
+                        conductors: Vec::new(),
                     });
                     Ok(id)
                 })
@@ -1971,16 +2097,12 @@ fn drop_refusal(
             .iter()
             .any(|i| i.device() == Some(hand_coil.as_str()))
     });
-    if !coil_at.contains_key(owner) || coil_by_hand {
+    // A coil (or any other part) can always be put by hand: what is put by hand wins over the
+    // generator, which then leaves it out. Only the whole device the generator draws is refused.
+    if part.is_some() || !coil_at.contains_key(owner) || coil_by_hand {
         return None;
     }
-    match part {
-        Some(crab_core::COIL) => {
-            Some("Катушка уже нарисована на листе управления: устройство привязано к выходу платы")
-        }
-        None => Some("Это устройство уже нарисовано на листе управления"),
-        Some(_) => None,
-    }
+    Some("Это устройство уже нарисовано на листе управления")
 }
 
 /// The wire drawn by hand under a point of the page: its key.
@@ -2557,7 +2679,15 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     }
     // A device dragged from the tree and dropped here is put on the sheet it is dropped on.
     let mut put: Option<(String, SheetId, f32, f32)> = None;
-    if let Some(payload) = resp.dnd_release_payload::<DevicePayload>() {
+    // `dnd_release_payload` takes the payload before it looks at its type: each kind is taken
+    // only when it is the one being dragged, or the other kind would be dropped on the floor.
+    let device_drop = resp
+        .dnd_hover_payload::<DevicePayload>()
+        .and_then(|_| resp.dnd_release_payload::<DevicePayload>());
+    let palette_drop = resp
+        .dnd_hover_payload::<PalettePayload>()
+        .and_then(|_| resp.dnd_release_payload::<PalettePayload>());
+    if let Some(payload) = device_drop {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             let at = page_at(pos);
             let id = payload.0.clone();
@@ -2575,7 +2705,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     }
     // An entry of the palette dropped here: a new device is made where it is dropped.
     let mut made: Option<(PalettePayload, SheetId, Option<usize>, f32, f32)> = None;
-    if let Some(payload) = resp.dnd_release_payload::<PalettePayload>() {
+    if let Some(payload) = palette_drop {
         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
             let at = page_at(pos);
             match sheet.id {
@@ -3355,6 +3485,71 @@ bind = "sensor.out"
         }
     }
 
+    /// The terminals of a coil connect to every line of the panel and to the terminals of the
+    /// chosen sheet, contacts of the power sheet among them, but not to the coil itself.
+    #[test]
+    fn a_coil_terminal_can_go_to_a_line_or_to_any_terminal_of_a_sheet() {
+        let (lib, _) =
+            crab_core::Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library"))
+                .unwrap();
+        let project =
+            crab_core::Project::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/pump"))
+                .unwrap();
+        let (doc, _) = build_document_in(&project, &lib, Lang::Ru, Format::A3).unwrap();
+        let power = doc
+            .sheets
+            .iter()
+            .position(|s| s.id == Some(SheetId::Power(0)))
+            .unwrap()
+            + 1;
+        let targets = connect_targets(&doc, &project.panel, power, "K1");
+        for line in ["bus:+24V", "bus:0V", "bus:L", "bus:N"] {
+            assert!(targets.iter().any(|t| t == line), "{line} in {targets:?}");
+        }
+        assert!(targets.iter().any(|t| t.starts_with("Q1:")), "{targets:?}");
+        assert!(!targets.iter().any(|t| t.starts_with("K1:")), "{targets:?}");
+        assert_eq!(target_title("bus:L"), format!("{} L", tr("линия")));
+    }
+
+    #[test]
+    fn a_dropped_entry_is_drawn_on_its_sheet() {
+        use crab_schematic::PalettePart::{Coil, Contact, Whole};
+        let (lib, _) =
+            crab_core::Library::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library"))
+                .unwrap();
+        for (kind, part) in [
+            (DeviceKind::Relay, Coil),
+            (DeviceKind::Relay, Contact),
+            (DeviceKind::Breaker, Whole),
+            (DeviceKind::Contactor, Whole),
+            (DeviceKind::Motor, Whole),
+        ] {
+            for on in [SheetId::Power(0), SheetId::Control(0)] {
+                let mut project = crab_core::Project::load(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../examples/pump"
+                ))
+                .unwrap();
+                let (doc0, _) = build_document_in(&project, &lib, Lang::Ru, Format::A3).unwrap();
+                let number = doc0.sheets.iter().position(|s| s.id == Some(on)).unwrap() + 1;
+                let id = drop_new(
+                    &mut project,
+                    PalettePayload { kind, part },
+                    on,
+                    Some(number),
+                    (300.0, 300.0),
+                );
+                let (doc, _) = build_document_in(&project, &lib, Lang::Ru, Format::A3).unwrap();
+                let sheet = doc.sheets.iter().find(|s| s.id == Some(on)).unwrap();
+                let drawn = sheet
+                    .items
+                    .iter()
+                    .any(|i| i.device().is_some_and(|d| crab_core::split_part(d).0 == id));
+                assert!(drawn, "{kind:?} {part:?} on {on:?}: {id} not drawn");
+            }
+        }
+    }
+
     #[test]
     fn a_coil_drawn_by_the_generator_cannot_be_dropped_but_a_hand_coil_moves() {
         let mut coil_at = crab_schematic::Xrefs::new();
@@ -3365,8 +3560,9 @@ bind = "sensor.out"
                 zone: "2".to_owned(),
             },
         );
-        // The generator draws the coil of K1: neither the coil nor the device can be dropped.
-        assert!(drop_refusal(&[], &coil_at, "K1/coil").is_some());
+        // The generator draws K1 (its coil in the ladder): the device cannot be dropped, but its
+        // coil can: a coil put by hand is drawn as its own symbol, the ladder gives way to it.
+        assert!(drop_refusal(&[], &coil_at, "K1/coil").is_none());
         assert!(drop_refusal(&[], &coil_at, "K1").is_some());
         // A coil already put by hand is drawn as its own symbol: it can be moved to another sheet.
         let hand = sheet_of(Vec::new(), vec![symbol("control", "K1/coil", Vec::new())]);
@@ -3497,6 +3693,7 @@ bind = "sensor.out"
             from: String::new(),
             free: false,
             series: String::new(),
+            conductors: Vec::new(),
         };
         set_series(&mut contact, "K1");
         assert_eq!((contact.series.as_str(), contact.bind.as_str()), ("K1", ""));

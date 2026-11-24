@@ -266,3 +266,71 @@ fn a_bus_end_names_a_line_of_the_panel() {
         "{found:#?}"
     );
 }
+
+/// The pump panel with one extra breaker `Q3` (given as the lines of its table) on a supply.
+fn with_breaker(supply: &str, breaker: &str) -> Project {
+    pump_with(&format!(
+        "supply = \"{supply}\"\n{GOOD}\n[[device]]\nid = \"Q3\"\nkind = \"breaker\"\n{breaker}\n"
+    ))
+}
+
+#[test]
+fn phases_on_a_one_phase_panel_are_a_warning() {
+    let project = with_breaker("ac230", "poles = 1\nconductors = [\"L\"]");
+    let report = check_panel(&project, &library());
+    let warnings: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 1, "{:#?}", report.diagnostics);
+    assert!(warnings[0].contains("-Q3: фазы заданы, но питание щита не 400 В"));
+    assert!(report.errors().next().is_none());
+}
+
+#[test]
+fn a_phase_that_is_not_on_the_supply_is_an_error() {
+    let project = with_breaker("ac400", "poles = 1\nconductors = [\"L4\"]");
+    assert_one_error(
+        &project,
+        "-Q3: проводник «L4» — такой линии нет (есть: L1, L2, L3, N)",
+    );
+}
+
+#[test]
+fn a_repeated_phase_is_an_error() {
+    let project = with_breaker("ac400", "poles = 2\nconductors = [\"L1\", \"L1\"]");
+    assert_one_error(&project, "-Q3: проводник «L1» назван дважды");
+}
+
+#[test]
+fn conductors_must_match_the_poles() {
+    let project = with_breaker("ac400", "poles = 1\nconductors = [\"L2\", \"N\"]");
+    assert_one_error(&project, "-Q3: проводников 2, а полюсов 1");
+    // No `poles` on a switching device means four.
+    let project = with_breaker("ac400", "conductors = [\"L1\", \"L3\"]");
+    assert_one_error(&project, "-Q3: проводников 2, а полюсов 4");
+}
+
+#[test]
+fn right_phases_on_a_400_volt_panel_have_no_diagnostics() {
+    for breaker in [
+        "poles = 1\nconductors = [\"L2\"]",
+        "poles = 2\nconductors = [\"L1\", \"L3\"]",
+        "poles = 2\nconductors = [\"L3\", \"N\"]",
+    ] {
+        let report = check_panel(&with_breaker("ac400", breaker), &library());
+        assert!(
+            report.diagnostics.is_empty(),
+            "{breaker}: {:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_1_pole_breaker_is_allowed_on_400_volts() {
+    let project = with_breaker("ac400", "poles = 1");
+    assert!(errors(&project).is_empty(), "{:#?}", errors(&project));
+}

@@ -558,6 +558,7 @@ mod tests {
                     from: String::new(),
                     free: false,
                     series: String::new(),
+                    conductors: Vec::new(),
                 })
                 .collect(),
             ..Default::default()

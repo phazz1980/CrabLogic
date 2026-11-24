@@ -118,6 +118,82 @@ pub fn panel_binding(kind: DeviceKind) -> Option<(bool, bool)> {
     need(kind).map(|n| (n.way == Way::Input, n.digital_only))
 }
 
+/// Whether a device of this kind switches poles (its `poles` and `conductors` apply).
+fn has_poles(kind: DeviceKind) -> bool {
+    matches!(
+        kind,
+        DeviceKind::Breaker
+            | DeviceKind::Rcd
+            | DeviceKind::Fuse
+            | DeviceKind::Switch
+            | DeviceKind::Contactor
+            | DeviceKind::Relay
+    )
+}
+
+/// Checks the phases a device takes on a 400 V supply (`conductors`): only on 400 V, only the
+/// conductors of the supply, each once, and as many as the poles of a switching device.
+fn check_conductors(panel: &crate::panel::Panel, report: &mut Report) {
+    for device in panel.devices.iter().filter(|d| !d.conductors.is_empty()) {
+        let designation = device.designation();
+        if panel.supply != crate::panel::Supply::Ac400 {
+            report.push(
+                DiagKind::Panel,
+                Severity::Warning,
+                None,
+                None,
+                format!(
+                    "{designation}: фазы заданы, но питание щита не 400 В — поле не учитывается"
+                ),
+            );
+            continue;
+        }
+        let lines = panel.supply.lines();
+        let mut ok = true;
+        for (i, name) in device.conductors.iter().enumerate() {
+            if !lines.contains(&name.as_str()) {
+                ok = false;
+                report.push(
+                    DiagKind::Panel,
+                    Severity::Error,
+                    None,
+                    None,
+                    format!(
+                        "{designation}: проводник «{name}» — такой линии нет (есть: {})",
+                        lines.join(", ")
+                    ),
+                );
+            } else if device.conductors[..i].contains(name) {
+                ok = false;
+                report.push(
+                    DiagKind::Panel,
+                    Severity::Error,
+                    None,
+                    None,
+                    format!("{designation}: проводник «{name}» назван дважды"),
+                );
+            }
+        }
+        if !ok || !has_poles(device.kind) {
+            continue;
+        }
+        // Without `poles` a switching device has all four conductors.
+        let poles = device.poles.unwrap_or(4) as usize;
+        if device.conductors.len() != poles {
+            report.push(
+                DiagKind::Panel,
+                Severity::Error,
+                None,
+                None,
+                format!(
+                    "{designation}: проводников {}, а полюсов {poles}",
+                    device.conductors.len()
+                ),
+            );
+        }
+    }
+}
+
 /// Checks the panel of `project` against its inputs and outputs.
 pub fn check_panel(project: &Project, lib: &Library) -> Report {
     let mut report = Report::default();
@@ -139,6 +215,7 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
             format!("{}: контакт не привязан к катушке", device.designation()),
         );
     }
+    check_conductors(panel, &mut report);
     let mut error = |message: String| {
         report.push(DiagKind::Panel, Severity::Error, None, None, message);
     };

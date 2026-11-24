@@ -14,7 +14,7 @@ use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, She
 
 use crate::bus::{self, Elsewhere};
 use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_S, THICK, WEAK};
-use crate::control::{draw_hand, note_terminals, Hand, Pins, Rail, Rails, Refs};
+use crate::control::{draw_hand, note_terminals, DrawnWires, Hand, Pins, Rail, Rails, Refs};
 use crate::doc::{Page, Sheet};
 use crate::error::Error;
 use crate::lang::Lang;
@@ -157,6 +157,7 @@ pub fn power_sheets(
     first_sheet: usize,
     coils: &Xrefs,
     terminals: &TerminalXrefs,
+    general: Option<&DrawnWires>,
     page: &Page,
 ) -> Result<(Vec<Sheet>, Xrefs, Xrefs, TerminalXrefs), Error> {
     let n = mains(panel.supply).len();
@@ -397,7 +398,7 @@ pub fn power_sheets(
 
     // The devices the generator draws, on the power sheets or on the control sheets: a hand
     // placement of them is not drawn again.
-    let mut generated = crate::control::generated_on_control(panel, nets);
+    let mut generated = crate::control::generated_on_control(panel, layout, nets);
     generated.extend(slot.keys().map(|id| (*id).to_owned()));
     let mut sheets = Vec::new();
     let mut drawn = TerminalXrefs::new();
@@ -909,6 +910,7 @@ pub fn power_sheets(
             rails: &rails,
             lang,
             generated: &generated,
+            drawn: general,
         };
         draw_hand(
             &mut c,

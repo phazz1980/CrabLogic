@@ -23,7 +23,7 @@ use crate::canvas::{Align, Canvas, DOT, INK, LOW, TEXT, TEXT_S, THIN, WEAK};
 use crate::doc::{Page, Sheet};
 use crate::lang::Lang;
 use crate::nets::{
-    aux_terminals, changeover_nc, terminals_of, Nets, Wire, WireClass, BOARD, EXTERNAL,
+    aux_terminals, changeover_nc, terminals_of, Nets, Pin, Wire, WireClass, BOARD, BUS, EXTERNAL,
 };
 use crate::route;
 use crate::scene::{Dir, End, ItemKind, Port};
@@ -255,15 +255,32 @@ pub(crate) fn note_terminals(into: &mut TerminalXrefs, page: &Page, sheet: usize
 /// The keys of the devices and of their parts that the generator draws on the control sheets: the
 /// devices bound to a terminal of the board (with the coil of a contactor or relay, `K1/coil`),
 /// and the auxiliary contacts in series with a coil. A hand placement of them is not drawn again:
-/// the generator wins.
-pub(crate) fn generated_on_control(panel: &Panel, nets: &Nets) -> HashSet<String> {
+/// the generator wins. The exception is an input device (a sensor, a button, a contact) put by
+/// hand: the hand placement is its symbol, the ladder keeps only the channel of its terminal.
+pub(crate) fn generated_on_control(
+    panel: &Panel,
+    layout: &PanelLayout,
+    nets: &Nets,
+) -> HashSet<String> {
     let mut set = HashSet::new();
     for terminal in &nets.board_terminals {
         let Some(device) = panel.device(&terminal.device) else {
             continue;
         };
-        set.insert(device.id.clone());
-        if matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay) {
+        let coil_device = matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay);
+        if coil_device || !layout.placed.contains_key(&device.id) {
+            set.insert(device.id.clone());
+        }
+        if coil_device
+            && !layout.placed.contains_key(&part_key(&device.id, COIL))
+            && !panel.links.iter().any(|link| {
+                [link.from.as_str(), link.to.as_str()]
+                    .into_iter()
+                    .any(|end| {
+                        end == format!("{}:A1", device.id) || end == format!("{}:A2", device.id)
+                    })
+            })
+        {
             set.insert(part_key(&device.id, COIL));
         }
     }
@@ -275,6 +292,22 @@ pub(crate) fn generated_on_control(panel: &Panel, nets: &Nets) -> HashSet<String
             .map(|d| d.id.clone()),
     );
     set
+}
+
+/// Keys of the wires that the generator (and the hand wires) draw on some sheet. The automatic
+/// wires that no sheet draws are drawn the general way, like hand wires (`draw_links`).
+pub(crate) type DrawnWires = HashSet<String>;
+
+/// The keys of the wires drawn on the sheets.
+pub(crate) fn drawn_wires<'a>(sheets: impl IntoIterator<Item = &'a Sheet>) -> DrawnWires {
+    sheets
+        .into_iter()
+        .flat_map(|sheet| &sheet.items)
+        .filter_map(|item| match &item.kind {
+            ItemKind::Wire { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What the hand-placed items of the drawing sheets are drawn with.
@@ -291,6 +324,9 @@ pub(crate) struct Hand<'a> {
     /// Keys (`K1`, `K1/coil`) of the devices and parts the generator draws on some sheet: a hand
     /// placement under such a key is not drawn.
     pub generated: &'a HashSet<String>,
+    /// The wires the generator draws on some sheet. `None` while the sheets are only collected
+    /// for these keys: then the automatic wires are not drawn yet.
+    pub drawn: Option<&'a DrawnWires>,
 }
 
 /// Whether the item put on the sheet `at` is drawn on the sheet `on`: its own sheet, or, for a
@@ -364,7 +400,7 @@ pub(crate) fn draw_hand(
 
 /// Length of the stub a hand wire leaves its terminal with, up to the break mark, when its other
 /// end is on another sheet or on a supply line this sheet does not draw.
-const BREAK_STUB: f32 = 20.0;
+const BREAK_STUB: f32 = 14.0;
 /// The table under a coil put by hand starts this far under the break of its `A2` wire.
 const HAND_TABLE_GAP: f32 = 24.0;
 
@@ -402,6 +438,67 @@ pub(crate) fn draw_links(c: &mut Canvas, hand: &Hand, sheet: usize, pins: &Pins)
             }
             (Some(near), None) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.to),
             (None, Some(near)) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.from),
+            (None, None) => {}
+        }
+    }
+    if let Some(drawn) = hand.drawn {
+        draw_general(c, hand, sheet, drawn, pins);
+    }
+}
+
+/// The end of an automatic wire as a link end names it: a supply line (`bus:0V`, also the `0V` and
+/// `+24V` terminals of a source), or the terminal (`K1:A2`).
+fn general_end(pin: &Pin) -> String {
+    let supply = matches!(pin.terminal.as_str(), "+24V" | "0V");
+    if pin.device == BUS || pin.device == EXTERNAL || (pin.device != BOARD && supply) {
+        format!("{BUS}:{}", pin.terminal)
+    } else {
+        pin.to_string()
+    }
+}
+
+/// Draws the automatic wires that no sheet draws (`drawn` does not hold them) and that have an end
+/// on this sheet, the way the hand wires are drawn: between two terminals of the sheet with a
+/// route, from one terminal to a break mark otherwise. A hand wire is not one of them.
+fn draw_general(c: &mut Canvas, hand: &Hand, sheet: usize, drawn: &DrawnWires, pins: &Pins) {
+    for (lane, wire) in hand.nets.wires.iter().enumerate() {
+        let key = wire.key();
+        if hand.nets.manual.contains(&key) || drawn.contains(&key) {
+            continue;
+        }
+        let here = |pin: &Pin| {
+            pins.get(&(pin.device.clone(), pin.terminal.clone()))
+                .copied()
+        };
+        let kind = || ItemKind::Wire {
+            key: key.clone(),
+            from: End::new(&wire.from.device, &wire.from.terminal),
+            to: End::new(&wire.to.device, &wire.to.terminal),
+        };
+        match (here(&wire.from), here(&wire.to)) {
+            (Some(a), Some(b)) => {
+                c.begin(kind());
+                let points = link_route(a, b, (lane % 5) as f32 * 5.0);
+                c.line(&points, THIN, INK);
+                c.dot(a.0 .0, a.0 .1, DOT, INK);
+                c.dot(b.0 .0, b.0 .1, DOT, INK);
+                let mid = ((points[1].0 + points[2].0) / 2.0, points[1].1);
+                c.wire_number(&wire.label_key(), mid, &wire.number.to_string(), INK);
+                c.end();
+            }
+            (Some(near), None) => {
+                draw_stub(c, hand, sheet, (wire, kind()), near, &general_end(&wire.to));
+            }
+            (None, Some(near)) => {
+                draw_stub(
+                    c,
+                    hand,
+                    sheet,
+                    (wire, kind()),
+                    near,
+                    &general_end(&wire.from),
+                );
+            }
             (None, None) => {}
         }
     }
@@ -964,23 +1061,23 @@ fn supply_line(
     from: (f32, f32),
     rail: f32,
 ) {
-    if let Some(w) = wire {
-        c.begin(ItemKind::Wire {
-            key: w.key(),
-            from: End::new(device, name),
-            to: End::new(EXTERNAL, name),
-        });
-    }
+    // No automatic wire: the terminal is wired by hand elsewhere (`A2` to `N`), so no tap here.
+    let Some(w) = wire else {
+        return;
+    };
+    c.begin(ItemKind::Wire {
+        key: w.key(),
+        from: End::new(device, name),
+        to: End::new(EXTERNAL, name),
+    });
     c.line(&[from, (from.0, rail)], THIN, LOW);
     c.dot(from.0, rail, DOT, LOW);
-    if let Some(w) = wire {
-        c.wire_number(
-            &w.label_key(),
-            (from.0, (from.1 + rail) / 2.0),
-            &w.number.to_string(),
-            INK,
-        );
-    }
+    c.wire_number(
+        &w.label_key(),
+        (from.0, (from.1 + rail) / 2.0),
+        &w.number.to_string(),
+        INK,
+    );
     c.end();
 }
 
@@ -1023,32 +1120,10 @@ fn draw_output(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, p
 
     let sy = (l.zero - COIL_FOOT - COIL_H + dy)
         .clamp(l.page.y0() + TOP_MARGIN, l.page.y1() - BOTTOM_ROOM);
-    let table = contact_table(l.panel, device, l.contacts, l.coils);
-    let item = c.begin(ItemKind::Symbol {
-        view: "control",
-        device: device.id.clone(),
-        origin: (sx, sy),
-        ports: Vec::new(),
-    });
-    let field = draw_field_device(c, device, (sx, sy), &ContactTable::default());
-    draw_table(c, sx, l.zero + TABLE_DY, &table);
-    c.end();
-    let Some(field) = field else {
-        return;
-    };
-    let terminal_of = |p: &str| terminal_of_port(l.panel, device, p);
-    c.port(item, port("signal", field.signal, Dir::Up));
-    pins.insert(
-        (device.id.clone(), terminal_of("signal")),
-        (field.signal, Dir::Up),
-    );
-    places.insert(
-        device.id.clone(),
-        Xref {
-            sheet: l.sheet,
-            zone: l.page.zone(sx, sy + HALF_FIELD_H),
-        },
-    );
+    // A coil put by hand is drawn as its own symbol (`draw_hand`): here the channel and the
+    // contacts in series stay, with the wires between them; the coil, its table and its wires
+    // into `A1` and from `A2` are left out.
+    let coil_apart = l.layout.placed.contains_key(&part_key(&device.id, COIL));
 
     // The signal: from the channel, through the contacts in series, down to the coil.
     let series = series_of(l.panel, device);
@@ -1106,6 +1181,36 @@ fn draw_output(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, p
         from_pt = (cx, cy + AUX_H + DOT);
         from_dev = (contact.id.clone(), Some(far));
     }
+    if coil_apart {
+        return;
+    }
+    let table = contact_table(l.panel, device, l.contacts, l.coils);
+    let item = c.begin(ItemKind::Symbol {
+        view: "control",
+        device: device.id.clone(),
+        origin: (sx, sy),
+        ports: Vec::new(),
+    });
+    let field = draw_field_device(c, device, (sx, sy), &ContactTable::default());
+    draw_table(c, sx, l.zero + TABLE_DY, &table);
+    c.end();
+    let Some(field) = field else {
+        return;
+    };
+    let terminal_of = |p: &str| terminal_of_port(l.panel, device, p);
+    c.port(item, port("signal", field.signal, Dir::Up));
+    pins.insert(
+        (device.id.clone(), terminal_of("signal")),
+        (field.signal, Dir::Up),
+    );
+    places.insert(
+        device.id.clone(),
+        Xref {
+            sheet: l.sheet,
+            zone: l.page.zone(sx, sy + HALF_FIELD_H),
+        },
+    );
+
     let signal = if series.is_empty() {
         find_wire(l.nets, BOARD, terminal)
     } else {
@@ -1151,6 +1256,11 @@ fn draw_input(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, pl
     let chan_top = l.zero - IN_CHANNEL_DY;
     let (term, dir) = draw_channel(c, terminal, row.tag, (chan_x, chan_top), Dir::Up);
     pins.insert((BOARD.to_owned(), terminal.to_owned()), (term, dir));
+    // A device put by hand is drawn as its own symbol (`draw_hand`): the ladder keeps the channel
+    // only, and the wires of the device are drawn the general way.
+    if l.layout.placed.contains_key(&device.id) {
+        return;
+    }
 
     let item = c.begin(ItemKind::Symbol {
         view: "control",
@@ -1252,6 +1362,7 @@ pub fn control_sheets(
     contacts: &Xrefs,
     coils: &Xrefs,
     terminals: &TerminalXrefs,
+    general: Option<&DrawnWires>,
     page: &Page,
 ) -> (Vec<Sheet>, Xrefs, TerminalXrefs) {
     let panel = &project.panel;
@@ -1278,7 +1389,7 @@ pub fn control_sheets(
     rows.sort_by_key(|r| load_rank(panel, r.load.as_deref()));
     // The generator's devices are drawn on the sheets; a hand placement of a device the generator
     // draws is not drawn again.
-    let generated_here = generated_on_control(panel, nets);
+    let generated_here = generated_on_control(panel, layout, nets);
     let sheet_rows: Vec<Vec<Row>> = if rows.is_empty() {
         vec![Vec::new(); hand_control_count(project, &generated_here)]
     } else {
@@ -1369,6 +1480,7 @@ pub fn control_sheets(
             rails: &rails,
             lang,
             generated: &generated,
+            drawn: general,
         };
         draw_hand(
             &mut c,
