@@ -334,3 +334,13 @@ fn a_1_pole_breaker_is_allowed_on_400_volts() {
     let project = with_breaker("ac400", "poles = 1");
     assert!(errors(&project).is_empty(), "{:#?}", errors(&project));
 }
+
+#[test]
+fn a_phase_the_feeder_does_not_pass_on_is_an_error() {
+    // `Q3` takes `L1` alone; `Q4` under it asks for `L2`.
+    let project = with_breaker(
+        "ac400",
+        "poles = 1\nconductors = [\"L1\"]\nload = \"Q4\"\n\n[[device]]\nid = \"Q4\"\nkind = \"breaker\"\npoles = 1\nconductors = [\"L2\"]",
+    );
+    assert_one_error(&project, "-Q4: L2 нет у питающего -Q3 (есть: L1)");
+}

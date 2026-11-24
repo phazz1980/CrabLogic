@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crab_core::panel_layout::label_key;
-use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, SheetId};
+use crab_core::{bus_key, symbol_key, Device, DeviceKind, Panel, PanelLayout, SheetId, Supply};
 
 use crate::bus::{self, Elsewhere};
 use crate::canvas::{Align, Canvas, DOT, EARTH, INK, TEXT, TEXT_S, THICK, WEAK};
@@ -70,6 +70,31 @@ fn bus_label(supply: crab_core::Supply, k: usize) -> String {
         (crab_core::Supply::Dc24, "0V") => "M".to_owned(),
         _ => name.to_owned(),
     }
+}
+
+/// Name of the conductor of pole `k` of device `id`: the one the device takes (`nets.conductors`),
+/// else the mains line `k`.
+fn pole_name<'a>(nets: &'a Nets, supply: Supply, id: &str, k: usize) -> Option<&'a str> {
+    match nets.conductors.get(id).and_then(|c| c.get(k)) {
+        Some(name) => Some(name.as_str()),
+        None => mains(supply).get(k).copied(),
+    }
+}
+
+/// Bus line of pole `k` of device `id`: the place of its conductor among the mains. `k` itself when
+/// the device has no conductors of its own, or its conductor is not one of the mains.
+fn line_of(nets: &Nets, supply: Supply, id: &str, k: usize) -> usize {
+    pole_name(nets, supply, id, k)
+        .and_then(|name| mains(supply).iter().position(|line| *line == name))
+        .unwrap_or(k)
+}
+
+/// Pole of device `id` that takes the conductor `name`; `k` when the device has no such conductor.
+fn pole_of(nets: &Nets, id: &str, name: &str, k: usize) -> usize {
+    nets.conductors
+        .get(id)
+        .and_then(|c| c.iter().position(|x| x == name))
+        .unwrap_or(k)
 }
 
 /// The supply written in the short form of the standard: `1N ~ 50 Гц 230 В`.
@@ -172,14 +197,18 @@ pub fn power_sheets(
             continue;
         }
         match w.class {
-            WireClass::Power => edges
-                .entry(w.to.device.as_str())
-                .or_insert_with(|| Edge {
+            WireClass::Power => {
+                let edge = edges.entry(w.to.device.as_str()).or_insert_with(|| Edge {
                     parent: w.from.device.as_str(),
                     wires: Vec::new(),
-                })
-                .wires
-                .push(w),
+                });
+                // A conductor that passes by the switching device (the neutral) comes from the
+                // feed: the device still hangs on the switching device, not on the feed.
+                if edge.parent == root && w.from.device != root {
+                    edge.parent = w.from.device.as_str();
+                }
+                edge.wires.push(w);
+            }
             WireClass::Protective => {
                 earth.insert(w.to.device.as_str(), w);
             }
@@ -222,10 +251,21 @@ pub fn power_sheets(
             .iter()
             .take(MAX_INPUT)
             .take_while(|d| {
-                matches!(
-                    d.kind,
-                    DeviceKind::Breaker | DeviceKind::Rcd | DeviceKind::Fuse | DeviceKind::Switch
-                )
+                // A device on chosen phases (a one-pole breaker on `L2`) hangs on the buses: across
+                // the lines its poles stand on the first ones.
+                let first_lines = nets.conductors.get(&d.id).is_none_or(|own| {
+                    own.iter()
+                        .zip(mains(panel.supply))
+                        .all(|(name, line)| name == line)
+                });
+                first_lines
+                    && matches!(
+                        d.kind,
+                        DeviceKind::Breaker
+                            | DeviceKind::Rcd
+                            | DeviceKind::Fuse
+                            | DeviceKind::Switch
+                    )
             })
             .count();
         input = only.drain(..count).collect();
@@ -362,9 +402,17 @@ pub fn power_sheets(
     let mut has_bus = vec![vec![false; n]; total];
     for (id, s) in &slot {
         if let Some(edge) = edges.get(id) {
-            if !s.input && slot.get(edge.parent).is_none_or(|p| p.input) {
-                for has in has_bus[s.page].iter_mut().take(edge.wires.len()) {
-                    *has = true;
+            if s.input {
+                continue;
+            }
+            let from_bus = slot.get(edge.parent).is_none_or(|p| p.input);
+            for (k, w) in edge.wires.iter().enumerate() {
+                // A conductor that passes by the switching device is dropped from its bus too.
+                if from_bus || w.from.device == root {
+                    let line = line_of(nets, panel.supply, id, k);
+                    if let Some(has) = has_bus[s.page].get_mut(line) {
+                        *has = true;
+                    }
                 }
             }
         }
@@ -536,7 +584,7 @@ pub fn power_sheets(
             // The terminals at the same places as the ports: the supply side and the load side of
             // each pole, named as the wires name them (`K1:1`, `Q1:2`).
             for (k, &x) in geo.poles.iter().enumerate() {
-                let Some(name) = mains(panel.supply).get(k) else {
+                let Some(name) = pole_name(nets, panel.supply, &d.id, k) else {
                     break;
                 };
                 let (inn, out) = (in_pin(panel, d, k, name), out_pin(panel, d, k, name));
@@ -604,19 +652,33 @@ pub fn power_sheets(
             let branch = parent
                 .filter(|p| is_branch(d) && !p.input && p.page == s.page && p.col != s.col)
                 .map(|_| &geos[edge.parent]);
-            let from_bus = branch.is_none() && parent.is_none_or(|p| p.input);
+            let from_bus = parent.is_none_or(|p| p.input);
             let joined = parent.is_some_and(|p| !p.input && p.page == s.page && p.col == s.col);
+            let up_geo = geos.get(edge.parent);
             for (k, w) in edge.wires.iter().enumerate().take(n) {
                 let cx = child.poles[k];
+                let line = line_of(nets, panel.supply, &d.id, k);
+                // The pole of the switching device that takes this conductor.
+                let name = pole_name(nets, panel.supply, &d.id, k).unwrap_or_default();
+                let up_pole = pole_of(nets, edge.parent, name, k);
+                let up_x = up_geo.and_then(|g| g.poles.get(up_pole).copied());
+                // A conductor that passes by the switching device (the neutral) comes from the
+                // bus of its line, like the conductors of a device under the feed.
+                let drop =
+                    from_bus || w.from.device == root || (up_geo.is_some() && up_x.is_none());
                 c.begin(ItemKind::Wire {
                     key: w.key(),
-                    from: End::new(edge.parent, format!("out:{k}")),
+                    // A drop comes from the line of the feed, not from a pole of the device above.
+                    from: if drop {
+                        End::new(root, format!("out:{line}"))
+                    } else {
+                        End::new(edge.parent, format!("out:{up_pole}"))
+                    },
                     to: End::new(&d.id, format!("in:{k}")),
                 });
-                if let Some(up) = branch {
+                if let (Some(up), false, Some(px)) = (branch, drop, up_x) {
                     // Down from the source, along to the column, up its left side, along above
                     // it and down to the device; the dot marks where the line divides.
-                    let px = up.poles[k];
                     let jy = up.out_y + 12.0 + k as f32 * 4.0;
                     let gx = grid.left(s.col) + 2.0 + k as f32 * 3.0;
                     let yb = child.in_y - 8.0 - (n - 1 - k) as f32 * 4.0;
@@ -643,19 +705,51 @@ pub fn power_sheets(
                     continue;
                 }
                 let mut label_y = None;
-                if from_bus {
-                    // Under the feed: a drop from the bus of the conductor.
-                    let y = bus_y(k);
-                    c.line(&[(cx, y), (cx, child.in_y)], THICK, INK);
-                    c.dot(cx, y, DOT, INK);
-                    bus_end[k] = bus_end[k].max(cx);
+                let mut label_x = cx;
+                if drop {
+                    // A drop from the bus of the conductor's line. A conductor that passes by the
+                    // devices of its column (the neutral past a contactor) goes down right of
+                    // their poles and turns to the device just above it, so that it never runs
+                    // on a pole of theirs; its number stands with the numbers of the other wires.
+                    let y = bus_y(line);
+                    let passing = !from_bus && joined;
+                    let by_x = if passing {
+                        placed
+                            .iter()
+                            .filter(|(o, os)| {
+                                os.page == s.page && os.col == s.col && !os.input && o.id != d.id
+                            })
+                            .filter_map(|(o, _)| geos.get(o.id.as_str()))
+                            .filter(|g| g.in_y < child.in_y)
+                            .filter_map(|g| g.poles.last().copied())
+                            .fold(cx, |x, last| x.max(last + crate::symbols::POLE))
+                    } else {
+                        cx
+                    };
+                    if by_x > cx {
+                        let turn = child.in_y - 8.0;
+                        c.line(
+                            &[(by_x, y), (by_x, turn), (cx, turn), (cx, child.in_y)],
+                            THICK,
+                            INK,
+                        );
+                    } else {
+                        c.line(&[(cx, y), (cx, child.in_y)], THICK, INK);
+                    }
+                    c.dot(by_x, y, DOT, INK);
+                    bus_end[line] = bus_end[line].max(by_x);
+                    if passing {
+                        label_x = by_x;
+                        label_y = Some((geos[edge.parent].out_y + child.in_y) / 2.0);
+                    }
                 } else if joined {
                     let up = &geos[edge.parent];
+                    let px = up_x.unwrap_or(cx);
                     let r = route::drop(
-                        (up.poles[k], up.out_y),
+                        (px, up.out_y),
                         (cx, child.in_y),
                         layout.bend(&w.key()),
-                        route::stagger(k, n, cx - up.poles[k]),
+                        route::stagger(k, n, cx - px),
                     );
                     c.line(&r.points, THICK, INK);
                     label_y = Some(r.label_y);
@@ -664,8 +758,8 @@ pub fn power_sheets(
                     c.line(&[(cx, child.in_y - STUB), (cx, child.in_y)], THICK, INK);
                 }
                 // The number runs along the wire, left of it (7.1.3.5).
-                let from_y = if from_bus {
-                    bus_y(k)
+                let from_y = if drop {
+                    bus_y(line)
                 } else if joined {
                     geos[edge.parent].out_y
                 } else {
@@ -674,7 +768,7 @@ pub fn power_sheets(
                 let label = w.number.to_string();
                 c.wire_number(
                     &w.label_key(),
-                    (cx, label_y.unwrap_or((from_y + child.in_y) / 2.0)),
+                    (label_x, label_y.unwrap_or((from_y + child.in_y) / 2.0)),
                     &label,
                     INK,
                 );
@@ -688,7 +782,7 @@ pub fn power_sheets(
                         up.designation(),
                         from.from_sheet(first_sheet + index)
                     );
-                    let centre = (child.poles[0] + child.poles[n - 1]) / 2.0;
+                    let centre = (child.poles[0] + child.poles[child.poles.len() - 1]) / 2.0;
                     c.text(
                         centre,
                         child.in_y - STUB - 10.0,
@@ -713,10 +807,19 @@ pub fn power_sheets(
             }
             let geo = &geos[d.id.as_str()];
             for (k, w) in edges[next.id.as_str()].wires.iter().enumerate().take(n) {
-                let x = geo.poles[k];
+                // A conductor that passes by from the feed is dropped from its bus on the sheet
+                // of the next device, not from this one.
+                if w.from.device == root {
+                    continue;
+                }
+                let name = pole_name(nets, panel.supply, &next.id, k).unwrap_or_default();
+                let up_pole = pole_of(nets, &d.id, name, k);
+                let Some(&x) = geo.poles.get(up_pole) else {
+                    continue;
+                };
                 c.begin(ItemKind::Wire {
                     key: w.key(),
-                    from: End::new(&d.id, format!("out:{k}")),
+                    from: End::new(&d.id, format!("out:{up_pole}")),
                     to: End::new(&next.id, format!("in:{k}")),
                 });
                 c.line(&[(x, geo.out_y), (x, geo.out_y + STUB)], THICK, INK);
@@ -731,7 +834,7 @@ pub fn power_sheets(
                     next.designation(),
                     at_next.from_sheet(first_sheet + index)
                 );
-                let centre = (geo.poles[0] + geo.poles[n - 1]) / 2.0;
+                let centre = (geo.poles[0] + geo.poles[geo.poles.len() - 1]) / 2.0;
                 c.text(
                     centre,
                     geo.out_y + STUB + 10.0,
@@ -746,13 +849,18 @@ pub fn power_sheets(
         // them and turn right into their buses.
         // A line a device does not switch (the neutral past a three-pole breaker) passes it: it
         // rises from the last device that has a pole for it, or from the entry.
-        let riser_from = |k: usize| {
+        // `line` is a bus line: the last device across the lines that takes its conductor.
+        let riser_from = |line: usize| {
+            let name = mains(panel.supply).get(line).copied().unwrap_or_default();
             input
                 .iter()
                 .rev()
-                .filter_map(|d| geos.get(d.id.as_str()))
-                .find(|g| g.poles.len() > k)
-                .map_or(grid.entry_y, |g| g.in_y)
+                .filter_map(|d| Some((d, geos.get(d.id.as_str())?)))
+                .find(|(d, g)| match nets.conductors.get(&d.id) {
+                    Some(own) => own.iter().any(|c| c == name),
+                    None => g.poles.len() > line,
+                })
+                .map_or(grid.entry_y, |(_, g)| g.in_y)
         };
         for (k, end) in bus_end.iter_mut().enumerate() {
             if index == 0 {

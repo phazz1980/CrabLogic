@@ -448,8 +448,9 @@ fn phases_of(
     } else if has_poles(device.kind) {
         // Without `poles` a switching device has all four conductors.
         let poles = usize::from(device.poles.map_or(4, |p| p.clamp(1, 4)));
-        if !device.conductors.is_empty() && device.conductors.len() == poles {
-            fitting(&own)
+        let mine = fitting(&own);
+        if !device.conductors.is_empty() && device.conductors.len() == poles && mine == own {
+            mine
         } else {
             let by_poles: &[&'static str] = match poles {
                 1 => &["L1"],
@@ -459,11 +460,23 @@ fn phases_of(
             };
             // The default never takes the neutral past the feeder: only what it passes on, so an
             // old four-pole device under a three-pole one still gets three conductors.
-            let picked: Vec<&'static str> = by_poles
-                .iter()
-                .copied()
-                .filter(|name| passed.contains(name))
-                .collect();
+            // Two poles are a phase and the neutral: the first phase passed on and `N`, which
+            // always passes by from the bus.
+            let picked: Vec<&'static str> = if poles == 2 {
+                passed
+                    .iter()
+                    .copied()
+                    .find(|name| *name != "N")
+                    .into_iter()
+                    .chain(["N"])
+                    .collect()
+            } else {
+                by_poles
+                    .iter()
+                    .copied()
+                    .filter(|name| passed.contains(name))
+                    .collect()
+            };
             if picked.is_empty() {
                 avail.iter().copied().take(poles).collect()
             } else {
@@ -471,8 +484,10 @@ fn phases_of(
             }
         }
     } else {
+        // Own conductors count only when all of them reach the device; the check names those that
+        // do not.
         let mut names = fitting(&own);
-        if names.is_empty() {
+        if names != own || names.is_empty() {
             names = passed.clone();
         }
         // One phase alone gets the neutral from the bus.

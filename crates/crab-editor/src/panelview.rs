@@ -1581,6 +1581,49 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                     edit.feeder = Some(chosen);
                 }
                 ui.end_row();
+
+                // On 400 V a one-phase branch takes the phases it is given (`specs/panel-phase`).
+                if doc.project.panel.supply == crab_core::Supply::Ac400 && !is_aux {
+                    let nets = crab_schematic::build_nets(&doc.project, &app.lib);
+                    let all: Vec<String> = crab_core::Supply::Ac400
+                        .lines()
+                        .iter()
+                        .map(|l| (*l).to_owned())
+                        .collect();
+                    // Straight from the feed: every line.
+                    let passed = nets.conductors.get(&feeder).or(Some(&all)).filter(|_| {
+                        doc.project.panel.device(&feeder).is_none_or(|f| {
+                            f.kind == DeviceKind::Feed || nets.conductors.contains_key(&feeder)
+                        })
+                    });
+                    let choices = passed.map_or_else(Vec::new, |passed| {
+                        phase_choices(device.kind, device.poles, passed)
+                    });
+                    if !choices.is_empty() {
+                        let switching = has_poles(device.kind);
+                        ui.label(tr(if switching { "Фаза" } else { "Фазы" }));
+                        let default = tr(if switching {
+                            "по умолчанию"
+                        } else {
+                            "как у питающего"
+                        });
+                        let current = device.conductors.clone();
+                        let mut chosen = current.clone();
+                        egui::ComboBox::from_id_salt("panel_phases")
+                            .selected_text(phase_caption(&chosen, default))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut chosen, Vec::new(), default);
+                                for c in choices {
+                                    let caption = phase_caption(&c, default);
+                                    ui.selectable_value(&mut chosen, c, caption);
+                                }
+                            });
+                        if chosen != current {
+                            edit.conductors = Some(chosen);
+                        }
+                        ui.end_row();
+                    }
+                }
             }
         });
     // After a terminal block the wires may be numbered by hand: one number to a conductor.
@@ -1659,7 +1702,64 @@ struct Edit {
     reset_numbers: Option<Vec<String>>,
     /// The coil an auxiliary contact stands in series with (empty: an input of the board).
     series: Option<String>,
+    /// The conductors a device takes on 400 V (empty: by default).
+    conductors: Option<Vec<String>>,
     remove: bool,
+}
+
+/// Switching devices with poles `1/2`, `3/4`, ...
+fn has_poles(kind: DeviceKind) -> bool {
+    matches!(
+        kind,
+        DeviceKind::Breaker
+            | DeviceKind::Rcd
+            | DeviceKind::Fuse
+            | DeviceKind::Switch
+            | DeviceKind::Contactor
+            | DeviceKind::Relay
+    )
+}
+
+/// The phases a device on 400 V may take from the conductors `passed` to it by its feeder; the
+/// default (no `conductors`) is not in the list. A switching device chooses with one or two poles
+/// (a phase; a phase and the neutral or two phases); a load, a motor or a power supply under a
+/// device that passes on two or three phases chooses a phase with the neutral or two phases. The
+/// neutral is always there: it passes by from the bus.
+fn phase_choices(kind: DeviceKind, poles: Option<u8>, passed: &[String]) -> Vec<Vec<String>> {
+    let phases: Vec<&str> = ["L1", "L2", "L3"]
+        .into_iter()
+        .filter(|l| passed.iter().any(|p| p == l))
+        .collect();
+    let with_n = || phases.iter().map(|l| vec![(*l).to_owned(), "N".to_owned()]);
+    let pairs = || {
+        phases.iter().enumerate().flat_map(|(i, a)| {
+            phases[i + 1..]
+                .iter()
+                .map(|b| vec![(*a).to_owned(), (*b).to_owned()])
+        })
+    };
+    if has_poles(kind) {
+        match poles.unwrap_or(4) {
+            1 => phases.iter().map(|l| vec![(*l).to_owned()]).collect(),
+            2 => with_n().chain(pairs()).collect(),
+            _ => Vec::new(),
+        }
+    } else if matches!(kind, DeviceKind::Motor | DeviceKind::Load | DeviceKind::Psu)
+        && phases.len() > 1
+    {
+        with_n().chain(pairs()).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// `L2 + N`; nothing chosen: `default`.
+fn phase_caption(conductors: &[String], default: &str) -> String {
+    if conductors.is_empty() {
+        default.to_owned()
+    } else {
+        conductors.join(" + ")
+    }
 }
 
 fn apply_edit(app: &mut EditorApp, id: &str, edit: Edit) {
@@ -1729,7 +1829,17 @@ fn apply_edit(app: &mut EditorApp, id: &str, edit: Edit) {
         field(doc, "series", &|d| set_series(d, &series));
     }
     if let Some(poles) = edit.poles {
-        field(doc, "poles", &|d| d.poles = poles);
+        // Phases chosen for another number of poles no longer fit.
+        field(doc, "poles", &|d| {
+            d.poles = poles;
+            let n = usize::from(poles.unwrap_or(4));
+            if !d.conductors.is_empty() && d.conductors.len() != n && has_poles(d.kind) {
+                d.conductors.clear();
+            }
+        });
+    }
+    if let Some(conductors) = edit.conductors {
+        field(doc, "conductors", &|d| d.conductors = conductors.clone());
     }
     if let Some(part) = edit.part {
         field(doc, "part", &|d| d.part = part.clone());
@@ -3161,6 +3271,30 @@ fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branch_on_400_v_chooses_among_the_phases_it_is_given() {
+        let all: Vec<String> = ["L1", "L2", "L3", "N"].map(str::to_owned).to_vec();
+        let text = |c: Vec<Vec<String>>| c.iter().map(|c| c.join("+")).collect::<Vec<_>>();
+        // One pole: a phase; two: a phase and the neutral or two phases; three and four: nothing.
+        assert_eq!(
+            text(phase_choices(DeviceKind::Breaker, Some(1), &all)),
+            ["L1", "L2", "L3"]
+        );
+        assert_eq!(
+            text(phase_choices(DeviceKind::Breaker, Some(2), &all)),
+            ["L1+N", "L2+N", "L3+N", "L1+L2", "L1+L3", "L2+L3"]
+        );
+        assert!(phase_choices(DeviceKind::Breaker, None, &all).is_empty());
+        // A motor under a three-pole contactor; under one phase there is nothing to choose.
+        let three: Vec<String> = ["L1", "L2", "L3"].map(str::to_owned).to_vec();
+        assert_eq!(phase_choices(DeviceKind::Motor, None, &three).len(), 6);
+        let one: Vec<String> = ["L2", "N"].map(str::to_owned).to_vec();
+        assert!(phase_choices(DeviceKind::Load, None, &one).is_empty());
+        assert_eq!(text(phase_choices(DeviceKind::Fuse, Some(1), &one)), ["L2"]);
+        assert_eq!(phase_caption(&[], "по умолчанию"), "по умолчанию");
+        assert_eq!(phase_caption(&one, ""), "L2 + N");
+    }
 
     #[test]
     fn a_diagnostic_is_about_a_device_by_its_designation() {

@@ -133,6 +133,48 @@ fn has_poles(kind: DeviceKind) -> bool {
 
 /// Checks the phases a device takes on a 400 V supply (`conductors`): only on 400 V, only the
 /// conductors of the supply, each once, and as many as the poles of a switching device.
+/// The device that feeds `device`: the one whose `load` it is, else its `from`.
+fn feeder_of<'a>(
+    panel: &'a crate::panel::Panel,
+    device: &crate::panel::Device,
+) -> Option<&'a crate::panel::Device> {
+    panel
+        .devices
+        .iter()
+        .find(|d| d.load == device.id && d.id != device.id)
+        .or_else(|| panel.device(&device.from).filter(|d| d.id != device.id))
+}
+
+/// The phases `device` passes on to what it feeds on 400 V; `None`: all three (the feed, a
+/// three-phase device under it). The same defaults as the drawing: one or two poles take `L1`.
+fn passed_phases(
+    panel: &crate::panel::Panel,
+    device: &crate::panel::Device,
+    depth: usize,
+) -> Option<Vec<&'static str>> {
+    use crate::panel::DeviceKind;
+    if depth > panel.devices.len() || device.kind == DeviceKind::Feed {
+        return None;
+    }
+    let lines = crate::panel::Supply::Ac400.lines();
+    if !device.conductors.is_empty() {
+        return Some(
+            lines
+                .iter()
+                .copied()
+                .filter(|l| *l != "N" && device.conductors.iter().any(|c| c == l))
+                .collect(),
+        );
+    }
+    if has_poles(device.kind) && matches!(device.poles, Some(1 | 2)) {
+        return Some(vec!["L1"]);
+    }
+    if device.kind == DeviceKind::Psu {
+        return None;
+    }
+    feeder_of(panel, device).and_then(|f| passed_phases(panel, f, depth + 1))
+}
+
 fn check_conductors(panel: &crate::panel::Panel, report: &mut Report) {
     for device in panel.devices.iter().filter(|d| !d.conductors.is_empty()) {
         let designation = device.designation();
@@ -174,7 +216,36 @@ fn check_conductors(panel: &crate::panel::Panel, report: &mut Report) {
                 );
             }
         }
-        if !ok || !has_poles(device.kind) {
+        if !ok {
+            continue;
+        }
+        // The phases must reach the device: its feeder passes them on (the neutral always passes
+        // by from the bus).
+        if let Some(feeder) = feeder_of(panel, device) {
+            if let Some(passed) = passed_phases(panel, feeder, 0) {
+                let missing: Vec<&str> = device
+                    .conductors
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|c| *c != "N" && !passed.contains(c))
+                    .collect();
+                if !missing.is_empty() {
+                    report.push(
+                        DiagKind::Panel,
+                        Severity::Error,
+                        None,
+                        None,
+                        format!(
+                            "{designation}: {} нет у питающего {} (есть: {})",
+                            missing.join(", "),
+                            feeder.designation(),
+                            passed.join(", ")
+                        ),
+                    );
+                }
+            }
+        }
+        if !has_poles(device.kind) {
             continue;
         }
         // Without `poles` a switching device has all four conductors.
