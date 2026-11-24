@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use crab_core::{
-    check_panel, rebind_device, rewire, Block, Library, Panel, ParamValue, Project, WireEnd,
+    check_panel, reassign_contact, rebind_device, rewire, Block, ContactForm, Library, Panel,
+    ParamValue, Project, SheetId, WireEnd,
 };
 
 fn repo_path(rel: &str) -> PathBuf {
@@ -538,4 +539,182 @@ fn a_terminal_is_connected_to_a_line_or_a_contact_and_back_to_the_generator() {
     assert!(panel.links.is_empty());
     assert!(connect_terminal(&mut panel, "K1:A1", Some("K1:A1")).is_err());
     assert!(connect_terminal(&mut panel, "K1", Some("bus:L1")).is_err());
+}
+
+#[test]
+fn a_free_contact_takes_a_contactor_and_its_first_free_designation() {
+    let mut project = pump_with(
+        r#"
+[[device]]
+id = "K2"
+kind = "contactor"
+
+[[device]]
+id = "K_1"
+kind = "aux"
+form = "changeover"
+"#,
+    );
+    let new = reassign_contact(&mut project, "K_1", "K2").unwrap();
+    assert_eq!(new, "K2_1");
+    let contact = project.panel.device("K2_1").unwrap();
+    assert_eq!(contact.of, "K2");
+    // A contactor has no changeover contacts: the form becomes normally open.
+    assert_eq!(contact.form, ContactForm::No);
+    assert!(project.panel.device("K_1").is_none());
+}
+
+#[test]
+fn a_moved_contact_gets_the_next_free_designation_and_its_links_and_numbers_follow() {
+    let mut project = pump_with(
+        r#"
+[[device]]
+id = "K1"
+kind = "relay"
+
+[[device]]
+id = "K1_2"
+kind = "aux"
+of = "K1"
+form = "changeover"
+
+[[device]]
+id = "K2"
+kind = "contactor"
+
+[[device]]
+id = "K2_1"
+kind = "aux"
+of = "K2"
+
+[[link]]
+from = "K1_2:13"
+to = "bus:L1"
+
+[wire_numbers]
+"K1_2:13>bus:L1" = 7
+"#,
+    );
+    project
+        .panel_layout
+        .place("K1_2", SheetId::Control(0), 10.0, 20.0);
+    let new = reassign_contact(&mut project, "K1_2", "K2").unwrap();
+    assert_eq!(new, "K2_2");
+    assert!(project.panel.device("K1_2").is_none());
+    let contact = project.panel.device("K2_2").unwrap();
+    assert_eq!(contact.of, "K2");
+    assert_eq!(contact.form, ContactForm::No);
+    assert_eq!(project.panel.links[0].from, "K2_2:13");
+    assert_eq!(project.panel.wire_numbers.get("K2_2:13>bus:L1"), Some(&7));
+    assert!(!project.panel.wire_numbers.contains_key("K1_2:13>bus:L1"));
+    assert!(project.panel_layout.placed.contains_key("K2_2"));
+    assert!(!project.panel_layout.placed.contains_key("K1_2"));
+}
+
+#[test]
+fn a_changeover_contact_stays_changeover_on_a_relay() {
+    let mut project = pump_with(
+        r#"
+[[device]]
+id = "K1"
+kind = "relay"
+
+[[device]]
+id = "K2"
+kind = "relay"
+
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+form = "changeover"
+"#,
+    );
+    assert_eq!(
+        reassign_contact(&mut project, "K1_1", "K2").unwrap(),
+        "K2_1"
+    );
+    assert_eq!(
+        project.panel.device("K2_1").unwrap().form,
+        ContactForm::Changeover
+    );
+}
+
+#[test]
+fn a_contact_of_a_breaker_does_not_move_and_a_refused_move_changes_nothing() {
+    let mut project = pump_with(
+        r#"
+[[device]]
+id = "Q1"
+kind = "breaker"
+
+[[device]]
+id = "Q1_1"
+kind = "aux"
+of = "Q1"
+
+[[device]]
+id = "K1"
+kind = "relay"
+
+[[device]]
+id = "K_1"
+kind = "aux"
+"#,
+    );
+    let before = project.panel.clone();
+    assert!(reassign_contact(&mut project, "Q1_1", "K1").is_err());
+    assert!(reassign_contact(&mut project, "K_1", "Q1").is_err());
+    assert!(reassign_contact(&mut project, "K_1", "M9").is_err());
+    assert!(reassign_contact(&mut project, "K1", "K1").is_err());
+    assert_eq!(project.panel, before);
+    // The same owner: nothing changes.
+    assert_eq!(
+        reassign_contact(&mut project, "Q1_1", "Q1").unwrap(),
+        "Q1_1"
+    );
+}
+
+#[test]
+fn a_contact_that_switches_a_load_moves_only_to_a_relay_and_leaves_its_own_coil_circuit() {
+    let mut project = pump_with(
+        r#"
+[[device]]
+id = "K1"
+kind = "relay"
+
+[[device]]
+id = "K2"
+kind = "contactor"
+
+[[device]]
+id = "K3"
+kind = "relay"
+
+[[device]]
+id = "K1_1"
+kind = "aux"
+of = "K1"
+load = "E1"
+
+[[device]]
+id = "E1"
+kind = "load"
+
+[[device]]
+id = "K_1"
+kind = "aux"
+series = "K3"
+"#,
+    );
+    let before = project.panel.clone();
+    // A contact that switches a load is a relay contact: not to a contactor, not free.
+    assert!(reassign_contact(&mut project, "K1_1", "K2").is_err());
+    assert!(reassign_contact(&mut project, "K1_1", "").is_err());
+    assert_eq!(project.panel, before);
+    let moved = reassign_contact(&mut project, "K1_1", "K3").unwrap();
+    assert_eq!(project.panel.device(&moved).unwrap().load, "E1");
+    // A contact given to the coil it stood in series with leaves that circuit.
+    let own = reassign_contact(&mut project, "K_1", "K3").unwrap();
+    assert_eq!(project.panel.device(&own).unwrap().series, "");
 }

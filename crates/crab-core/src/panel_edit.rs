@@ -3,7 +3,7 @@
 //!
 //! Every operation checks everything first and changes nothing when it refuses.
 
-use crate::panel::{link_device, DeviceKind, Panel, WireLink};
+use crate::panel::{link_device, ContactForm, DeviceKind, Panel, WireLink};
 use crate::{panel_binding, panel_tags, Library, ParamKind, ParamValue, Project};
 
 /// Designation of the controller board in the wires (the same as `crab_schematic::BOARD`).
@@ -228,6 +228,69 @@ pub fn rename_devices(project: &mut Project, names: &[(String, String)]) -> Resu
     project.panel.rename_all(names)?;
     project.panel_layout.rename_all(names);
     Ok(())
+}
+
+/// Gives the auxiliary contact `id` another owner `of`: a relay or a contactor (empty: a free
+/// contact, which waits for its coil). The contact takes the next free designation of its owner
+/// (`K2_1`; a free contact is `K_1`), and its layout and links follow it. A changeover form stays
+/// only on a relay: a contactor has normally open or normally closed contacts. The contacts of a
+/// breaker or an RCD do not move. Returns the new designation.
+pub fn reassign_contact(project: &mut Project, id: &str, of: &str) -> Result<String, String> {
+    let panel = &project.panel;
+    let contact = panel
+        .device(id)
+        .filter(|d| d.kind == DeviceKind::Aux)
+        .ok_or_else(|| format!("«{id}»: нет такого контакта"))?;
+    if contact.of == of {
+        return Ok(id.to_owned());
+    }
+    if matches!(
+        panel.device(&contact.of).map(|d| d.kind),
+        Some(DeviceKind::Breaker | DeviceKind::Rcd)
+    ) {
+        return Err(format!(
+            "контакт «{id}» принадлежит автомату или УЗО и не переносится"
+        ));
+    }
+    let owner_kind = if of.is_empty() {
+        None
+    } else {
+        let owner = panel
+            .device(of)
+            .filter(|d| matches!(d.kind, DeviceKind::Relay | DeviceKind::Contactor))
+            .ok_or_else(|| format!("«{of}»: нет такого реле или контактора"))?;
+        Some(owner.kind)
+    };
+    // A relay contact that switches a load of its own stays a relay contact: only a relay's
+    // contact may be fed and feed (the check forbids it on a contactor or a free contact).
+    let powered = !contact.from.is_empty()
+        || !contact.load.is_empty()
+        || panel.devices.iter().any(|d| d.load == id || d.from == id);
+    if powered && owner_kind != Some(DeviceKind::Relay) {
+        return Err(format!(
+            "контакт «{id}» коммутирует нагрузку: его можно перенести только на другое реле"
+        ));
+    }
+    let form = match (owner_kind, contact.form) {
+        (Some(DeviceKind::Contactor), ContactForm::Changeover) => ContactForm::No,
+        (_, form) => form,
+    };
+    let new_id = panel.next_aux_id(&if of.is_empty() {
+        DeviceKind::Relay.letter().to_string()
+    } else {
+        of.to_owned()
+    });
+    // Renamed first: a refused name changes nothing.
+    rename_device(project, id, &new_id)?;
+    if let Some(d) = project.panel.devices.iter_mut().find(|d| d.id == new_id) {
+        d.of = of.to_owned();
+        d.form = form;
+        // A contact of a coil never stands in series with that same coil.
+        if d.series == of {
+            d.series.clear();
+        }
+    }
+    Ok(new_id)
 }
 
 /// Binds the device to the input or output `tag` of the project (`None` clears the binding).

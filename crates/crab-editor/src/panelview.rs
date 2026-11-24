@@ -174,6 +174,9 @@ pub struct PanelView {
     caption_edit: Option<(SheetId, String)>,
     /// «Разложить заново всё» was pressed once and waits for the confirmation.
     confirm_reset: bool,
+    /// A coil moved to another sheet: its designation and the one the sheet gives it. Offered in
+    /// the sheet controls; the rename happens only when the user asks for it.
+    rename_offer: Option<(String, String, u64)>,
 }
 
 impl Default for PanelView {
@@ -188,6 +191,7 @@ impl Default for PanelView {
             goto: None,
             caption_edit: None,
             confirm_reset: false,
+            rename_offer: None,
             lang: None,
             format: Format::default(),
             cache: None,
@@ -697,6 +701,26 @@ fn is_sheet_designation(id: &str) -> bool {
                 .iter()
                 .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
         })
+}
+
+/// The designation a coil is offered when it is put on the drawing sheet `sheet` (document number):
+/// a coil named by its sheet (`K3.1`) that is on another sheet gets the next free one of `sheet`
+/// (`K5.1`). `None`: the designation is not named by a sheet (`K_1`, `K3`), or the coil stays on
+/// its sheet.
+fn sheet_name_offer(
+    id: &str,
+    kind: DeviceKind,
+    panel: &crab_core::Panel,
+    sheet: usize,
+) -> Option<String> {
+    if !is_sheet_designation(id) {
+        return None;
+    }
+    let (own, _) = id.get(1..)?.split_once('.')?;
+    if own.parse::<usize>().ok()? == sheet {
+        return None;
+    }
+    Some(panel.next_sheet_id(kind, sheet))
 }
 
 /// The row of the coil of a contactor or a relay in the tree: the output of the board it is on.
@@ -1425,7 +1449,39 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
 
             if is_aux {
                 ui.label(tr("Аппарат"));
-                ui.label(format!("-{}", device.of));
+                let owner = doc.project.panel.device(&device.of).map(|d| d.kind);
+                // The contacts of a breaker or an RCD stay with it. A contact of a relay or a
+                // contactor may go to another coil, and a relay contact may be left free.
+                if matches!(owner, Some(DeviceKind::Breaker | DeviceKind::Rcd)) {
+                    ui.label(format!("-{}", device.of));
+                } else {
+                    let mut of = device.of.clone();
+                    let free_allowed = device.of.is_empty() || owner == Some(DeviceKind::Relay);
+                    let shown = if of.is_empty() {
+                        tr("нет").to_owned()
+                    } else {
+                        format!("-{of}")
+                    };
+                    egui::ComboBox::from_id_salt("panel_of")
+                        .selected_text(shown)
+                        .show_ui(ui, |ui| {
+                            if free_allowed {
+                                ui.selectable_value(&mut of, String::new(), tr("нет"));
+                            }
+                            for coil in doc.project.panel.devices.iter().filter(|d| {
+                                matches!(d.kind, DeviceKind::Contactor | DeviceKind::Relay)
+                            }) {
+                                ui.selectable_value(
+                                    &mut of,
+                                    coil.id.clone(),
+                                    format!("-{}", coil.id),
+                                );
+                            }
+                        });
+                    if of != device.of {
+                        edit.of = Some(of);
+                    }
+                }
                 ui.end_row();
 
                 ui.label(tr("Тип контакта"));
@@ -1704,6 +1760,8 @@ struct Edit {
     series: Option<String>,
     /// The conductors a device takes on 400 V (empty: by default).
     conductors: Option<Vec<String>>,
+    /// Another coil the contact belongs to (empty: a free contact).
+    of: Option<String>,
     remove: bool,
 }
 
@@ -1854,6 +1912,18 @@ fn apply_edit(app: &mut EditorApp, id: &str, edit: Edit) {
             Ok(()) => {
                 // The device goes under its new place by itself.
                 doc.edit_panel_layout(None, |l| l.clear_symbol(&symbol_key("power", id)));
+                app.panel_view.problem = None;
+            }
+            Err(message) => app.panel_view.problem = Some(message),
+        }
+    }
+    if let Some(of) = edit.of {
+        // The contact takes the next free designation of its new coil; the layout and the links
+        // follow it, and it is one undo step.
+        match doc.edit_panel_project(None, |p| crab_core::reassign_contact(p, id, &of)) {
+            Ok(new) => {
+                app.panel_view.selected = Some(new);
+                app.panel_view.rename = None;
                 app.panel_view.problem = None;
             }
             Err(message) => app.panel_view.problem = Some(message),
@@ -2788,7 +2858,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
         }
     }
     // A device dragged from the tree and dropped here is put on the sheet it is dropped on.
-    let mut put: Option<(String, SheetId, f32, f32)> = None;
+    let mut put: Option<(String, SheetId, f32, f32, Option<usize>)> = None;
     // `dnd_release_payload` takes the payload before it looks at its type: each kind is taken
     // only when it is the one being dragged, or the other kind would be dropped on the floor.
     let device_drop = resp
@@ -2804,11 +2874,16 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             if let Some(why) = drop_refusal(&document.sheets, &document.coil_at, &id) {
                 view_state.problem = Some(tr(why).to_owned());
             } else if let Some(target) = sheet.id {
-                put = Some((id, target, at.x, at.y));
+                put = Some((id, target, at.x, at.y, Some(index + 1)));
             } else {
                 // Dropped on a title or a table sheet: the device goes on the first control sheet,
                 // which is shown, so that it can be put in place and wired.
-                put = Some((id, SheetId::Control(0), 80.0, 400.0));
+                let number = document
+                    .sheets
+                    .iter()
+                    .position(|s| s.id == Some(SheetId::Control(0)))
+                    .map(|i| i + 1);
+                put = Some((id, SheetId::Control(0), 80.0, 400.0, number));
                 view_state.goto = Some(SheetId::Control(0));
             }
         }
@@ -2981,8 +3056,20 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             app.panel_view.coil = payload.part == crab_schematic::PalettePart::Coil;
             app.panel_view.problem = None;
         }
-        if let Some((id, target, x, y)) = put {
+        if let Some((id, target, x, y, number)) = put {
             doc.edit_panel_layout(None, |l| l.place(&id, target, x, y));
+            // A coil put on another sheet is offered its designation by that sheet.
+            let (owner, part) = crab_core::split_part(&id);
+            if part == Some(crab_core::COIL) {
+                let kind = doc.project.panel.device(owner).map(|d| d.kind);
+                app.panel_view.rename_offer = match (kind, number) {
+                    (Some(kind @ (DeviceKind::Contactor | DeviceKind::Relay)), Some(number)) => {
+                        sheet_name_offer(owner, kind, &doc.project.panel, number)
+                            .map(|new| (owner.to_owned(), new, doc.panel_revision))
+                    }
+                    _ => None,
+                };
+            }
             app.panel_view.selected = Some(id);
             app.panel_view.coil = false;
         }
@@ -3049,6 +3136,39 @@ fn sheet_controls(
     let Some(doc) = doc else {
         return;
     };
+    // A coil moved to another sheet: the offer to give it that sheet's designation.
+    if let Some((old, new, revision)) = view.rename_offer.clone() {
+        // Any later change of the panel (an undo, another edit, another project) takes it back:
+        // the coil may no longer stand on that sheet, or the name may be taken.
+        if doc.panel_revision != revision || doc.project.panel.device(&old).is_none() {
+            view.rename_offer = None;
+        } else {
+            let sheet = new
+                .get(1..)
+                .and_then(|s| s.split_once('.'))
+                .map_or_else(String::new, |(n, _)| n.to_owned());
+            ui.horizontal(|ui| {
+                ui.label(crate::i18n::fmt(
+                    tr("Катушка перенесена на лист {0}. Переименовать -{1} в -{2}?"),
+                    &[&sheet, &old, &new],
+                ));
+                if ui.button(tr("Переименовать")).clicked() {
+                    match doc.edit_panel_project(None, |p| crab_core::rename_device(p, &old, &new))
+                    {
+                        Ok(()) => {
+                            view.selected = Some(new.clone());
+                            view.problem = None;
+                        }
+                        Err(message) => view.problem = Some(message),
+                    }
+                    view.rename_offer = None;
+                }
+                if ui.button(tr("Оставить")).clicked() {
+                    view.rename_offer = None;
+                }
+            });
+        }
+    }
     if let Some(id) = shown {
         let editing = view.caption_edit.as_ref().is_some_and(|(e, _)| *e == id);
         if !editing {
@@ -3271,6 +3391,36 @@ fn toolbar(app: &mut EditorApp, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_coil_moved_to_another_sheet_is_offered_the_next_designation_of_that_sheet() {
+        let mut panel = crab_core::Panel::default();
+        panel
+            .devices
+            .push(new_device("K3.1".to_owned(), DeviceKind::Relay));
+        assert_eq!(
+            sheet_name_offer("K3.1", DeviceKind::Relay, &panel, 5).as_deref(),
+            Some("K5.1")
+        );
+        // The coil stays on its sheet: nothing to offer.
+        assert_eq!(sheet_name_offer("K3.1", DeviceKind::Relay, &panel, 3), None);
+        // Designations not named by a sheet are not offered anything.
+        for id in ["K1", "K_1", "K3.", "k3.1", "K3.1a"] {
+            assert_eq!(
+                sheet_name_offer(id, DeviceKind::Relay, &panel, 5),
+                None,
+                "{id}"
+            );
+        }
+        // The next free one on the sheet: after K5.1 comes K5.2.
+        panel
+            .devices
+            .push(new_device("K5.1".to_owned(), DeviceKind::Relay));
+        assert_eq!(
+            sheet_name_offer("K3.1", DeviceKind::Relay, &panel, 5).as_deref(),
+            Some("K5.2")
+        );
+    }
 
     #[test]
     fn a_branch_on_400_v_chooses_among_the_phases_it_is_given() {

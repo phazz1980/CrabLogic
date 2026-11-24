@@ -64,7 +64,8 @@ pub use panel::{
     PANEL_PDF,
 };
 pub use panel_edit::{
-    connect_terminal, rebind_device, rename_device, rename_devices, rewire, WireEnd,
+    connect_terminal, reassign_contact, rebind_device, rename_device, rename_devices, rewire,
+    WireEnd,
 };
 pub use panel_layout::{
     bus_key, part_key, split_part, symbol_key, PanelLayout, Placed, SheetId, SymbolShift,

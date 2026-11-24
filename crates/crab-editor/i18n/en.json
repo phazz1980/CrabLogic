@@ -1400,6 +1400,7 @@
   "Выход платы (A1)": "Board output (A1)",
   "Свойства катушки": "Coil properties",
   "Катушка": "Coil",
+  "Катушка перенесена на лист {0}. Переименовать -{1} в -{2}?": "Coil moved to sheet {0}. Rename -{1} to -{2}?",
   "Элементы": "Elements",
   "Перетащите на лист": "Drag onto a sheet",
   "Контакт": "Contact",
