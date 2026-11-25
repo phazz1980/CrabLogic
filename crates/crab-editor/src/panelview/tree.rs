@@ -5,9 +5,7 @@ use eframe::egui::{self, Color32, Ui, Vec2};
 
 use super::canvas::{draw_ops, View};
 use super::properties::{aux_row, can_have_contacts, coil_row, supply_name};
-use super::{
-    is_about, kind_title, palette_entries, refresh, DevicePayload, PalettePayload, GROUPS,
-};
+use super::{is_about, palette_entries, refresh, DevicePayload, PalettePayload, GROUPS};
 use crate::app::EditorApp;
 use crate::i18n::tr;
 use crate::panels::{group, row_label, Level};
@@ -315,18 +313,25 @@ fn palette(ui: &mut Ui, supply: crab_core::Supply, action: &std::cell::RefCell<O
         .show(ui, |ui| {
             for (title, kinds) in GROUPS {
                 ui.weak(tr(title));
-                for &kind in kinds {
-                    let entries = palette_entries(kind);
-                    // A device of parts: its name, the parts under it.
-                    let nested = entries.len() > 1 && kind == DeviceKind::Relay;
-                    if nested {
-                        ui.label(kind_title(kind));
-                    }
-                    for (part, name) in entries {
+                // The group of the relay reads: coil, contactor (power contacts), contact.
+                let mut list: Vec<_> = kinds
+                    .iter()
+                    .flat_map(|&kind| {
+                        palette_entries(kind)
+                            .into_iter()
+                            .map(move |(part, name)| (kind, part, name))
+                    })
+                    .collect();
+                if kinds.contains(&DeviceKind::Relay) {
+                    list.sort_by_key(|(kind, part, _)| match (kind, part) {
+                        (_, crab_schematic::PalettePart::Coil) => 0,
+                        (DeviceKind::Contactor, _) => 1,
+                        _ => 2,
+                    });
+                }
+                {
+                    for (kind, part, name) in list {
                         ui.horizontal(|ui| {
-                            if nested {
-                                ui.add_space(12.0);
-                            }
                             let payload = PalettePayload { kind, part };
                             let resp = ui
                                 .dnd_drag_source(

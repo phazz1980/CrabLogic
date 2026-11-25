@@ -614,6 +614,35 @@ pub fn properties(app: &mut EditorApp, ui: &mut Ui) {
                 ui.end_row();
             }
 
+            if device.kind == DeviceKind::Contactor {
+                // Power contacts: their own coil, or the coil of another device.
+                ui.label(tr("Катушка"));
+                let mut of = device.of.clone();
+                let shown = if of.is_empty() {
+                    tr("своя").to_owned()
+                } else {
+                    format!("-{of}")
+                };
+                egui::ComboBox::from_id_salt("panel_power_coil")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut of, String::new(), tr("своя"));
+                        for coil in doc
+                            .project
+                            .panel
+                            .devices
+                            .iter()
+                            .filter(|d| d.id != device.id && doc.project.panel.has_own_coil(d))
+                        {
+                            ui.selectable_value(&mut of, coil.id.clone(), format!("-{}", coil.id));
+                        }
+                    });
+                if of != device.of {
+                    edit.power_coil = Some(of);
+                }
+                ui.end_row();
+            }
+
             if is_aux {
                 ui.label(tr("Аппарат"));
                 let owner = doc.project.panel.device(&device.of).map(|d| d.kind);
@@ -931,6 +960,7 @@ struct Edit {
     of: Option<String>,
     /// The terminal block a sensor is wired through (empty: straight).
     via: Option<String>,
+    power_coil: Option<String>,
     remove: bool,
 }
 
@@ -1011,6 +1041,9 @@ fn apply_edit(app: &mut EditorApp, id: &str, edit: Edit) {
     }
     if let Some(via) = edit.via {
         field(doc, "via", &|d| d.via = via.clone());
+    }
+    if let Some(of) = edit.power_coil {
+        field(doc, "of", &|d| d.of = of.clone());
     }
     if let Some((keys, number)) = edit.number {
         // Two conductors never share a number.

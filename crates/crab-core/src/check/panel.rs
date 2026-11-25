@@ -364,6 +364,10 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
     // Bindings.
     let mut owner: HashMap<&str, &Device> = HashMap::new();
     for device in &panel.devices {
+        // The main contacts of another coil have no coil of their own to bind (checked below).
+        if panel.is_borrowed_contactor(device) {
+            continue;
+        }
         let want = need(device.kind);
         if device.bind.is_empty() {
             // An auxiliary contact may stay unbound: it is then only drawn on the power sheet. A
@@ -548,7 +552,7 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
             }
             match panel.device(&device.series) {
                 None => error(format!("{name}: нет катушки «{}»", device.series)),
-                Some(coil) if !matches!(coil.kind, DeviceKind::Contactor | DeviceKind::Relay) => {
+                Some(coil) if !panel.has_own_coil(coil) => {
                     error(format!(
                         "{name}: {} не катушка (контактор или реле)",
                         coil.designation()
@@ -556,6 +560,46 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
                 }
                 Some(_) => {}
             }
+        }
+    }
+
+    // Main contacts of the coil of another device (a contactor with `of`): the coil must exist,
+    // be a coil of its own, and the contacts have no binding or wires to a coil of their own.
+    for device in panel
+        .devices
+        .iter()
+        .filter(|d| panel.is_borrowed_contactor(d))
+    {
+        let name = format!("силовые контакты {}", device.designation());
+        if !device.bind.is_empty() {
+            error(format!(
+                "{name}: у контактов чужой катушки нет своего выхода платы, привязку нужно снять (катушка — у {})",
+                device.of
+            ));
+        }
+        if device.of == device.id {
+            error(format!(
+                "{name}: контакты не могут стоять на собственной катушке"
+            ));
+            continue;
+        }
+        match panel.device(&device.of) {
+            None => error(format!("{name}: нет катушки «{}»", device.of)),
+            Some(coil) if !matches!(coil.kind, DeviceKind::Contactor | DeviceKind::Relay) => {
+                error(format!(
+                    "{name}: {} не катушка (контактор или реле)",
+                    coil.designation()
+                ));
+            }
+            // A chain or a loop: the target is itself the contacts of another coil.
+            Some(coil) if panel.is_borrowed_contactor(coil) => {
+                error(format!(
+                    "{name}: {} сам стоит на чужой катушке («{}»), цепочки и циклы не допускаются",
+                    coil.designation(),
+                    coil.of
+                ));
+            }
+            Some(_) => {}
         }
     }
 

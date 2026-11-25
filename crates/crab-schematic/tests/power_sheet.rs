@@ -1460,3 +1460,41 @@ fn a_sensor_through_a_terminal_block_is_drawn_with_its_terminals() {
     // Straight to the sensor nothing is drawn any more.
     assert!(!wires.iter().any(|k| k == "G1:+24V>B1:+"));
 }
+
+#[test]
+fn the_wire_of_a_relay_fed_from_its_contact_ends_on_the_coil() {
+    use crab_core::SheetId;
+    use crab_schematic::ItemKind;
+    let panel = PUMP_PANEL.to_owned()
+        + r#"
+[[device]]
+id = "K9"
+kind = "relay"
+load = ""
+
+[[device]]
+id = "K9_1"
+kind = "aux"
+of = "K9"
+from = "Q1"
+load = "K9"
+"#;
+    let mut project = pump(&panel);
+    project
+        .panel_layout
+        .place("K9/coil", SheetId::Free(0), 300.0, 300.0);
+    let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
+    let wires: Vec<String> = doc
+        .sheets
+        .iter()
+        .flat_map(|s| s.items.iter())
+        .filter_map(|i| match &i.kind {
+            ItemKind::Wire { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        wires.iter().any(|k| k.ends_with(">K9:A1")),
+        "no wire to the coil in {wires:?}"
+    );
+}

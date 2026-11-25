@@ -215,6 +215,19 @@ pub fn power_sheets(
             _ => {}
         }
     }
+    // A relay or a contactor fed only on its coil (from a contact) with nothing under it has no
+    // power symbol: its wire is drawn to the coil by the general path.
+    let coil_only: Vec<&str> = edges
+        .iter()
+        .filter(|(device, edge)| {
+            edge.wires.iter().all(|w| w.to.terminal == "A1")
+                && !edges.values().any(|e| e.parent == **device)
+        })
+        .map(|(device, _)| *device)
+        .collect();
+    for device in coil_only {
+        edges.remove(device);
+    }
     // Who feeds whom, in the order of the panel; the chains start at the feed.
     let mut next_of: HashMap<&str, &Device> = HashMap::new();
     let mut starts: Vec<&Device> = Vec::new();
@@ -521,7 +534,8 @@ pub fn power_sheets(
                 .get(if relay_contact {
                     d.of.as_str()
                 } else {
-                    d.id.as_str()
+                    // The main contacts of another coil go by that coil's references.
+                    panel.coil_name(d)
                 })
                 .map(ToString::to_string);
             let (terminals, nc) = if relay_contact {
@@ -656,6 +670,11 @@ pub fn power_sheets(
             let joined = parent.is_some_and(|p| !p.input && p.page == s.page && p.col == s.col);
             let up_geo = geos.get(edge.parent);
             for (k, w) in edge.wires.iter().enumerate().take(n) {
+                // A wire to the coil of a relay or a contactor (it is fed from a contact) is drawn
+                // to the coil, not to the poles: the general path of the hand wires does it.
+                if w.to.terminal == "A1" && w.to.device == d.id {
+                    continue;
+                }
                 let cx = child.poles[k];
                 let line = line_of(nets, panel.supply, &d.id, k);
                 // The pole of the switching device that takes this conductor.

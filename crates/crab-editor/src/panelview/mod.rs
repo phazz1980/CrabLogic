@@ -35,7 +35,7 @@ const GROUPS: [(&str, &[DeviceKind]); 6] = [
             DeviceKind::Switch,
         ],
     ),
-    ("Коммутация", &[DeviceKind::Contactor, DeviceKind::Relay]),
+    ("Реле", &[DeviceKind::Relay, DeviceKind::Contactor]),
     ("Нагрузки", &[DeviceKind::Motor, DeviceKind::Load]),
     ("Клеммы", &[DeviceKind::Terminal]),
     (
@@ -104,7 +104,7 @@ fn palette_entries(kind: DeviceKind) -> Vec<(crab_schematic::PalettePart, String
     use crab_schematic::PalettePart::{Coil, Contact, Whole};
     let t = |s: &str| tr(s).to_owned();
     match kind {
-        DeviceKind::Contactor => vec![(Whole, t("Контактор")), (Coil, t("Катушка"))],
+        DeviceKind::Contactor => vec![(Whole, t("Контактор"))],
         DeviceKind::Relay => vec![(Coil, t("Катушка")), (Contact, t("Контакт"))],
         _ => vec![(Whole, kind_title(kind))],
     }

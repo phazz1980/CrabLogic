@@ -336,6 +336,55 @@ impl Panel {
                 .is_some_and(|r| r.kind == DeviceKind::Relay)
     }
 
+    /// Whether `d` has a coil of its own (terminals `A1`/`A2`, bound to an output of the board or
+    /// wired by hand): a relay, or a contactor that is not the main contacts of another coil.
+    pub fn has_own_coil(&self, d: &Device) -> bool {
+        match d.kind {
+            DeviceKind::Relay => true,
+            DeviceKind::Contactor => d.of.is_empty(),
+            _ => false,
+        }
+    }
+
+    /// Whether `d` is the main contacts of a coil of another device: a contactor whose `of` names
+    /// a relay or contactor (`specs/panel-coil-device`). It has no coil of its own.
+    pub fn is_borrowed_contactor(&self, d: &Device) -> bool {
+        d.kind == DeviceKind::Contactor && !d.of.is_empty()
+    }
+
+    /// The device whose coil drives `d`: `d` itself when it has a coil of its own, the target of
+    /// `of` for the main contacts of another coil (when it exists and has a coil of its own),
+    /// otherwise `None`.
+    pub fn coil_device<'a>(&'a self, d: &'a Device) -> Option<&'a Device> {
+        if self.has_own_coil(d) {
+            return Some(d);
+        }
+        if !self.is_borrowed_contactor(d) {
+            return None;
+        }
+        self.device(&d.of)
+            .filter(|t| t.id != d.id && self.has_own_coil(t))
+    }
+
+    /// The designation the coil of `d` goes by in cross references: the coil's device for the main
+    /// contacts of another coil (`K1` for contactor `K2` with `of = "K1"`), else `d` itself.
+    pub fn coil_name<'a>(&'a self, d: &'a Device) -> &'a str {
+        if self.is_borrowed_contactor(d) {
+            return d.of.as_str();
+        }
+        d.id.as_str()
+    }
+
+    /// The main contacts (contactors) that stand on the coil of `device`, in the order of the panel.
+    pub fn power_contacts_of<'a>(
+        &'a self,
+        device: &'a str,
+    ) -> impl Iterator<Item = &'a Device> + 'a {
+        self.devices
+            .iter()
+            .filter(move |d| d.kind == DeviceKind::Contactor && d.of == device)
+    }
+
     /// The temperature sensors (thermistors) of the motor `device`: sensors whose `of` names it.
     pub fn sensors_of<'a>(&'a self, device: &'a str) -> impl Iterator<Item = &'a Device> + 'a {
         self.devices
@@ -480,6 +529,11 @@ impl Panel {
             }
             // A sensor of a removed motor stays in the panel as a plain sensor.
             if d.of == id && d.kind == DeviceKind::Sensor {
+                d.of.clear();
+            }
+            // The main contacts of a removed coil are a plain contactor again (the check then asks
+            // for its coil), not lost with the power chain they stand in.
+            if d.of == id && d.kind == DeviceKind::Contactor {
                 d.of.clear();
             }
         }

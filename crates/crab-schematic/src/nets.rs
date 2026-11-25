@@ -318,6 +318,8 @@ pub fn terminals_of(panel: &Panel, device: &Device) -> Vec<String> {
         (1..=2 * usize::from(n)).map(|i| i.to_string())
     };
     match device.kind {
+        // The main contacts of another coil have no coil terminals of their own.
+        DeviceKind::Contactor if panel.is_borrowed_contactor(device) => poles().collect(),
         DeviceKind::Contactor | DeviceKind::Relay => ["A1".to_owned(), "A2".to_owned()]
             .into_iter()
             .chain(poles())
@@ -631,11 +633,25 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
                     None => Pin::new(EXTERNAL, name),
                 },
             };
+            // A relay has no power poles: what feeds it feeds its coil `A1`. A contactor fed from
+            // a contact (the self-holding circuit) takes the supply on its coil too. The coil
+            // takes one conductor.
+            let coil_fed = t.kind == DeviceKind::Relay
+                || (t.kind == DeviceKind::Contactor
+                    && panel.has_own_coil(t)
+                    && up.is_some_and(|u| is_relay_contact(panel, u)));
+            if coil_fed && i > 0 {
+                continue;
+            }
             // A device behind a power supply sees its 24 V as the conductors `+24V`, `0V`.
             drafts.push(Draft {
                 class,
                 from,
-                to: in_pin(panel, t, i, name),
+                to: if coil_fed {
+                    Pin::new(&t.id, "A1")
+                } else {
+                    in_pin(panel, t, i, name)
+                },
             });
         }
     }
@@ -697,6 +713,10 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
         let Some(bind) = (!d.bind.is_empty()).then_some(d.bind.as_str()) else {
             continue;
         };
+        // The main contacts of another coil have no output of the board of their own.
+        if panel.is_borrowed_contactor(d) {
+            continue;
+        }
         let Some((terminal, tag)) = board_terminal(project, lib, bind) else {
             continue;
         };

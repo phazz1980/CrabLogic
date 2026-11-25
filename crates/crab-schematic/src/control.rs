@@ -267,7 +267,7 @@ pub(crate) fn generated_on_control(
         let Some(device) = panel.device(&terminal.device) else {
             continue;
         };
-        let coil_device = matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay);
+        let coil_device = panel.has_own_coil(device);
         if coil_device || !layout.placed.contains_key(&device.id) {
             set.insert(device.id.clone());
         }
@@ -612,7 +612,7 @@ pub(crate) fn contact_table(
     power: &Xrefs,
     coils: &Xrefs,
 ) -> ContactTable {
-    if !matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay) {
+    if !panel.has_own_coil(device) {
         return ContactTable::default();
     }
     let poles: Vec<String> = terminals_of(panel, device)
@@ -633,6 +633,25 @@ pub(crate) fn contact_table(
             _ => None,
         })
         .collect();
+    // The main contacts that stand on this coil (contactors with `of`), pole by pole.
+    for contacts in panel.power_contacts_of(&device.id) {
+        let at = power.get(&contacts.id).map(|at| at.to_string());
+        let own: Vec<String> = terminals_of(panel, contacts)
+            .into_iter()
+            .filter(|t| t != "A1" && t != "A2")
+            .collect();
+        for pair in own.chunks(2) {
+            if let [near, far] = pair {
+                rows.push(ContactRow {
+                    near: near.clone(),
+                    far: far.clone(),
+                    form: ContactForm::No,
+                    changeover: None,
+                    at: at.clone(),
+                });
+            }
+        }
+    }
     for aux in panel.aux_of(&device.id) {
         let (near, far) = aux_terminals(panel, aux);
         rows.push(ContactRow {
@@ -686,7 +705,7 @@ pub(crate) fn placed_xref(
     let (id, part) = split_part(key);
     let device = panel.device(id)?;
     let name = match (part, device.kind) {
-        (Some(COIL), DeviceKind::Contactor | DeviceKind::Relay) => id,
+        (Some(COIL), DeviceKind::Contactor | DeviceKind::Relay) if panel.has_own_coil(device) => id,
         (None, DeviceKind::Aux) => id,
         _ => return None,
     };
@@ -742,7 +761,7 @@ pub(crate) fn draw_placed(
     let Some(device) = panel.device(id) else {
         return;
     };
-    let coil_device = matches!(device.kind, DeviceKind::Contactor | DeviceKind::Relay);
+    let coil_device = panel.has_own_coil(device);
     match part {
         None if has_power_symbol(panel, device) => {
             draw_power_symbol(c, hand, device, origin, sheet, pins);
@@ -810,7 +829,7 @@ fn draw_power_symbol(
     let coil = if relay_contact {
         &device.of
     } else {
-        &device.id
+        panel.coil_name(device)
     };
     let coil_at = hand.refs.coils.get(coil).map(ToString::to_string);
     let notes = Notes {
@@ -861,7 +880,7 @@ pub(crate) fn link_route(a: ((f32, f32), Dir), b: ((f32, f32), Dir), lane: f32) 
 /// The contacts in series with the coil `coil`, in the order of the panel (the order of the
 /// wires of the circuit).
 fn series_of<'a>(panel: &'a Panel, coil: &Device) -> Vec<&'a Device> {
-    if !matches!(coil.kind, DeviceKind::Contactor | DeviceKind::Relay) {
+    if !panel.has_own_coil(coil) {
         return Vec::new();
     }
     panel

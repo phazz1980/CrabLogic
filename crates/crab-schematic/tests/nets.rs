@@ -743,3 +743,32 @@ fn no_via_gives_the_same_wires_and_numbers_as_before() {
         |n: &Nets| -> Vec<(String, u32)> { n.wires.iter().map(|w| (w.key(), w.number)).collect() };
     assert_eq!(pairs(&plain), pairs(&with_unused_block));
 }
+
+#[test]
+fn a_relay_fed_from_its_own_contact_takes_the_supply_on_the_coil() {
+    let panel = r#"
+supply = "dc24"
+
+[[device]]
+id = "G1"
+kind = "feed"
+
+[[device]]
+id = "K9"
+kind = "relay"
+bind = "pump"
+load = ""
+
+[[device]]
+id = "K9_1"
+kind = "aux"
+of = "K9"
+load = "K9"
+"#;
+    let nets = nets_of(panel);
+    let k = key_set(&nets);
+    assert!(
+        k.iter().any(|w| w.ends_with(">K9:A1")),
+        "no wire to the coil in {k:?}"
+    );
+}
