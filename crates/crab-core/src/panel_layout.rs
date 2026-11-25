@@ -184,7 +184,12 @@ impl SymbolShift {
 /// Place of the middle segment of a wire, in units of 1/4 mm.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WireShape {
-    pub bend: f32,
+    /// Place of the middle segment, if the user moved it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<f32>,
+    /// The wire is drawn as a break with references at both ends instead of a line.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub broken: bool,
 }
 
 /// Key of a device symbol on a view: `"<view>:<device id>"`. The view name must not contain
@@ -419,18 +424,48 @@ impl PanelLayout {
 
     /// Place of the middle segment of the wire, if the user moved it.
     pub fn bend(&self, key: &str) -> Option<f32> {
-        self.wires.get(key).map(|w| w.bend)
+        self.wires.get(key).and_then(|w| w.bend)
+    }
+
+    /// Whether the wire is drawn as a break with references.
+    pub fn is_broken(&self, key: &str) -> bool {
+        self.wires.get(key).is_some_and(|w| w.broken)
+    }
+
+    /// Turns the wire into a break with references (or back into a line).
+    pub fn set_broken(&mut self, key: &str, broken: bool) {
+        if broken {
+            self.wires
+                .entry(key.to_owned())
+                .or_insert(WireShape { bend: None, broken })
+                .broken = true;
+        } else if let Some(w) = self.wires.get_mut(key) {
+            w.broken = false;
+            if w.bend.is_none() {
+                self.wires.remove(key);
+            }
+        }
     }
 
     /// Sets the place of the middle segment, snapped to the grid; `None` removes the entry.
     pub fn set_bend(&mut self, key: &str, bend: Option<f32>) {
         match bend {
             Some(bend) => {
-                self.wires
-                    .insert(key.to_owned(), WireShape { bend: snap(bend) });
+                let broken = self.is_broken(key);
+                self.wires.insert(
+                    key.to_owned(),
+                    WireShape {
+                        bend: Some(snap(bend)),
+                        broken,
+                    },
+                );
             }
             None => {
-                self.wires.remove(key);
+                if let Some(w) = self.wires.get_mut(key).filter(|w| w.broken) {
+                    w.bend = None;
+                } else {
+                    self.wires.remove(key);
+                }
             }
         }
     }

@@ -956,6 +956,7 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
             wire,
         });
     }
+    wires.retain(|w| !panel.cut.contains(&w.key()));
     Nets {
         manual: manual_keys,
         wires,

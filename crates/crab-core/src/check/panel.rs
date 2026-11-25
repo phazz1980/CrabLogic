@@ -583,6 +583,16 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
             ));
             continue;
         }
+        // One group of main contacts per coil.
+        if panel
+            .power_contacts_of(&device.of)
+            .any(|other| other.id < device.id)
+        {
+            error(format!(
+                "{name}: на катушке «{}» уже стоят другие силовые контакты (на катушку — один контактор)",
+                device.of
+            ));
+        }
         match panel.device(&device.of) {
             None => error(format!("{name}: нет катушки «{}»", device.of)),
             Some(coil) if !matches!(coil.kind, DeviceKind::Contactor | DeviceKind::Relay) => {

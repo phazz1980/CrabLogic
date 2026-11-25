@@ -288,6 +288,9 @@ pub struct Panel {
     /// documentation generator, not typed by hand.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub wire_numbers: BTreeMap<String, u32>,
+    /// Keys of the automatic wires the user deleted: the nets leave them out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cut: Vec<String>,
 }
 
 /// Whether `s` is a valid designation of a device: the characters of an identifier and dots

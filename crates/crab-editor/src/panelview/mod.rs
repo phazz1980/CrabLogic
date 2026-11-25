@@ -159,6 +159,8 @@ pub struct PanelView {
     coil: bool,
     /// The wire (its key) the right-click menu is open for.
     link_menu: Option<String>,
+    /// The wire (its key) picked by a click: it can be deleted or turned into a break.
+    wire: Option<String>,
     /// The device put on a sheet by hand that the right-click menu is open for.
     unplace_menu: Option<String>,
     /// Show this sheet at the next frame (a device has just been put on it, or it was just added).
@@ -180,6 +182,7 @@ impl Default for PanelView {
             started_for: None,
             coil: false,
             link_menu: None,
+            wire: None,
             unplace_menu: None,
             goto: None,
             caption_edit: None,

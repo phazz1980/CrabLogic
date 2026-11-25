@@ -162,3 +162,17 @@ fn removing_the_coil_makes_the_contacts_a_plain_contactor() {
     assert!(k2.of.is_empty() && k2.load == "M2");
     assert!(p.has_own_coil(k2));
 }
+
+#[test]
+fn only_one_contactor_stands_on_a_coil() {
+    let src = format!(
+        "{PANEL}\n[[device]]\nid = \"K3\"\nkind = \"contactor\"\nof = \"K1\"\nfrom = \"Q1\"\n"
+    );
+    let found = errors(&project(&src));
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("на катушку — один контактор")),
+        "{found:#?}"
+    );
+}

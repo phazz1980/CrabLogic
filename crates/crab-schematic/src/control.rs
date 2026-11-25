@@ -59,6 +59,8 @@ const COIL_H: f32 = 50.0;
 const COIL_FOOT: f32 = 20.0;
 /// The contact table under a coil starts this far under the `0V` rail.
 const TABLE_DY: f32 = 16.0;
+/// Name of the part that is the contact table of a coil (`K1/table`).
+const TABLE: &str = "table";
 /// The table of a coil reaches this far left of the coil: the references of its rows (`/12.3`)
 /// stand left of the contacts.
 const TABLE_LEFT_ROOM: f32 = 84.0;
@@ -410,7 +412,14 @@ const HAND_TABLE_GAP: f32 = 24.0;
 /// any other ends in a stub that is named with the place of the other end (`/2.3`) or with the name
 /// of the line. A link the nets do not know (an unknown line) is not drawn.
 pub(crate) fn draw_links(c: &mut Canvas, hand: &Hand, sheet: usize, pins: &Pins) {
-    for (lane, link) in hand.panel.links.iter().enumerate() {
+    let lanes = bundle_lanes(hand.panel.links.iter().filter_map(|l| {
+        let at = |end: &str| {
+            let (device, terminal) = end.split_once(':')?;
+            pins.get(&(device.to_owned(), terminal.to_owned())).copied()
+        };
+        Some((l.key(), at(&l.from)?, at(&l.to)?))
+    }));
+    for link in &hand.panel.links {
         let Some(wire) = hand.nets.wires.iter().find(|w| w.key() == link.key()) else {
             continue;
         };
@@ -426,9 +435,14 @@ pub(crate) fn draw_links(c: &mut Canvas, hand: &Hand, sheet: usize, pins: &Pins)
             to: End::new(to_device, to_terminal),
         };
         match (at(&link.from), at(&link.to)) {
+            (Some(a), Some(b)) if hand.layout.is_broken(&link.key()) => {
+                draw_stub(c, hand, sheet, (wire, kind()), a, &link.to, true);
+                draw_stub(c, hand, sheet, (wire, kind()), b, &link.from, true);
+            }
             (Some(a), Some(b)) => {
                 c.begin(kind());
-                let points = link_route(a, b, (lane % 5) as f32 * 5.0);
+                let lane = lanes.get(&link.key()).copied().unwrap_or(0.0);
+                let points = link_route(a, b, lane, hand.layout.bend(&link.key()));
                 c.line(&points, THIN, INK);
                 c.dot(a.0 .0, a.0 .1, DOT, INK);
                 c.dot(b.0 .0, b.0 .1, DOT, INK);
@@ -436,8 +450,10 @@ pub(crate) fn draw_links(c: &mut Canvas, hand: &Hand, sheet: usize, pins: &Pins)
                 c.wire_number(&wire.label_key(), mid, &wire.number.to_string(), INK);
                 c.end();
             }
-            (Some(near), None) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.to),
-            (None, Some(near)) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.from),
+            (Some(near), None) => draw_stub(c, hand, sheet, (wire, kind()), near, &link.to, false),
+            (None, Some(near)) => {
+                draw_stub(c, hand, sheet, (wire, kind()), near, &link.from, false)
+            }
             (None, None) => {}
         }
     }
@@ -461,7 +477,18 @@ fn general_end(pin: &Pin) -> String {
 /// on this sheet, the way the hand wires are drawn: between two terminals of the sheet with a
 /// route, from one terminal to a break mark otherwise. A hand wire is not one of them.
 fn draw_general(c: &mut Canvas, hand: &Hand, sheet: usize, drawn: &DrawnWires, pins: &Pins) {
-    for (lane, wire) in hand.nets.wires.iter().enumerate() {
+    let lanes = bundle_lanes(hand.nets.wires.iter().filter_map(|w| {
+        let key = w.key();
+        if hand.nets.manual.contains(&key) || drawn.contains(&key) {
+            return None;
+        }
+        let here = |pin: &Pin| {
+            pins.get(&(pin.device.clone(), pin.terminal.clone()))
+                .copied()
+        };
+        Some((key, here(&w.from)?, here(&w.to)?))
+    }));
+    for wire in &hand.nets.wires {
         let key = wire.key();
         if hand.nets.manual.contains(&key) || drawn.contains(&key) {
             continue;
@@ -476,9 +503,30 @@ fn draw_general(c: &mut Canvas, hand: &Hand, sheet: usize, drawn: &DrawnWires, p
             to: End::new(&wire.to.device, &wire.to.terminal),
         };
         match (here(&wire.from), here(&wire.to)) {
+            (Some(a), Some(b)) if hand.layout.is_broken(&key) => {
+                draw_stub(
+                    c,
+                    hand,
+                    sheet,
+                    (wire, kind()),
+                    a,
+                    &general_end(&wire.to),
+                    true,
+                );
+                draw_stub(
+                    c,
+                    hand,
+                    sheet,
+                    (wire, kind()),
+                    b,
+                    &general_end(&wire.from),
+                    true,
+                );
+            }
             (Some(a), Some(b)) => {
                 c.begin(kind());
-                let points = link_route(a, b, (lane % 5) as f32 * 5.0);
+                let lane = lanes.get(&key).copied().unwrap_or(0.0);
+                let points = link_route(a, b, lane, hand.layout.bend(&key));
                 c.line(&points, THIN, INK);
                 c.dot(a.0 .0, a.0 .1, DOT, INK);
                 c.dot(b.0 .0, b.0 .1, DOT, INK);
@@ -487,7 +535,15 @@ fn draw_general(c: &mut Canvas, hand: &Hand, sheet: usize, drawn: &DrawnWires, p
                 c.end();
             }
             (Some(near), None) => {
-                draw_stub(c, hand, sheet, (wire, kind()), near, &general_end(&wire.to));
+                draw_stub(
+                    c,
+                    hand,
+                    sheet,
+                    (wire, kind()),
+                    near,
+                    &general_end(&wire.to),
+                    false,
+                );
             }
             (None, Some(near)) => {
                 draw_stub(
@@ -497,6 +553,7 @@ fn draw_general(c: &mut Canvas, hand: &Hand, sheet: usize, drawn: &DrawnWires, p
                     (wire, kind()),
                     near,
                     &general_end(&wire.from),
+                    false,
                 );
             }
             (None, None) => {}
@@ -513,8 +570,12 @@ fn draw_stub(
     (wire, kind): (&Wire, ItemKind),
     (point, dir): ((f32, f32), Dir),
     far: &str,
+    named: bool,
 ) {
-    if let Some(rail) = link_bus(far).and_then(|name| hand.rails.get(name)) {
+    if let Some(rail) = link_bus(far)
+        .filter(|_| !named)
+        .and_then(|name| hand.rails.get(name))
+    {
         if (rail.from..=rail.to).contains(&point.0) {
             c.begin(kind);
             c.line(&[point, (point.0, rail.y)], THIN, INK);
@@ -543,9 +604,11 @@ fn draw_stub(
                     .terminals
                     .get(&(device.to_owned(), terminal.to_owned()))
             })
-            .filter(|at| at.sheet != sheet)
+            .filter(|at| named || at.sheet != sheet)
             .map(|at| at.to_string()),
-    };
+    }
+    // A wire turned into a break names the other end when no sheet reference tells where it is.
+    .or_else(|| named.then(|| far.to_owned()));
     c.begin(kind);
     c.line(&[point, tip], THIN, INK);
     c.dot(point.0, point.1, DOT, INK);
@@ -615,9 +678,12 @@ pub(crate) fn contact_table(
     if !panel.has_own_coil(device) {
         return ContactTable::default();
     }
+    // A relay has no main contacts of its own (only old projects keep them): the table lists
+    // the contacts bound to the coil.
+    let own_poles = device.kind != DeviceKind::Relay || device.poles.is_some();
     let poles: Vec<String> = terminals_of(panel, device)
         .into_iter()
-        .filter(|t| t != "A1" && t != "A2")
+        .filter(|t| t != "A1" && t != "A2" && own_poles)
         .collect();
     let pole_at = power.get(&device.id).map(|at| at.to_string());
     let mut rows: Vec<ContactRow> = poles
@@ -721,7 +787,7 @@ pub(crate) fn draw_coil(
     device: &Device,
     key: &str,
     (x, top): (f32, f32),
-    table: &ContactTable,
+    table: (&ContactTable, (f32, f32)),
     pins: &mut Pins,
 ) {
     let item = c.begin(ItemKind::Symbol {
@@ -733,7 +799,6 @@ pub(crate) fn draw_coil(
     // A coil put by hand has no `0V` rail under it: its `A2` wire runs down (to a break or to a
     // device), so its table stands lower than in the ladder, clear of that wire's end.
     draw_field_device(c, device, (x, top), &ContactTable::default());
-    draw_table(c, x, top + 50.0 + BREAK_STUB + HAND_TABLE_GAP, table);
     c.port(item, port("A1", (x, top), Dir::Up));
     c.port(item, port("A2", (x, top + 50.0), Dir::Down));
     c.end();
@@ -742,6 +807,25 @@ pub(crate) fn draw_coil(
         (device.id.clone(), "A2".to_owned()),
         ((x, top + 50.0), Dir::Down),
     );
+    let (table, (dx, dy)) = table;
+    let y = top + 50.0 + BREAK_STUB + HAND_TABLE_GAP;
+    draw_table_item(c, device, (x + dx, y + dy), table);
+}
+
+/// Draws the contact table under a coil as a symbol of its own (`K1/table`), which is moved like
+/// the coil; the offset it was moved by is already in `at`.
+fn draw_table_item(c: &mut Canvas, device: &Device, at: (f32, f32), table: &ContactTable) {
+    if table.rows.is_empty() {
+        return;
+    }
+    c.begin(ItemKind::Symbol {
+        view: "control",
+        device: part_key(&device.id, TABLE),
+        origin: at,
+        ports: Vec::new(),
+    });
+    draw_table(c, at.0, at.1, table);
+    c.end();
 }
 
 /// Draws one entry of the hand-placed layout on a sheet at `origin`: a device as a box with its
@@ -773,7 +857,8 @@ pub(crate) fn draw_placed(
         }
         Some(COIL) if coil_device => {
             let table = contact_table(panel, device, refs.power, refs.coils);
-            draw_coil(c, device, key, origin, &table, pins);
+            let shift = layout.shift(&symbol_key("control", &part_key(id, TABLE)));
+            draw_coil(c, device, key, origin, (&table, shift), pins);
         }
         Some(_) => {}
     }
@@ -865,15 +950,61 @@ fn draw_power_symbol(
     }
 }
 
+/// How far above the terminal it goes into the turn of a wire stands (3.5 mm).
+const LEVEL_ABOVE: f32 = 14.0;
+
+/// Distance between the parallel runs of wires that go the same way (3 mm).
+const LANE_STEP: f32 = 12.0;
+
+/// The offsets of the runs of wires drawn between terminals (key, from, to). Wires that leave one
+/// row of terminals for another row, and turn the same way, form a bundle: their runs are spread
+/// `LANE_STEP` apart in the order that keeps them from crossing (the wire with the outer start
+/// takes the run nearest to its start's row when it turns right, the farthest when left). A lone
+/// wire is shifted by its number so that two of them do not lie on one another.
+type Route = ((f32, f32), Dir);
+fn bundle_lanes(routes: impl Iterator<Item = (String, Route, Route)>) -> HashMap<String, f32> {
+    let mut groups: HashMap<(i32, i32, bool), Vec<(f32, String)>> = HashMap::new();
+    let mut lanes = HashMap::new();
+    for (i, (key, a, b)) in routes.enumerate() {
+        let k = (
+            a.0 .1.round() as i32,
+            b.0 .1.round() as i32,
+            b.0 .0 > a.0 .0,
+        );
+        groups.entry(k).or_default().push((a.0 .0, key.clone()));
+        lanes.insert(key, -((i % 5) as f32) * 5.0);
+    }
+    for ((_, _, right), mut group) in groups {
+        if group.len() < 2 {
+            continue;
+        }
+        group.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let n = group.len();
+        for (rank, (_, key)) in group.into_iter().enumerate() {
+            let step = if right { n - 1 - rank } else { rank };
+            lanes.insert(key, (step as f32 - (n - 1) as f32) * LANE_STEP);
+        }
+    }
+    lanes
+}
+
 /// The route of a wire drawn by hand between two terminals: out of each terminal in its
 /// direction, along between them.
-pub(crate) fn link_route(a: ((f32, f32), Dir), b: ((f32, f32), Dir), lane: f32) -> Vec<(f32, f32)> {
+pub(crate) fn link_route(
+    a: ((f32, f32), Dir),
+    b: ((f32, f32), Dir),
+    lane: f32,
+    bend: Option<f32>,
+) -> Vec<(f32, f32)> {
     let (((ax, ay), da), ((bx, by), db)) = (a, b);
-    let level = match (da, db) {
+    let level = bend.unwrap_or(match (da, db) {
         (Dir::Down, Dir::Down) => ay.max(by) + 14.0 + lane,
         (Dir::Up, Dir::Up) => ay.min(by) - 14.0 - lane,
+        // The turn stands right above the element the wire goes to (the offsets of a bundle are
+        // zero or negative: further up), so the wire gets shorter as the element is moved up.
+        (Dir::Down, Dir::Up) if by - ay > 2.0 * LEVEL_ABOVE => by - LEVEL_ABOVE + lane,
         _ => (ay + by) / 2.0 + lane,
-    };
+    });
     vec![(ax, ay), (ax, level), (bx, level), (bx, by)]
 }
 
@@ -1277,8 +1408,11 @@ fn draw_output(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, p
         ports: Vec::new(),
     });
     let field = draw_field_device(c, device, (sx, sy), &ContactTable::default());
-    draw_table(c, sx, l.zero + TABLE_DY, &table);
     c.end();
+    let (tdx, tdy) = l
+        .layout
+        .shift(&symbol_key("control", &part_key(&device.id, TABLE)));
+    draw_table_item(c, device, (sx + tdx, l.zero + TABLE_DY + tdy), &table);
     let Some(field) = field else {
         return;
     };
@@ -1713,5 +1847,49 @@ mod tests {
         assert_eq!(shown.rows.len(), 6);
         assert_eq!(shown.hidden, 2);
         assert_eq!(shown.rows[0], changeover);
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+
+    fn wire(i: usize, ax: f32, bx: f32) -> (String, Route, Route) {
+        (
+            format!("w{i}"),
+            ((ax, 0.0), Dir::Down),
+            ((bx, 100.0), Dir::Up),
+        )
+    }
+
+    /// Wires turning right: the leftmost one runs lowest, so no run crosses another's drop.
+    #[test]
+    fn a_bundle_turning_right_is_spread_in_the_order_that_does_not_cross() {
+        let lanes = bundle_lanes((0..3).map(|i| wire(i, i as f32 * 20.0, 200.0 + i as f32 * 20.0)));
+        assert!(lanes["w0"] > lanes["w1"] && lanes["w1"] > lanes["w2"]);
+        assert_eq!(lanes["w0"] - lanes["w1"], LANE_STEP);
+    }
+
+    /// Turning left the order is the other way round.
+    #[test]
+    fn a_bundle_turning_left_is_spread_the_other_way() {
+        let lanes = bundle_lanes((0..3).map(|i| wire(i, 200.0 + i as f32 * 20.0, i as f32 * 20.0)));
+        assert!(lanes["w0"] < lanes["w1"] && lanes["w1"] < lanes["w2"]);
+    }
+
+    #[test]
+    fn a_set_bend_replaces_the_level() {
+        let a = ((0.0, 0.0), Dir::Down);
+        let b = ((50.0, 100.0), Dir::Up);
+        assert_eq!(link_route(a, b, -12.0, Some(30.0))[1].1, 30.0);
+        // The turn is right above the terminal it goes to, the bundle offset takes it further up.
+        assert_eq!(link_route(a, b, 0.0, None)[1].1, 100.0 - LEVEL_ABOVE);
+        assert_eq!(
+            link_route(a, b, -12.0, None)[1].1,
+            100.0 - LEVEL_ABOVE - 12.0
+        );
+        // Too close for that: the turn stands midway.
+        let near = ((50.0, 20.0), Dir::Up);
+        assert_eq!(link_route(a, near, 0.0, None)[1].1, 10.0);
     }
 }

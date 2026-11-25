@@ -107,3 +107,83 @@ fn a_contactor_without_of_still_has_its_own_coil() {
         .panel
         .has_own_coil(project.panel.device("K2").unwrap()));
 }
+
+/// The contact table under a coil is a symbol of its own (`K1/table`) that the offset of the
+/// layout moves, like the coil.
+#[test]
+fn the_contact_table_moves_by_its_own_offset() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/pump")).unwrap();
+    let origin = |project: &Project| {
+        let (doc, _) = build_document(project, &lib, Lang::Ru).unwrap();
+        doc.sheets
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .find_map(|i| match &i.kind {
+                crab_schematic::ItemKind::Symbol { device, origin, .. } if device == "K1/table" => {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+    };
+    let before = origin(&project).expect("table of K1 drawn");
+    project
+        .panel_layout
+        .set_shift("control:K1/table", 40.0, 20.0);
+    let after = origin(&project).unwrap();
+    assert_eq!((after.0 - before.0, after.1 - before.1), (40.0, 20.0));
+}
+
+/// A worked-out wire the user deleted (`panel.cut`) is left out of the nets.
+#[test]
+fn a_cut_wire_leaves_the_nets() {
+    let lib = library();
+    let mut project = Project::load(repo_path("examples/pump")).unwrap();
+    let wires = build_nets(&project, &lib).wires;
+    let key = wires.first().expect("pump has wires").key();
+    project.panel.cut.push(key.clone());
+    let after = build_nets(&project, &lib).wires;
+    assert_eq!(after.len(), wires.len() - 1);
+    assert!(after.iter().all(|w| w.key() != key));
+}
+
+/// A wire turned into a break keeps its bend and is a line again when turned back.
+#[test]
+fn a_broken_wire_flag_does_not_lose_the_bend() {
+    let mut layout = crab_core::PanelLayout::default();
+    layout.set_bend("A:1>B:2", Some(20.0));
+    layout.set_broken("A:1>B:2", true);
+    assert!(layout.is_broken("A:1>B:2"));
+    assert_eq!(layout.bend("A:1>B:2"), Some(20.0));
+    layout.set_bend("A:1>B:2", None);
+    assert!(layout.is_broken("A:1>B:2"));
+    layout.set_broken("A:1>B:2", false);
+    assert!(layout.wires.is_empty());
+}
+
+/// A deleted wire of the power chain is not drawn on the power sheet either.
+#[test]
+fn a_cut_wire_is_not_drawn_on_the_power_sheet() {
+    let lib = library();
+    let project = Project::load(repo_path("examples/pump")).unwrap();
+    let drawn = |project: &Project| -> Vec<String> {
+        let (doc, _) = build_document(project, &lib, Lang::Ru).unwrap();
+        doc.sheets
+            .iter()
+            .filter(|s| matches!(s.id, Some(crab_core::SheetId::Power(_))))
+            .flat_map(|s| s.items.iter())
+            .filter_map(|i| match &i.kind {
+                crab_schematic::ItemKind::Wire { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let before = drawn(&project);
+    assert!(!before.is_empty());
+    for key in before {
+        let mut cut = project.clone();
+        cut.panel.cut.push(key.clone());
+        let after = drawn(&cut);
+        assert!(!after.contains(&key), "{key} still drawn: {after:?}");
+    }
+}

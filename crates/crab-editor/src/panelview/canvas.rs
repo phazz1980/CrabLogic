@@ -85,7 +85,22 @@ fn item_bounds(sheet: &Sheet, item: &Item) -> Option<Rect> {
 pub(super) fn symbol_at(sheet: &Sheet, p: Pos2) -> Option<&Item> {
     sheet.items.iter().rev().find(|item| {
         matches!(item.kind, ItemKind::Symbol { .. })
+            && !is_table(item)
             && item_bounds(sheet, item).is_some_and(|r| r.expand(4.0).contains(p))
+    })
+}
+
+/// Whether the item is the contact table of a coil (`K1/table`): it is moved with Shift held, like
+/// a text, and does not take the clicks of the symbols.
+fn is_table(item: &Item) -> bool {
+    item.device()
+        .is_some_and(|d| crab_core::split_part(d).1 == Some("table"))
+}
+
+/// The contact table under a point of the page.
+fn table_at(sheet: &Sheet, p: Pos2) -> Option<&Item> {
+    sheet.items.iter().rev().find(|item| {
+        is_table(item) && item_bounds(sheet, item).is_some_and(|r| r.expand(4.0).contains(p))
     })
 }
 
@@ -125,6 +140,9 @@ fn bus_end_at(sheet: &Sheet, p: Pos2, page_w: f32) -> Option<(usize, usize)> {
     })
 }
 
+/// How many times the usual reach of the mouse a terminal is grabbed from and dropped on.
+const GRAB: f32 = 3.0;
+
 /// The terminal of a control sheet under a point of the page: the device, the terminal and where
 /// it is.
 pub(super) fn port_at(
@@ -133,27 +151,49 @@ pub(super) fn port_at(
     p: Pos2,
     tolerance: f32,
 ) -> Option<(String, String, (f32, f32))> {
-    sheet.items.iter().find_map(|item| {
-        let ItemKind::Symbol {
-            view,
-            device,
-            ports,
-            ..
-        } = &item.kind
-        else {
-            return None;
-        };
-        if *view != "control" && *view != "board" {
-            return None;
-        }
-        ports
-            .iter()
-            .find(|pt| (pt.x - p.x).hypot(pt.y - p.y) <= tolerance)
-            .map(|pt| {
-                let (owner, terminal) = port_terminal(panel, view, device, &pt.name);
-                (owner, terminal, (pt.x, pt.y))
-            })
-    })
+    // The nearest terminal within the reach: the reach is wide, so two may be in it.
+    sheet
+        .items
+        .iter()
+        .filter_map(|item| {
+            let ItemKind::Symbol {
+                view,
+                device,
+                ports,
+                ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            if *view != "control" && *view != "board" {
+                return None;
+            }
+            ports
+                .iter()
+                .map(|pt| ((pt.x - p.x).hypot(pt.y - p.y), view, device, pt))
+                .filter(|(d, ..)| *d <= tolerance)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, view, device, pt)| {
+            let (owner, terminal) = port_terminal(panel, view, device, &pt.name);
+            (owner, terminal, (pt.x, pt.y))
+        })
+}
+
+/// The places of all the terminals a wire can be drawn from or to on the sheet.
+fn port_places(sheet: &Sheet) -> Vec<(f32, f32)> {
+    sheet
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Symbol { view, ports, .. } if *view == "control" || *view == "board" => {
+                Some(ports.iter().map(|pt| (pt.x, pt.y)))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 /// The device and the terminal a port of a symbol is wired as. A part of a device (`K1/coil`,
@@ -341,6 +381,37 @@ fn link_at(sheet: &Sheet, panel: &crab_core::Panel, p: Pos2, tolerance: f32) -> 
             })
         });
         near.then(|| key.clone())
+    })
+}
+
+/// The wire (any, drawn by hand or worked out) under a point of the page: its key.
+fn wire_any_at(sheet: &Sheet, p: Pos2, tolerance: f32) -> Option<String> {
+    let dist = |a: (f32, f32), b: (f32, f32)| {
+        let (ab, ap) = (
+            Vec2::new(b.0 - a.0, b.1 - a.1),
+            Vec2::new(p.x - a.0, p.y - a.1),
+        );
+        let len2 = ab.length_sq();
+        let t = if len2 > 0.0 {
+            (ap.dot(ab) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (ap - ab * t).length()
+    };
+    sheet.items.iter().find_map(|item| {
+        let ItemKind::Wire { key, .. } = &item.kind else {
+            return None;
+        };
+        item.ops
+            .iter()
+            .any(|&o| match sheet.ops.get(o) {
+                Some(Op::Line { points, .. }) => {
+                    points.windows(2).any(|w| dist(w[0], w[1]) <= tolerance)
+                }
+                _ => false,
+            })
+            .then(|| key.clone())
     })
 }
 
@@ -626,7 +697,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
             if let Some((device, terminal, at)) = app
                 .doc
                 .as_ref()
-                .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * 1.5))
+                .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * GRAB))
             {
                 return Some(Drag::Link {
                     from: (device, terminal),
@@ -639,6 +710,17 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 });
             }
             if let Some(key) = bus_at(sheet, p, tolerance) {
+                let shift = app
+                    .doc
+                    .as_ref()
+                    .map_or((0.0, 0.0), |d| d.project.panel_layout.shift(&key));
+                return Some(Drag::Symbol {
+                    key,
+                    start: (p.x, p.y),
+                    shift,
+                });
+            }
+            if let Some((_, key)) = table_at(sheet, p).and_then(movable).filter(|_| shift_held) {
                 let shift = app
                     .doc
                     .as_ref()
@@ -693,6 +775,9 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     let mut new_link: Option<crab_core::WireLink> = None;
     let mut rewire: Option<(String, crab_core::WireEnd, String)> = None;
     let mut remove_link: Option<String> = None;
+    // The picked wire deleted (worked out wires are cut) or turned into a break / back into a line.
+    let mut wire_delete: Option<String> = None;
+    let mut wire_break: Option<(String, bool)> = None;
     let mut unplace: Option<String> = None;
     // A contact asked for in the menu of a device on the sheet.
     let mut add_aux: Option<String> = None;
@@ -721,11 +806,25 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                     });
                 }
                 // The wire being drawn follows the pointer.
-                Drag::Link { at, .. } => {
-                    painter.line_segment(
-                        [view.at(*at), pos],
-                        egui::Stroke::new(1.5, ui.visuals().selection.stroke.color),
-                    );
+                // Every terminal it may end in is marked, the one it would end in brighter.
+                Drag::Link { at, from } => {
+                    let color = ui.visuals().selection.stroke.color;
+                    painter.line_segment([view.at(*at), pos], egui::Stroke::new(1.5, color));
+                    let target = app
+                        .doc
+                        .as_ref()
+                        .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * GRAB))
+                        .filter(|(device, terminal, _)| {
+                            (device.as_str(), terminal.as_str())
+                                != (from.0.as_str(), from.1.as_str())
+                        });
+                    for q in port_places(sheet) {
+                        painter.circle_stroke(view.at(q), 4.0, egui::Stroke::new(1.0, color));
+                    }
+                    if let Some((_, _, q)) = target {
+                        painter.circle_filled(view.at(q), 6.0, color.gamma_multiply(0.5));
+                        painter.circle_stroke(view.at(q), 6.0, egui::Stroke::new(2.0, color));
+                    }
                 }
                 // The end being moved follows the pointer; the terminals it may go to are marked,
                 // the one under the pointer brighter.
@@ -757,7 +856,7 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 let target = resp.interact_pointer_pos().map(page_at).and_then(|p| {
                     app.doc
                         .as_ref()
-                        .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * 1.5))
+                        .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * GRAB))
                 });
                 if let Some((device, terminal, _)) = target {
                     if (device.as_str(), terminal.as_str()) != (from.0.as_str(), from.1.as_str()) {
@@ -775,11 +874,15 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     } else if let Some(p) = hover {
         if ctrl_held && wire_end_at(sheet, p, tolerance * 1.5).is_some() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
-        } else if app
+        } else if let Some((_, _, q)) = app
             .doc
             .as_ref()
-            .is_some_and(|d| port_at(sheet, &d.project.panel, p, tolerance * 1.5).is_some())
+            .and_then(|d| port_at(sheet, &d.project.panel, p, tolerance * GRAB))
         {
+            // The terminal a wire can be drawn from is lit.
+            let color = ui.visuals().selection.stroke.color;
+            painter.circle_filled(view.at(q), 6.0, color.gamma_multiply(0.5));
+            painter.circle_stroke(view.at(q), 6.0, egui::Stroke::new(2.0, color));
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         } else if shift_held && label_at(sheet, p).is_some() && ref_at(sheet, p).is_none() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -970,6 +1073,12 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 select = symbol_at(sheet, p)
                     .and_then(|i| i.device())
                     .map(|d| crab_core::split_part(d).0.to_owned());
+                // Else a click on a wire picks it.
+                view_state.wire = if select.is_none() {
+                    wire_any_at(sheet, p, tolerance)
+                } else {
+                    None
+                };
             }
         }
     }
@@ -985,6 +1094,50 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
     }
     // The symbols of the selected device are framed.
     let accent = app.theme.palette.accent;
+    // The picked wire is drawn thick, with the buttons «Удалить» and «Превратить в ссылку».
+    if let Some(key) = view_state.wire.clone() {
+        let mut here = false;
+        for item in &sheet.items {
+            if matches!(&item.kind, ItemKind::Wire { key: k, .. } if *k == key) {
+                for &o in &item.ops {
+                    if let Some(Op::Line { points, .. }) = sheet.ops.get(o) {
+                        here = true;
+                        let pts: Vec<Pos2> = points.iter().map(|&p| view.at(p)).collect();
+                        painter.add(egui::Shape::line(pts, Stroke::new(3.0, accent)));
+                    }
+                }
+            }
+        }
+        if here {
+            let broken = app
+                .doc
+                .as_ref()
+                .is_some_and(|d| d.project.panel_layout.is_broken(&key));
+            egui::Area::new(ui.make_persistent_id("panel_wire_bar"))
+                .fixed_pos(area.left_top() + Vec2::new(8.0, 8.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} {key}", tr("Связь")));
+                            if ui.button(tr("Удалить")).clicked() {
+                                wire_delete = Some(key.clone());
+                            }
+                            let title = if broken {
+                                tr("Вернуть линией")
+                            } else {
+                                tr("Превратить в ссылку")
+                            };
+                            if ui.button(title).clicked() {
+                                wire_break = Some((key.clone(), !broken));
+                            }
+                        });
+                    });
+                });
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Delete)) && here {
+            wire_delete = Some(key);
+        }
+    }
     if let Some(chosen) = &view_state.selected {
         for item in &sheet.items {
             if item.device().map(|d| crab_core::split_part(d).0) == Some(chosen.as_str()) {
@@ -1080,6 +1233,21 @@ fn draw_sheet(app: &mut EditorApp, ui: &mut Ui, cache: &Cache) {
                 p.links.retain(|l| l.key() != key);
                 Ok(())
             });
+        }
+        if let Some(key) = wire_delete {
+            let _ = doc.edit_panel::<(), ()>(None, |p| {
+                if p.links.iter().any(|l| l.key() == key) {
+                    p.links.retain(|l| l.key() != key);
+                } else if !p.cut.contains(&key) {
+                    p.cut.push(key.clone());
+                }
+                Ok(())
+            });
+            doc.edit_panel_layout(None, |l| l.set_broken(&key, false));
+            app.panel_view.wire = None;
+        }
+        if let Some((key, broken)) = wire_break {
+            doc.edit_panel_layout(None, |l| l.set_broken(&key, broken));
         }
         if let Some(id) = unplace {
             doc.edit_panel_layout(None, |l| l.unplace(&id));

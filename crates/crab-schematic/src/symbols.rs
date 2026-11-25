@@ -133,6 +133,8 @@ pub fn draw_device(
     // A contact of a relay is named by its relay (`-K2`), the coil of which is drawn under it.
     let name = match device.kind {
         DeviceKind::Aux => format!("-{}", device.of),
+        // The main contacts of another coil carry its designation too.
+        DeviceKind::Contactor if !device.of.is_empty() => format!("-{}", device.of),
         _ => device.designation(),
     };
     // The designation is left of the symbol, the technical data under it (7.1.6.1, 7.1.2.4).

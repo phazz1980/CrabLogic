@@ -716,6 +716,10 @@ fn a_control_sheet_is_a_ladder() {
             ..
         } = &item.kind
         {
+            // The contact table stands under the 0V rail.
+            if device.ends_with("/table") {
+                continue;
+            }
             assert!(
                 origin.1 > plus && origin.1 < zero,
                 "{device} на высоте {} между шинами {plus} и {zero}",
