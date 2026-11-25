@@ -1081,6 +1081,72 @@ fn supply_line(
     c.end();
 }
 
+/// The supply wire of a sensor that is wired through a terminal block: the part from the rail to
+/// the terminal and the part from the terminal to the sensor, with the terminal drawn between
+/// them (`X1:B1+`). Without the two wires of the block nothing is drawn.
+fn supply_via(
+    c: &mut Canvas,
+    nets: &Nets,
+    block: &str,
+    pin: &str,
+    name: &str,
+    from: (f32, f32),
+    rail: f32,
+) {
+    let into = nets
+        .wires
+        .iter()
+        .find(|w| w.to.device == block && w.to.terminal == pin);
+    let out = nets
+        .wires
+        .iter()
+        .find(|w| w.from.device == block && w.from.terminal == pin);
+    let (Some(into), Some(out)) = (into, out) else {
+        return;
+    };
+    let x = from.0;
+    let mid = (from.1 + rail) / 2.0;
+    let toward_rail = if rail < from.1 { -1.0 } else { 1.0 };
+    // The rail side: from the terminal to the rail.
+    c.begin(ItemKind::Wire {
+        key: into.key(),
+        from: End::new(block, pin),
+        to: End::new(EXTERNAL, name),
+    });
+    c.line(&[(x, mid + toward_rail * DOT), (x, rail)], THIN, LOW);
+    c.dot(x, rail, DOT, LOW);
+    c.wire_number(
+        &into.label_key(),
+        (x, (mid + rail) / 2.0),
+        &into.number.to_string(),
+        INK,
+    );
+    c.end();
+    // The sensor side: from the sensor to the terminal.
+    c.begin(ItemKind::Wire {
+        key: out.key(),
+        from: End::new(block, pin),
+        to: End::new(&out.to.device, &out.to.terminal),
+    });
+    c.line(&[from, (x, mid - toward_rail * DOT)], THIN, LOW);
+    c.wire_number(
+        &out.label_key(),
+        (x, (from.1 + mid) / 2.0),
+        &out.number.to_string(),
+        INK,
+    );
+    c.end();
+    c.circle(x, mid, DOT, THIN, INK);
+    c.text(
+        x + 8.0,
+        mid + 4.0,
+        &format!("{block}:{pin}"),
+        TEXT_S,
+        Align::Left,
+        INK,
+    );
+}
+
 /// Where the note under the `0V` rail stands and how it is aligned: at the left of the body when
 /// its text ends before `first_x` (the left edge of the table of the first column, under it),
 /// else right-aligned at the right end of the rail.
@@ -1327,15 +1393,39 @@ fn draw_input(c: &mut Canvas, l: &Ladder, row: &Row, x: f32, pins: &mut Pins, pl
     if let Some(p) = field.plus {
         c.port(item, port("plus", p, Dir::Up));
         pins.insert((device.id.clone(), terminal_of("plus")), (p, Dir::Up));
-        let wire = find_wire(l.nets, &device.id, &plus_terminal);
-        supply_line(c, wire, &device.id, "plus", (p.0, p.1 - DOT), l.plus);
+        match via_pin(l.panel, device, "+") {
+            Some((block, pin)) => {
+                supply_via(c, l.nets, &block, &pin, "+24V", (p.0, p.1 - DOT), l.plus);
+            }
+            None => {
+                let wire = find_wire(l.nets, &device.id, &plus_terminal);
+                supply_line(c, wire, &device.id, "plus", (p.0, p.1 - DOT), l.plus);
+            }
+        }
     }
     if let Some(m) = field.minus {
         c.port(item, port("minus", m, Dir::Down));
         pins.insert((device.id.clone(), terminal_of("minus")), (m, Dir::Down));
-        let wire = find_wire(l.nets, &device.id, &minus_terminal);
-        supply_line(c, wire, &device.id, "minus", (m.0, m.1 + DOT), l.zero);
+        match via_pin(l.panel, device, "-") {
+            Some((block, pin)) => {
+                supply_via(c, l.nets, &block, &pin, "0V", (m.0, m.1 + DOT), l.zero);
+            }
+            None => {
+                let wire = find_wire(l.nets, &device.id, &minus_terminal);
+                supply_line(c, wire, &device.id, "minus", (m.0, m.1 + DOT), l.zero);
+            }
+        }
     }
+}
+
+/// The terminal block and its terminal (`B1+`) a sensor is wired through for its `+` or `-`
+/// terminal; none when it is wired straight.
+fn via_pin(panel: &Panel, device: &Device, side: &str) -> Option<(String, String)> {
+    if device.kind != DeviceKind::Sensor || device.via.is_empty() {
+        return None;
+    }
+    let block = panel.device(&device.via)?;
+    (block.kind == DeviceKind::Terminal).then(|| (block.id.clone(), format!("{}{side}", device.id)))
 }
 
 /// Draws the column of `row` at `x`: an output or an input, with its channel and its wires.

@@ -209,6 +209,10 @@ pub struct Device {
     /// `["L3","N"]`, `["L1","L3"]`). Empty: by default (spec panel-phase).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conductors: Vec<String>,
+    /// For a sensor: the terminal block (`X1`, a device of kind `Terminal`) its wires go through.
+    /// Empty: the sensor is wired straight to the board and the feed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub via: String,
 }
 
 impl Device {
@@ -231,6 +235,31 @@ impl WireLink {
     pub fn key(&self) -> String {
         format!("{}>{}", self.from, self.to)
     }
+}
+
+/// The end of a link or wire key (`K1:A2`, `X2:B1+`) after the device `old` became `new`. A pin of
+/// a sensor on its terminal block `block` (`X2:B1S`) is named by the sensor, so it follows too.
+fn renamed_end(end: &str, old: &str, new: &str, block: Option<&str>) -> String {
+    let Some((device, terminal)) = end.split_once(':') else {
+        return end.to_owned();
+    };
+    if device == old {
+        return format!("{new}:{terminal}");
+    }
+    if let (Some(block), Some(suffix)) = (block, sensor_pin_suffix(terminal, old)) {
+        if device == block {
+            return format!("{device}:{new}{suffix}");
+        }
+    }
+    end.to_owned()
+}
+
+/// The suffix of a pin of the sensor `sensor` on its terminal block: `+`, `-` or `S` for `B1+`,
+/// `B1-`, `B1S`.
+pub fn sensor_pin_suffix<'a>(terminal: &'a str, sensor: &str) -> Option<&'a str> {
+    terminal
+        .strip_prefix(sensor)
+        .filter(|s| matches!(*s, "+" | "-" | "S"))
 }
 
 /// The device of an end of a link (`K1:A2` → `K1`).
@@ -351,6 +380,8 @@ impl Panel {
         if self.device(new).is_some() {
             return Err(format!("обозначение «{new}» уже занято"));
         }
+        // A sensor wired through a terminal block has its pins there (`X2:B1+`): they follow it.
+        let block = self.sensor_block(old);
         let Some(device) = self.devices.iter_mut().find(|d| d.id == old) else {
             return Err(format!("нет устройства «{old}»"));
         };
@@ -369,14 +400,13 @@ impl Panel {
             if d.from == old {
                 d.from = new.to_owned();
             }
+            if d.via == old {
+                d.via = new.to_owned();
+            }
         }
         for link in &mut self.links {
             for end in [&mut link.from, &mut link.to] {
-                if let Some((device, terminal)) = end.split_once(':') {
-                    if device == old {
-                        *end = format!("{new}:{terminal}");
-                    }
-                }
+                *end = renamed_end(end, old, new, block.as_deref());
             }
         }
         // The keys are `K1:2>M1:L1`: the device is the part before the colon of each end.
@@ -384,10 +414,7 @@ impl Panel {
         for (key, number) in numbers {
             let renamed = key
                 .split('>')
-                .map(|end| match end.split_once(':') {
-                    Some((device, pin)) if device == old => format!("{new}:{pin}"),
-                    _ => end.to_owned(),
-                })
+                .map(|end| renamed_end(end, old, new, block.as_deref()))
                 .collect::<Vec<_>>()
                 .join(">");
             self.wire_numbers.insert(renamed, number);
@@ -432,6 +459,8 @@ impl Panel {
     /// Removes the device; what it fed or switched is left without a feeder, and the stored
     /// numbers of its wires go with it.
     pub fn remove(&mut self, id: &str) {
+        // The pins of a sensor on its terminal block go with the sensor (looked up before it goes).
+        let block = self.sensor_block(id);
         // The auxiliary contacts of the device go with it.
         let aux: Vec<String> = self.aux_of(id).map(|d| d.id.clone()).collect();
         self.devices.retain(|d| d.id != id && !aux.contains(&d.id));
@@ -445,17 +474,40 @@ impl Panel {
             if d.from == id {
                 d.from.clear();
             }
+            // A sensor wired through a removed terminal block is wired straight again.
+            if d.via == id {
+                d.via.clear();
+            }
             // A sensor of a removed motor stays in the panel as a plain sensor.
             if d.of == id && d.kind == DeviceKind::Sensor {
                 d.of.clear();
             }
         }
-        self.links
-            .retain(|l| link_device(&l.from) != id && link_device(&l.to) != id);
-        self.wire_numbers.retain(|key, _| {
-            !key.split('>')
-                .any(|end| end.split_once(':').is_some_and(|(device, _)| device == id))
+        let on_sensor_pin = |end: &str| {
+            block.as_deref().is_some_and(|block| {
+                end.split_once(':').is_some_and(|(device, terminal)| {
+                    device == block && sensor_pin_suffix(terminal, id).is_some()
+                })
+            })
+        };
+        self.links.retain(|l| {
+            link_device(&l.from) != id
+                && link_device(&l.to) != id
+                && !on_sensor_pin(&l.from)
+                && !on_sensor_pin(&l.to)
         });
+        self.wire_numbers.retain(|key, _| {
+            !key.split('>').any(|end| {
+                end.split_once(':').is_some_and(|(device, _)| device == id) || on_sensor_pin(end)
+            })
+        });
+    }
+
+    /// The terminal block a sensor `id` is wired through (`via`), if it is one.
+    fn sensor_block(&self, id: &str) -> Option<String> {
+        self.device(id)
+            .filter(|d| d.kind == DeviceKind::Sensor && !d.via.is_empty())
+            .map(|d| d.via.clone())
     }
 }
 
@@ -558,6 +610,7 @@ kind = "breaker"
             panel.devices.push(Device {
                 id: id.into(),
                 kind: DeviceKind::Relay,
+                via: String::new(),
                 rating: String::new(),
                 part: String::new(),
                 bind: String::new(),
@@ -683,6 +736,82 @@ kind = "contactor"
         assert_eq!(panel.device("Q1").unwrap().load, "");
         assert_eq!(panel.wire_numbers.len(), 1);
         assert!(panel.wire_numbers.contains_key("X1:L>Q1:1"));
+    }
+
+    #[test]
+    fn sensor_via_terminal_round_trips_and_follows_renames() {
+        let mut panel: Panel = toml::from_str(
+            r#"
+[[device]]
+id = "X1"
+kind = "terminal"
+[[device]]
+id = "B1"
+kind = "sensor"
+via = "X1"
+"#,
+        )
+        .unwrap();
+        let text = toml::to_string(&panel).unwrap();
+        assert!(text.contains("via = \"X1\""), "{text}");
+        assert_eq!(toml::from_str::<Panel>(&text).unwrap(), panel);
+        // A sensor wired straight writes no `via`.
+        assert!(!toml::to_string(&pair()).unwrap().contains("via"));
+        panel.rename("X1", "X2").unwrap();
+        assert_eq!(panel.device("B1").unwrap().via, "X2");
+        // Removing the block leaves the sensor in the panel, wired straight again.
+        panel.remove("X2");
+        assert!(panel.device("B1").is_some());
+        assert!(panel.device("B1").unwrap().via.is_empty());
+    }
+
+    #[test]
+    fn sensor_pins_on_a_block_follow_renames_swaps_and_removals() {
+        let mut panel: Panel = toml::from_str(
+            r#"
+[[device]]
+id = "X2"
+kind = "terminal"
+[[device]]
+id = "B1"
+kind = "sensor"
+via = "X2"
+[[device]]
+id = "B2"
+kind = "sensor"
+via = "X2"
+[[link]]
+from = "X2:B1S"
+to = "K1:A1"
+[wire_numbers]
+"G1:+24V>X2:B1+" = 1
+"X2:B1S>A1:IO34" = 2
+"G1:+24V>X2:B2+" = 3
+"X2:B2S>A1:IO35" = 4
+"#,
+        )
+        .unwrap();
+        // Renaming the sensor renames its pins on the block, the links and the numbers.
+        panel.rename("B1", "B9").unwrap();
+        assert_eq!(panel.links[0].from, "X2:B9S");
+        assert_eq!(panel.wire_numbers["G1:+24V>X2:B9+"], 1);
+        assert_eq!(panel.wire_numbers["X2:B9S>A1:IO34"], 2);
+        assert_eq!(panel.wire_numbers["G1:+24V>X2:B2+"], 3);
+        // Swapping two sensors: the wires and the link of each sensor go with it (old B9 is now B2).
+        panel
+            .rename_all(&[("B9".into(), "B2".into()), ("B2".into(), "B9".into())])
+            .unwrap();
+        assert_eq!(panel.device("B2").unwrap().via, "X2");
+        assert_eq!(panel.links[0].from, "X2:B2S");
+        assert_eq!(panel.wire_numbers["G1:+24V>X2:B2+"], 1);
+        assert_eq!(panel.wire_numbers["X2:B2S>A1:IO34"], 2);
+        assert_eq!(panel.wire_numbers["G1:+24V>X2:B9+"], 3);
+        assert_eq!(panel.wire_numbers["X2:B9S>A1:IO35"], 4);
+        // Removing a sensor takes its pins with it, the other sensor and its link stay.
+        panel.remove("B9");
+        assert_eq!(panel.links.len(), 1);
+        assert_eq!(panel.wire_numbers.len(), 2);
+        assert_eq!(panel.wire_numbers["G1:+24V>X2:B2+"], 1);
     }
 
     #[test]

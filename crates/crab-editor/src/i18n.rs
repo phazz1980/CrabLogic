@@ -246,6 +246,38 @@ mod tests {
     }
 
     #[test]
+    fn dictionaries_parse_cleanly_and_have_no_empty_values() {
+        for lang in Lang::ALL {
+            let parsed: HashMap<String, String> = serde_json::from_str(lang.dictionary_source())
+                .unwrap_or_else(|e| panic!("{}: invalid JSON: {e}", lang.code()));
+            for (k, v) in &parsed {
+                assert!(!k.is_empty(), "{}: empty key", lang.code());
+                assert!(
+                    !v.trim().is_empty(),
+                    "{}: empty translation for {k:?}",
+                    lang.code()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_dictionaries_have_exact_key_parity() {
+        let en = dictionary(Lang::En);
+
+        for lang in [Lang::Zh, Lang::Es, Lang::Hi, Lang::Bn] {
+            let dict = dictionary(lang);
+            let missing: Vec<_> = en.keys().filter(|k| !dict.contains_key(*k)).collect();
+            let extra: Vec<_> = dict.keys().filter(|k| !en.contains_key(*k)).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "{} vs en key mismatch: missing={missing:?}, extra={extra:?}",
+                lang.code(),
+            );
+        }
+    }
+
+    #[test]
     fn dictionaries_parse_and_hold_only_known_placeholders() {
         for lang in Lang::ALL {
             let dict = dictionary(lang);

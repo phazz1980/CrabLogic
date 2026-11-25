@@ -35,6 +35,7 @@ pub fn preview(kind: DeviceKind, part: PalettePart, supply: Supply) -> Preview {
     let device = Device {
         id: format!("{}?", kind.letter()),
         kind,
+        via: String::new(),
         rating: String::new(),
         part: String::new(),
         bind: String::new(),

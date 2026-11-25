@@ -587,6 +587,168 @@ fn panel_commands_build_the_panel_step_by_step() {
 }
 
 #[test]
+fn panel_links_and_sheet_places_are_made_by_hand() {
+    let mut c = ctx("panel_links");
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "contactor", "id": "K1"}),
+    )
+    .unwrap();
+    run(
+        &mut c,
+        "add_panel_device",
+        json!({"kind": "motor", "id": "M1"}),
+    )
+    .unwrap();
+
+    // A hand wire to a terminal of the board is added and seen in the panel.
+    let r = run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1:A2", "to": "A1:IO5"}),
+    )
+    .unwrap();
+    assert_eq!(r["key"], "K1:A2>A1:IO5");
+    assert_eq!(c.project.panel.links.len(), 1);
+    let panel = run(&mut c, "get_panel", json!({})).unwrap();
+    assert_eq!(panel["links"][0]["from"], "K1:A2");
+    assert_eq!(panel["links"][0]["to"], "A1:IO5");
+
+    // The same wire, in either order, is refused and changes nothing.
+    let edits = c.edits;
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1:A2", "to": "A1:IO5"})
+    )
+    .unwrap_err()
+    .contains("уже есть"));
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "A1:IO5", "to": "K1:A2"})
+    )
+    .is_err());
+    // Bad ends: unknown device, bad format, the same terminal at both ends.
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "Z9:1", "to": "M1:L"})
+    )
+    .unwrap_err()
+    .contains("Z9"));
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1A2", "to": "M1:L"})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1:", "to": "M1:L"})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1:A2", "to": "K1:A2"})
+    )
+    .is_err());
+    assert_eq!(c.edits, edits);
+    assert_eq!(c.project.panel.links.len(), 1);
+
+    // A supply line is a valid end too.
+    run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "M1:L", "to": "bus:L"}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.links.len(), 2);
+    // A line the panel does not have, a terminal the device does not have and a wire between two
+    // lines are refused.
+    for (from, to) in [("M1:L", "bus:L9"), ("K1:ZZ", "bus:0V"), ("bus:L", "bus:N")] {
+        assert!(run(
+            &mut c,
+            "link_panel_terminals",
+            json!({"from": from, "to": to})
+        )
+        .is_err());
+    }
+    assert_eq!(c.project.panel.links.len(), 2);
+
+    // Removal works in either order; removing what is not there is refused.
+    run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "A1:IO5", "to": "K1:A2", "remove": true}),
+    )
+    .unwrap();
+    assert_eq!(c.project.panel.links.len(), 1);
+    assert!(run(
+        &mut c,
+        "link_panel_terminals",
+        json!({"from": "K1:A2", "to": "A1:IO5", "remove": true}),
+    )
+    .is_err());
+
+    // A device goes on a sheet by hand and comes off again; a part key counts its device.
+    let p = run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "K1", "sheet": "free:0", "x_mm": 50, "y_mm": 30}),
+    )
+    .unwrap();
+    assert_eq!(p["placed"]["sheet"], "free:0");
+    assert_eq!(p["placed"]["x_mm"], 50.0);
+    assert_eq!(p["placed"]["y_mm"], 30.0);
+    run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "M1/coil", "sheet": "control:1", "x_mm": 10, "y_mm": 10}),
+    )
+    .unwrap();
+    assert!(c.project.panel_layout.placed.contains_key("M1/coil"));
+    // A wrong sheet, a missing place and an unknown device are refused.
+    assert!(run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "K1", "sheet": "lamp:0", "x_mm": 1, "y_mm": 1})
+    )
+    .unwrap_err()
+    .contains("lamp"));
+    assert!(run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "K1", "sheet": "free:999", "x_mm": 1, "y_mm": 1})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "K1", "sheet": "free:0"})
+    )
+    .is_err());
+    assert!(run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "Z9", "sheet": "free:0", "x_mm": 1, "y_mm": 1})
+    )
+    .unwrap_err()
+    .contains("Z9"));
+    run(
+        &mut c,
+        "place_panel_device",
+        json!({"id": "K1", "remove": true}),
+    )
+    .unwrap();
+    assert!(!c.project.panel_layout.placed.contains_key("K1"));
+    assert!(c.project.panel_layout.placed.contains_key("M1/coil"));
+}
+
+#[test]
 fn building_the_panel_needs_devices_and_writes_a_pdf() {
     let mut c = ctx("panel_build");
     let out = c.lib_dir.join("щит.pdf");

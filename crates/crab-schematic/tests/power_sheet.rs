@@ -1430,3 +1430,33 @@ fn a_relay_contact_with_a_load_stays_in_the_contact_table() {
         );
     }
 }
+
+#[test]
+fn a_sensor_through_a_terminal_block_is_drawn_with_its_terminals() {
+    use crab_schematic::ItemKind;
+    let panel = PUMP_PANEL.replace(
+        "bind = \"sensor.out\"",
+        "bind = \"sensor.out\"\nvia = \"X2\"",
+    ) + "\n[[device]]\nid = \"X2\"\nkind = \"terminal\"\n";
+    let project = pump(&panel);
+    let (doc, _) = build_document(&project, &library(), Lang::Ru).unwrap();
+    let wires: Vec<String> = doc
+        .sheets
+        .iter()
+        .flat_map(|s| s.items.iter())
+        .filter_map(|i| match &i.kind {
+            ItemKind::Wire { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect();
+    for wire in [
+        "G1:+24V>X2:B1+",
+        "X2:B1+>B1:+",
+        "G1:0V>X2:B1-",
+        "X2:B1->B1:-",
+    ] {
+        assert!(wires.iter().any(|k| k == wire), "no {wire} in {wires:?}");
+    }
+    // Straight to the sensor nothing is drawn any more.
+    assert!(!wires.iter().any(|k| k == "G1:+24V>B1:+"));
+}

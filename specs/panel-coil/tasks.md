@@ -5,5 +5,5 @@
 - [x] 3. Рисование ручных проводов на листе и протягивание мышью от вывода к выводу (`control.rs`, `panelview.rs`). Глазами не проверено.
 - [x] 4. Вытаскивание устройств из дерева на лист управления (`PanelLayout.placed`). Проверка: `a_device_put_on_the_control_sheet_is_drawn_with_its_terminals_and_wires`.
 - [x] 5a. Справка и новости.
-- [ ] 5b. Помощник (`crab-ai`) и MCP: команды для ручных проводов и размещения.
+- [x] 5b. Помощник (`crab-ai`) и MCP: `link_panel_terminals`, `place_panel_device` (24.11.2026; Haiku писал, Sonnet проверял; тест `panel_links_and_sheet_places_are_made_by_hand`). MCP берёт команды из того же набора.
 - [~] 6. ~~Отдельное устройство `Coil` в модели~~ — отменено 22.11.2026: катушка — часть аппарата (`K1/coil`), см. `specs/panel-free-sheets/plan.md`, этап 1.

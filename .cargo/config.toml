@@ -1,0 +1,5 @@
+# Limit parallel rustc jobs so `cargo test` / `cargo clippy --all-targets`
+# do not hit `rust_oom` on 16 GB RAM Windows machines when linking many
+# integration test binaries in parallel.
+[build]
+jobs = 4

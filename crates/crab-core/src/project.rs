@@ -910,6 +910,7 @@ fqbn = \"x:y:z\"
         project.panel.devices.push(Device {
             id: "K1".into(),
             kind: DeviceKind::Contactor,
+            via: String::new(),
             rating: "230 В, 9 А".into(),
             part: String::new(),
             bind: "pump.out".into(),

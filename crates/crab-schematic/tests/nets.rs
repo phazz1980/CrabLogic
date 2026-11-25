@@ -657,3 +657,89 @@ kind = "motor"
         ]
     );
 }
+
+/// A sensor wired through a terminal block (`via`): each of its three wires takes two wires, in
+/// and out of the block, on the pins `X2:B1+`, `X2:B1-`, `X2:B1S` (`specs/panel-aux`, task 11).
+#[test]
+fn a_sensor_through_a_terminal_block_takes_two_wires_per_conductor() {
+    let panel = PUMP_PANEL.replace(
+        "bind = \"sensor.out\"",
+        "bind = \"sensor.out\"\nvia = \"X2\"",
+    ) + "\n[[device]]\nid = \"X2\"\nkind = \"terminal\"\n";
+    let nets = nets_of(&panel);
+    let k = key_set(&nets);
+    for wire in [
+        "G1:+24V>X2:B1+",
+        "X2:B1+>B1:+",
+        "G1:0V>X2:B1-",
+        "X2:B1->B1:-",
+        "B1:S>X2:B1S",
+        "X2:B1S>A1:IO34",
+    ] {
+        assert!(k.contains(wire), "no wire {wire} in {k:?}");
+    }
+    // The wires straight to the sensor are gone.
+    for wire in ["G1:+24V>B1:+", "G1:0V>B1:-", "B1:S>A1:IO34"] {
+        assert!(!k.contains(wire), "{wire} is still there");
+    }
+    // The wire in and the wire out of the block are two conductors with two numbers.
+    let number = |key: &str| nets.wires.iter().find(|w| w.key() == key).unwrap();
+    for (inn, out) in [
+        ("G1:+24V>X2:B1+", "X2:B1+>B1:+"),
+        ("G1:0V>X2:B1-", "X2:B1->B1:-"),
+        ("B1:S>X2:B1S", "X2:B1S>A1:IO34"),
+    ] {
+        let (a, b) = (number(inn), number(out));
+        assert_ne!(a.net, b.net, "{inn} and {out} are one conductor");
+        assert_ne!(a.number, b.number, "{inn} and {out} have one number");
+    }
+    // A sensor wired straight keeps its three wires as before.
+    let straight = key_set(&nets_of(PUMP_PANEL));
+    assert!(straight.contains("G1:+24V>B1:+"));
+    assert!(!straight.iter().any(|k| k.contains("X2:")));
+}
+
+/// Two sensors on one terminal block: each has its own pins on the block, so no wire is shared.
+#[test]
+fn two_sensors_on_one_terminal_block_have_wires_of_their_own() {
+    let panel = PUMP_PANEL.replace("bind = \"sensor.out\"", "bind = \"sensor.out\"\nvia = \"X2\"")
+        + "\n[[device]]\nid = \"X2\"\nkind = \"terminal\"\n[[device]]\nid = \"B2\"\nkind = \"sensor\"\nbind = \"sensor.out\"\nvia = \"X2\"\n";
+    let nets = nets_of(&panel);
+    let keys: Vec<String> = nets.wires.iter().map(|w| w.key()).collect();
+    let unique: HashSet<&String> = keys.iter().collect();
+    assert_eq!(unique.len(), keys.len(), "repeated wire keys: {keys:?}");
+    for wire in [
+        "X2:B1+>B1:+",
+        "X2:B2+>B2:+",
+        "B2:S>X2:B2S",
+        "X2:B2S>A1:IO34",
+    ] {
+        assert!(keys.iter().any(|k| k == wire), "no wire {wire} in {keys:?}");
+    }
+    // The two sensors' wires to the block are two conductors with their own numbers.
+    let number = |key: &str| nets.wires.iter().find(|w| w.key() == key).unwrap().number;
+    assert_ne!(number("X2:B1+>B1:+"), number("X2:B2+>B2:+"));
+}
+
+/// A hand wire on a pin of a sensor's terminal block replaces the automatic wire at that pin.
+#[test]
+fn a_hand_wire_on_a_sensor_pin_of_a_terminal_block_replaces_the_automatic_one() {
+    let panel = PUMP_PANEL.replace("bind = \"sensor.out\"", "bind = \"sensor.out\"\nvia = \"X2\"")
+        + "\n[[device]]\nid = \"X2\"\nkind = \"terminal\"\n[[link]]\nfrom = \"X2:B1S\"\nto = \"K1:A2\"\n";
+    let k = key_set(&nets_of(&panel));
+    assert!(k.contains("X2:B1S>K1:A2"), "{k:?}");
+    assert!(!k.contains("X2:B1S>A1:IO34"), "{k:?}");
+    // The other pins of the sensor keep their automatic wires.
+    assert!(k.contains("X2:B1+>B1:+"));
+}
+
+/// Without `via` the sensor's wires and numbers are the same as before a block was added.
+#[test]
+fn no_via_gives_the_same_wires_and_numbers_as_before() {
+    let plain = nets_of(PUMP_PANEL);
+    let with_unused_block =
+        nets_of(&(PUMP_PANEL.to_owned() + "\n[[device]]\nid = \"X2\"\nkind = \"terminal\"\n"));
+    let pairs =
+        |n: &Nets| -> Vec<(String, u32)> { n.wires.iter().map(|w| (w.key(), w.number)).collect() };
+    assert_eq!(pairs(&plain), pairs(&with_unused_block));
+}

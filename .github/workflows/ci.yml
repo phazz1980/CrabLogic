@@ -1,0 +1,34 @@
+# Runs formatting, clippy, workspace build, and core/schematic tests on Windows.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy (strict)
+        run: cargo clippy -p crab-core -p crab-schematic -p crab-editor -p crab-cli --all-targets -- -D warnings
+
+      - name: Check workspace compilation
+        run: cargo clippy --workspace --lib --bins -j 4
+
+      - name: Run tests
+        run: cargo test -p crab-core -p crab-schematic -p crab-editor -p crab-cli -j 4

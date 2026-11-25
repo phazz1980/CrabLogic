@@ -3,21 +3,24 @@
 //! documentation. The same commands serve the chat and the MCP server.
 
 use crab_core::{
-    check_panel, panel_tags, rebind_device, symbol_key, ContactForm, Device, DeviceKind, Library,
-    Project, Severity, Supply,
+    check_panel, link_bus, link_device, panel_tags, rebind_device, split_part, symbol_key,
+    ContactForm, Device, DeviceKind, Library, Panel, Project, Severity, SheetId, Supply, WireLink,
+    MAX_SHEETS,
 };
-use crab_schematic::{build_document_in, Format, Lang};
+use crab_schematic::{build_document_in, Format, Lang, BOARD};
 use serde_json::{json, Map, Value};
 
 use crate::{Context, Tool};
 
 /// Names of the panel commands.
-pub const NAMES: [&str; 8] = [
+pub const NAMES: [&str; 10] = [
     "get_panel",
     "add_panel_device",
     "set_panel_device",
     "reconnect_panel_device",
     "move_panel_symbol",
+    "link_panel_terminals",
+    "place_panel_device",
     "remove_panel_device",
     "set_panel_supply",
     "build_panel",
@@ -100,6 +103,26 @@ pub fn tools() -> Vec<Tool> {
             }, "required": ["id"]}),
         },
         Tool {
+            name: "link_panel_terminals",
+            description: "Провести провод вручную между двумя выводами щита: K1:A2, A1:IO5 (вывод платы), bus:L1 (линия питания). Провод заменяет автоматический на этих выводах. remove: true — удалить такой провод (порядок концов не важен). Возвращается результат проверки щита.",
+            input_schema: json!({"type": "object", "properties": {
+                "from": text("первый вывод: устройство:вывод"),
+                "to": text("второй вывод: устройство:вывод или bus:линия"),
+                "remove": {"type": "boolean", "description": "true — удалить провод; по умолчанию добавить"},
+            }, "required": ["from", "to"]}),
+        },
+        Tool {
+            name: "place_panel_device",
+            description: "Поставить устройство щита на лист вручную (или часть устройства, например K1/coil) в мм от левого верхнего угла листа. remove: true — убрать с листа; устройство остаётся в щите. Лист: power:0, control:1 или free:2.",
+            input_schema: json!({"type": "object", "properties": {
+                "id": text("обозначение устройства или части, например K1 или K1/coil"),
+                "sheet": text("лист: power:N, control:N или free:N"),
+                "x_mm": {"type": "number", "description": "положение по горизонтали на листе, мм"},
+                "y_mm": {"type": "number", "description": "положение по вертикали на листе, мм"},
+                "remove": {"type": "boolean", "description": "true — убрать устройство с листа"},
+            }, "required": ["id"]}),
+        },
+        Tool {
             name: "remove_panel_device",
             description: "Удалить устройство из щита; ссылки load на него очищаются.",
             input_schema: json!({"type": "object", "properties": {"id": text("обозначение")}, "required": ["id"]}),
@@ -161,6 +184,7 @@ fn read(project: &Project, lib: &Library) -> Value {
         "devices": panel.devices,
         "wire_numbers": panel.wire_numbers,
         "free_tags": free,
+        "links": panel.links,
         "layout": layout,
         "check": report(project, lib),
     })
@@ -215,6 +239,47 @@ fn kind(text: &str) -> Result<DeviceKind, String> {
             "нет вида устройства «{text}»: feed, breaker, rcd, fuse, switch, psu, contactor, relay, motor, load, terminal, sensor, button, aux"
         )
     })
+}
+
+/// Checks one end of a hand wire: `device:terminal` of a device of the panel or of the board
+/// (`A1:IO5`), or a supply line `bus:L1`.
+fn check_end(panel: &Panel, end: &str) -> Result<(), String> {
+    if let Some(line) = link_bus(end) {
+        let mut lines: Vec<&str> = vec!["+24V", "0V"];
+        lines.extend(panel.supply.lines());
+        return if lines.contains(&line) {
+            Ok(())
+        } else {
+            Err(format!(
+                "в щите нет линии «{line}»; есть: {}",
+                lines.join(", ")
+            ))
+        };
+    }
+    let well_formed = end
+        .split_once(':')
+        .is_some_and(|(device, terminal)| !device.is_empty() && !terminal.is_empty());
+    if !well_formed {
+        return Err(format!(
+            "вывод «{end}»: нужен вид устройство:вывод, например K1:A2"
+        ));
+    }
+    let device = link_device(end);
+    if device != BOARD && panel.device(device).is_none() {
+        return Err(format!("в щите нет устройства «{device}»"));
+    }
+    // A terminal of a device of the panel must be one the sheet draws; the board and its channels
+    // are not checked here.
+    if let (Some(d), Some((_, terminal))) = (panel.device(device), end.split_once(':')) {
+        let terminals = crab_schematic::nets::terminals_of(panel, d);
+        if !terminals.iter().any(|t| t == terminal) {
+            return Err(format!(
+                "у устройства «{device}» нет вывода «{terminal}»; есть: {}",
+                terminals.join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Sets the fields the arguments name.
@@ -314,6 +379,7 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
                 let mut device = Device {
                     id: new.clone(),
                     kind,
+                    via: String::new(),
                     rating: String::new(),
                     part: String::new(),
                     bind: String::new(),
@@ -410,6 +476,93 @@ fn run(ctx: &mut dyn Context, name: &str, args: &Map<String, Value>) -> Result<V
             // The offset as stored, after snapping to the grid.
             let (sx, sy) = ctx.project().panel_layout.shift(&key);
             Ok(json!({"id": id, "view": view, "dx_mm": sx / 4.0, "dy_mm": sy / 4.0}))
+        }
+        "link_panel_terminals" => {
+            let arg = |key: &str| -> Result<String, String> {
+                text(args, key)?
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| format!("нужен аргумент «{key}»"))
+            };
+            let from = arg("from")?;
+            let to = arg("to")?;
+            let remove = flag(args, "remove")?;
+            let key = WireLink {
+                from: from.clone(),
+                to: to.clone(),
+            }
+            .key();
+            ctx.edit(&mut |p| {
+                let panel = &mut p.panel;
+                // A wire has the same two ends in either order.
+                let same =
+                    |l: &WireLink| (l.from == from && l.to == to) || (l.from == to && l.to == from);
+                if remove {
+                    let before = panel.links.len();
+                    panel.links.retain(|l| !same(l));
+                    if panel.links.len() == before {
+                        return Err(format!("провода «{key}» нет"));
+                    }
+                    return Ok(());
+                }
+                if from == to {
+                    return Err("провод не может начинаться и кончаться на одном выводе".to_owned());
+                }
+                check_end(panel, &from)?;
+                check_end(panel, &to)?;
+                if link_bus(&from).is_some() && link_bus(&to).is_some() {
+                    return Err("провод между двумя линиями не рисуется".to_owned());
+                }
+                if panel.links.iter().any(same) {
+                    return Err(format!("провод «{key}» уже есть"));
+                }
+                panel.links.push(WireLink {
+                    from: from.clone(),
+                    to: to.clone(),
+                });
+                Ok(())
+            })?;
+            Ok(json!({"key": key, "check": report(ctx.project(), &lib)}))
+        }
+        "place_panel_device" => {
+            let id = need_id()?;
+            // A part key (`K1/coil`) belongs to its device.
+            let device = split_part(&id).0.to_owned();
+            let remove = flag(args, "remove")?;
+            if remove {
+                ctx.edit(&mut |p| {
+                    if p.panel.device(&device).is_none() {
+                        return Err(format!("в щите нет устройства «{device}»"));
+                    }
+                    p.panel_layout.unplace(&id);
+                    Ok(())
+                })?;
+                return Ok(json!({"ok": true, "id": id}));
+            }
+            let sheet = text(args, "sheet")?
+                .filter(|s| !s.is_empty())
+                .ok_or("нужен аргумент «sheet»: power:N, control:N или free:N")?
+                .parse::<SheetId>()?;
+            if sheet.number() >= MAX_SHEETS {
+                return Err(format!("лист «{sheet}»: номер листа меньше {MAX_SHEETS}"));
+            }
+            if !args.contains_key("x_mm") || !args.contains_key("y_mm") {
+                return Err("нужны аргументы «x_mm» и «y_mm» — место на листе в мм".to_owned());
+            }
+            // Positions are stored in units of 1/4 mm.
+            let x = millimetres(args, "x_mm")? * 4.0;
+            let y = millimetres(args, "y_mm")? * 4.0;
+            ctx.edit(&mut |p| {
+                if p.panel.device(&device).is_none() {
+                    return Err(format!("в щите нет устройства «{device}»"));
+                }
+                p.panel_layout.place(&id, sheet, x, y);
+                Ok(())
+            })?;
+            // The place as stored, after snapping to the grid.
+            let at = ctx.project().panel_layout.placed.get(&id).map(
+                |p| json!({"sheet": p.sheet.to_string(), "x_mm": p.x / 4.0, "y_mm": p.y / 4.0}),
+            );
+            Ok(json!({"id": id, "placed": at}))
         }
         "remove_panel_device" => {
             let id = need_id()?;

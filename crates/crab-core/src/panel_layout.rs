@@ -547,6 +547,7 @@ mod tests {
                 .map(|id| Device {
                     id: (*id).into(),
                     kind: DeviceKind::Contactor,
+                    via: String::new(),
                     rating: String::new(),
                     part: String::new(),
                     bind: String::new(),

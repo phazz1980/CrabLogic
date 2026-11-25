@@ -17,6 +17,7 @@ fn panel() -> Panel {
     let device = |id: &str, kind| Device {
         id: id.into(),
         kind,
+        via: String::new(),
         rating: String::new(),
         part: String::new(),
         bind: String::new(),

@@ -1327,6 +1327,8 @@
  "Записывать, пока включено": "Write while on",
  "Имя структуры": "Structure name",
  "PDF не собран": "PDF was not made",
+ "Через клеммник": "Through terminal block",
+ "напрямую": "straight",
  "Артикул": "Part number",
  "Выберите устройство в дереве слева или добавьте новое кнопкой «+» у группы.": "Select a device in the tree on the left or add a new one with the “+” button of a group.",
  "Готово: {0}": "Done: {0}",

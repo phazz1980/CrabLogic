@@ -330,6 +330,59 @@ fn right_phases_on_a_400_volt_panel_have_no_diagnostics() {
 }
 
 #[test]
+fn a_sensor_through_a_missing_block_or_another_device_is_an_error() {
+    let has = |project: &Project, needle: &str| errors(project).iter().any(|e| e.contains(needle));
+    // A sensor through a terminal block that exists is fine.
+    let ok = pump_with(&format!(
+        "{GOOD}
+[[device]]
+id = \"X1\"
+kind = \"terminal\"
+[[device]]
+id = \"B1\"
+kind = \"sensor\"
+bind = \"sensor\"
+via = \"X1\"
+"
+    ));
+    assert!(!has(&ok, "клеммника"), "{:#?}", errors(&ok));
+    let missing = pump_with(&format!(
+        "{GOOD}
+[[device]]
+id = \"B1\"
+kind = \"sensor\"
+bind = \"sensor\"
+via = \"X9\"
+"
+    ));
+    assert!(
+        has(
+            &missing,
+            "-B1: подключён через «X9», а такого клеммника нет"
+        ),
+        "{:#?}",
+        errors(&missing)
+    );
+    // Only a sensor goes through a block: a breaker with `via` is refused.
+    let breaker = pump_with(&format!(
+        "{GOOD}
+[[device]]
+id = \"X1\"
+kind = \"terminal\"
+[[device]]
+id = \"Q2\"
+kind = \"breaker\"
+via = \"X1\"
+"
+    ));
+    assert!(
+        has(&breaker, "-Q2: через клеммник подключают только датчик"),
+        "{:#?}",
+        errors(&breaker)
+    );
+}
+
+#[test]
 fn a_1_pole_breaker_is_allowed_on_400_volts() {
     let project = with_breaker("ac400", "poles = 1");
     assert!(errors(&project).is_empty(), "{:#?}", errors(&project));

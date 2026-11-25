@@ -7,9 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
-use crab_core::{
-    ContactForm, Device, DeviceKind, Library, Panel, ParamKind, ParamValue, Project, Supply,
-};
+use crab_core::{ContactForm, Device, DeviceKind, Library, Panel, Project, Supply};
 
 /// Designation of the controller board in the wires.
 pub const BOARD: &str = "A1";
@@ -284,16 +282,10 @@ fn board_terminal(project: &Project, lib: &Library, bind: &str) -> Option<(Strin
     if !project.is_tag(lib, tag) {
         return None;
     }
-    let block = project.logic.block(tag)?;
-    let def = lib.resolve(&project.logic, block)?;
-    let pin_param = def.def.params.iter().find(|p| p.kind == ParamKind::Pin)?;
-    let terminal = match block.params.get(&pin_param.name) {
-        Some(ParamValue::Int(pin)) => match &block.expander {
-            Some(expander) => format!("{expander}.{pin}"),
-            None => format!("IO{pin}"),
-        },
-        _ => tag.to_owned(),
-    };
+    project.logic.block(tag)?;
+    // The terminal of the pin (`IO26`, `expander.5`); a tag without a pin stands for itself.
+    let terminal =
+        crab_core::board_terminal_of(project, lib, tag).unwrap_or_else(|| tag.to_owned());
     Some((terminal, tag.to_owned()))
 }
 
@@ -307,6 +299,14 @@ struct Draft {
 fn pin_of(end: &str) -> Option<Pin> {
     let (device, terminal) = end.split_once(':')?;
     (!device.is_empty() && !terminal.is_empty()).then(|| Pin::new(device, terminal))
+}
+
+/// The sensors wired through the terminal block `block` (`via`), in the order of the panel.
+fn sensors_on<'a>(panel: &'a Panel, block: &'a Device) -> impl Iterator<Item = &'a Device> + 'a {
+    panel
+        .devices
+        .iter()
+        .filter(move |d| d.kind == DeviceKind::Sensor && d.via == block.id)
 }
 
 /// Terminals of a device on which a wire can be drawn by hand.
@@ -328,7 +328,14 @@ pub fn terminals_of(panel: &Panel, device: &Device) -> Vec<String> {
         DeviceKind::Aux => aux_all_terminals(panel, device),
         DeviceKind::Sensor => vec!["+".to_owned(), "-".to_owned(), "S".to_owned()],
         DeviceKind::Button => vec!["1".to_owned(), "2".to_owned()],
-        DeviceKind::Motor | DeviceKind::Load | DeviceKind::Terminal | DeviceKind::Feed => {
+        DeviceKind::Terminal => lines()
+            .chain(["PE".to_owned()])
+            .chain(
+                sensors_on(panel, device)
+                    .flat_map(|s| ["+", "-", "S"].map(|name| format!("{}{name}", s.id))),
+            )
+            .collect(),
+        DeviceKind::Motor | DeviceKind::Load | DeviceKind::Feed => {
             lines().chain(["PE".to_owned()]).collect()
         }
         DeviceKind::Psu => lines().chain(CONTROL.map(str::to_owned)).collect(),
@@ -730,21 +737,49 @@ pub fn build_nets(project: &Project, lib: &Library) -> Nets {
                 }
             }
             DeviceKind::Sensor => {
-                drafts.push(Draft {
-                    class: WireClass::Control,
-                    from: source("+24V", 0),
-                    to: Pin::new(&d.id, "+"),
-                });
-                drafts.push(Draft {
-                    class: WireClass::Control,
-                    from: source("0V", 1),
-                    to: Pin::new(&d.id, "-"),
-                });
-                drafts.push(Draft {
-                    class: WireClass::Signal,
-                    from: Pin::new(&d.id, "S"),
-                    to: board,
-                });
+                // Through a terminal block (`via`) each wire takes two wires, in and out of the
+                // block, on its pins `B1+`, `B1-`, `B1S`; otherwise it goes straight.
+                let block = panel
+                    .device(&d.via)
+                    .filter(|t| t.kind == DeviceKind::Terminal);
+                let through =
+                    |drafts: &mut Vec<Draft>, class, from: Pin, to: Pin, name: &str| match block {
+                        Some(block) => {
+                            let pin = Pin::new(&block.id, format!("{}{name}", d.id));
+                            drafts.push(Draft {
+                                class,
+                                from,
+                                to: pin.clone(),
+                            });
+                            drafts.push(Draft {
+                                class,
+                                from: pin,
+                                to,
+                            });
+                        }
+                        None => drafts.push(Draft { class, from, to }),
+                    };
+                through(
+                    &mut drafts,
+                    WireClass::Control,
+                    source("+24V", 0),
+                    Pin::new(&d.id, "+"),
+                    "+",
+                );
+                through(
+                    &mut drafts,
+                    WireClass::Control,
+                    source("0V", 1),
+                    Pin::new(&d.id, "-"),
+                    "-",
+                );
+                through(
+                    &mut drafts,
+                    WireClass::Signal,
+                    Pin::new(&d.id, "S"),
+                    board.clone(),
+                    "S",
+                );
             }
             DeviceKind::Aux if d.series.is_empty() && panel.device(&d.of).is_some() => {
                 // An auxiliary contact on an input of the board, like a button.

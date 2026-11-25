@@ -408,7 +408,7 @@ fn split_end(end: &str) -> Option<(&str, &str)> {
 
 /// The terminal of the board that the tag `tag` is wired to (`IO26`, or `expander.5`), as
 /// `crab_schematic` writes it; `None` for a tag without a board pin.
-fn board_terminal_of(project: &Project, lib: &Library, tag: &str) -> Option<String> {
+pub fn board_terminal_of(project: &Project, lib: &Library, tag: &str) -> Option<String> {
     let block = project.logic.block(tag)?;
     let def = lib.resolve(&project.logic, block)?;
     let pin_param = def.def.params.iter().find(|p| p.kind == ParamKind::Pin)?;

@@ -439,6 +439,25 @@ pub fn check_panel(project: &Project, lib: &Library) -> Report {
         }
     }
 
+    // A sensor wired through a terminal block (`via`): only a sensor, and the block must exist.
+    for device in panel.devices.iter().filter(|d| !d.via.is_empty()) {
+        if device.kind != DeviceKind::Sensor {
+            error(format!(
+                "{}: через клеммник подключают только датчик",
+                device.designation()
+            ));
+        } else if !panel
+            .device(&device.via)
+            .is_some_and(|t| t.kind == DeviceKind::Terminal)
+        {
+            error(format!(
+                "{}: подключён через «{}», а такого клеммника нет",
+                device.designation(),
+                device.via
+            ));
+        }
+    }
+
     // Devices on a branch of another device (`from`): the source must exist and feed others.
     for device in panel.devices.iter().filter(|d| !d.from.is_empty()) {
         let fine = panel.device(&device.from).is_some_and(|s| {
