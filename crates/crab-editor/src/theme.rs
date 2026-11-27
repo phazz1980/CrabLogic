@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Color32, Stroke, ThemePreference};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, ThemePreference};
 use serde::{Deserialize, Serialize};
 
 pub const LIGHT_NAME: &str = "Стандартная";
@@ -500,6 +500,7 @@ pub fn apply(ctx: &egui::Context, theme: &Theme) {
         egui::Theme::Light
     };
     ctx.set_visuals_of(slot, visuals(theme));
+    ctx.style_mut_of(slot, flat_spacing);
     ctx.set_theme(if theme.dark {
         ThemePreference::Dark
     } else {
@@ -537,7 +538,45 @@ fn visuals(theme: &Theme) -> egui::Visuals {
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, p.text.gamma_multiply(0.6));
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, p.text.gamma_multiply(0.9));
     v.widgets.active.bg_stroke = Stroke::new(1.5, p.accent);
+    flat_shape(&mut v, p);
     v
+}
+
+/// Modern flat look: rounded corners, soft hairline outlines, no heavy shadows.
+fn flat_shape(v: &mut egui::Visuals, p: &Palette) {
+    let radius = CornerRadius::same(6);
+    let soft = |a: f32| Stroke::new(1.0, p.text.gamma_multiply(a));
+    v.widgets.noninteractive.corner_radius = radius;
+    v.widgets.inactive.corner_radius = radius;
+    v.widgets.hovered.corner_radius = radius;
+    v.widgets.active.corner_radius = radius;
+    v.widgets.open.corner_radius = radius;
+    v.widgets.noninteractive.bg_stroke = soft(0.12);
+    v.widgets.inactive.bg_stroke = soft(0.18);
+    v.widgets.hovered.bg_stroke = soft(0.35);
+    v.widgets.open.bg_stroke = soft(0.25);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, p.accent);
+    v.window_corner_radius = CornerRadius::same(10);
+    v.menu_corner_radius = CornerRadius::same(8);
+    v.window_stroke = soft(0.15);
+    v.window_shadow = egui::Shadow {
+        offset: [0, 4],
+        blur: 16,
+        spread: 0,
+        color: Color32::from_black_alpha(if v.dark_mode { 90 } else { 40 }),
+    };
+    v.popup_shadow = v.window_shadow;
+}
+
+/// More air: larger gaps between items, roomier buttons and fields.
+fn flat_spacing(style: &mut egui::Style) {
+    let sp = &mut style.spacing;
+    sp.item_spacing = egui::vec2(8.0, 6.0);
+    sp.button_padding = egui::vec2(10.0, 5.0);
+    sp.interact_size.y = 24.0;
+    sp.window_margin = egui::Margin::same(12);
+    sp.menu_margin = egui::Margin::same(8);
+    sp.indent = 18.0;
 }
 
 #[cfg(test)]
